@@ -32,9 +32,14 @@ vet-med-ppt-team/
 ├── CHANGELOG.md                       ← 版本历史
 ├── LICENSE                            ← 许可证
 ├── .gitignore                         ← 忽略规则
+├── .claude-plugin/
+│   └── marketplace.json               ← Claude Code 插件市场清单
+├── .codebuddy-plugin/
+│   └── marketplace.json               ← WorkBuddy 插件市场清单
 ├── packages/
 │   └── vet-med-ppt-team/              ← 专家包子目录
-│       ├── .codebuddy-plugin/plugin.json    ← WorkBuddy 必需
+│       ├── .claude-plugin/plugin.json ← Claude Code 插件清单
+│       ├── .codebuddy-plugin/plugin.json ← WorkBuddy 插件清单（含团队编制）
 │       ├── agents/                    ← 5份agent MD
 │       │   ├── vet-med-ppt-team-team-lead.md  ← 主理人
 │       │   ├── dvm-content-expert.md  ← 内容专家
@@ -52,10 +57,12 @@ vet-med-ppt-team/
 
 ## 快速安装（按你的 Agent 选择）
 
-| Agent | 一行命令 | 详细指南 |
+> **私有仓库提示**：本仓库当前为私有。任何 Agent 执行 `marketplace add` / `git clone` 前需先通过 GitHub 认证——终端场景运行 `gh auth login`（或 `git clone` 时使用已配置 SSH/PAT 的凭据）；Claude Code 场景需本机已登录 `gh`。仓库转公开后此提示可删除。
+
+| Agent | 安装命令 | 详细指南 |
 |-------|---------|---------|
-| **WorkBuddy** | `git clone https://github.com/virologist/vet-med-ppt-team.git && cp -r vet-med-ppt-team/packages/vet-med-ppt-team ~/.workbuddy/plugins/marketplaces/my-experts/plugins/` | [INSTALL.md#WorkBuddy](INSTALL.md#workbuddy) |
-| **Claude Code** | 在对话中粘贴：`/plugin install virologist/vet-med-ppt-team@packages/vet-med-ppt-team` | [INSTALL.md#ClaudeCode](INSTALL.md#claude-code) |
+| **Claude Code** | ① `/plugin marketplace add virologist/vet-med-ppt-team`<br>② `/plugin install vet-med-ppt-team@vet-med-ppt-team` | [INSTALL.md#ClaudeCode](INSTALL.md#claude-code) |
+| **WorkBuddy** | ① `/plugin marketplace add virologist/vet-med-ppt-team`<br>或手动 `cp -r packages/vet-med-ppt-team ~/.workbuddy/plugins/marketplaces/my-experts/plugins/` | [INSTALL.md#WorkBuddy](INSTALL.md#workbuddy) |
 | **Claude Desktop** | Settings → Plugins → Add Plugin → 输入 `virologist/vet-med-ppt-team` | [INSTALL.md#ClaudeDesktop](INSTALL.md#claude-desktop) |
 | **通用（手动）** | 解压 zip → 放入对应 Agent 的 skill/plugin 目录 | [INSTALL.md#通用](INSTALL.md#通用手动安装) |
 
@@ -71,7 +78,7 @@ vet-med-ppt-team/
 
 ## 版本与维护
 
-- **当前版本**：v1.4.0（2026-09-10）
+- **当前版本**：v1.4.1（2026-09-11）
 - **变更历史**：见 [CHANGELOG.md](CHANGELOG.md)
 - **更新流程**：见 [UPGRADE.md](UPGRADE.md)
 - **架构设计**：见 [docs/architecture.md](docs/architecture.md)

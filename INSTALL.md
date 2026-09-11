@@ -2,6 +2,11 @@
 
 > 针对不同 AI Agent 工具的详细安装步骤。所有路径均为相对于本仓库根。
 
+> **⚠️ 私有仓库前置条件**：本仓库当前为私有。无论使用哪种 Agent，执行以下任意安装命令前，需先在本机完成 GitHub 认证：
+> - **终端**：`gh auth login`（推荐）或配置 SSH key / PAT
+> - **未认证直接 clone 的后果**：`git clone https://github.com/virologist/vet-med-ppt-team.git` 返回 401/找不到仓库
+> - 仓库转公开后，本提示可整体删除
+
 ## 目录
 
 - [WorkBuddy](#workbuddy)
@@ -17,7 +22,17 @@
 
 **适用**：WorkBuddy 桌面应用（推荐，最完整支持 Team 型 expert）
 
-### 方法 A：自动注册（推荐）
+### 方法 A：marketplace 添加（推荐）
+
+在 WorkBuddy 对话框中执行：
+
+```
+/plugin marketplace add virologist/vet-med-ppt-team
+```
+
+WorkBuddy 会读取仓库根的 `.codebuddy-plugin/marketplace.json`，自动注册 `vet-med-ppt-team` 插件。
+
+### 方法 B：手动复制（离线/已 clone）
 
 ```bash
 # 1. 克隆仓库到本地
@@ -27,30 +42,17 @@ git clone https://github.com/virologist/vet-med-ppt-team.git /tmp/vet-med-ppt-te
 cp -r /tmp/vet-med-ppt-team/packages/vet-med-ppt-team \
       ~/.workbuddy/plugins/marketplaces/my-experts/plugins/
 
-# 3. 触发 WorkBuddy 重新扫描 marketplace.json
-#    启动 WorkBuddy → 专家中心 → 应能看到"动物医学教学PPT智造团"
+# 3. 启动 WorkBuddy → 专家中心 → 应能看到"动物医学教学PPT智造团"
 ```
 
-### 方法 B：解压 zip 安装（最快）
+### 方法 C：解压 zip 安装（最快，适合无 git 环境）
 
 ```bash
-# 1. 下载 release zip（从 GitHub Releases）
+# 1. 下载 release zip（从 GitHub Releases 或直接取仓库内 packages/vet-med-ppt-team/vet-med-ppt-team.zip）
 # 2. 解压
-unzip vet-med-ppt-team.zip -d ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
+unzip vet-med-ppt-team.zip -d ~/.workbuddy/plugins/marketplaces/my-experts/plugins/
 
 # 3. 启动 WorkBuddy 验证
-```
-
-### 方法 C：使用 skillstash（跨工具同步）
-
-```bash
-# 安装 skillstash CLI
-npm install -g skillstash
-
-# 注册此仓库为 skillstash hub
-cd /path/to/vet-med-ppt-team
-skillstash init  # 如果未初始化
-skillstash link --agent workbuddy
 ```
 
 ---
@@ -61,24 +63,44 @@ skillstash link --agent workbuddy
 
 ### 方法 A：插件市场安装（推荐）
 
-在 Claude Code 对话框中直接粘贴：
+在 Claude Code 对话框中依次执行两步：
 
 ```
-/plugin install virologist/vet-med-ppt-team@packages/vet-med-ppt-team
+# 第一步：添加本仓库为 marketplace（读取仓库根 .claude-plugin/marketplace.json）
+/plugin marketplace add virologist/vet-med-ppt-team
+
+# 第二步：从该 marketplace 安装插件（插件名@marketplace名，两者同名）
+/plugin install vet-med-ppt-team@vet-med-ppt-team
 ```
 
-Claude Code 会自动从 GitHub 克隆仓库并安装到插件目录。
+> 注意：第二步的语法是 `插件名@marketplace名`，两个名字均来自 `marketplace.json` 的 `name` 字段与其中 `plugins[].name`，**不是** GitHub 路径或子目录路径。
 
-### 方法 B：手动克隆
+### 方法 B：手动克隆（离线场景）
 
 ```bash
-# 1. 克隆到 Claude Code 技能目录
+# 1. 直接克隆到 Claude Code 的 marketplaces 目录
+#    （仓库根自带 .claude-plugin/marketplace.json，放在此目录即被识别）
 git clone https://github.com/virologist/vet-med-ppt-team.git \
-            ~/.claude/plugins/vet-med-ppt-team
+            ~/.claude/plugins/marketplaces/vet-med-ppt-team
 
-# 2. 在 Claude Code 中测试
-#    新对话 → 输入"帮我把《禽流感》做成2课时教学PPT"
+# 2. 重启 Claude Code，执行 /plugin 确认 marketplace 与插件已加载
+
+# 3. 测试：新对话 → 输入"帮我把《禽流感》做成2课时教学PPT"
 #    → 应触发 vet-med-ppt-team-team-lead 角色
+```
+
+### 方法 C：只用单个成员（subagent 方式）
+
+Claude Code 支持将 agent MD 直接作为 subagent 使用：
+
+```bash
+# 复制 5 份 agent MD 到 Claude Code 的 agents 目录
+mkdir -p ~/.claude/agents
+cp ~/.claude/plugins/marketplaces/vet-med-ppt-team/packages/vet-med-ppt-team/agents/*.md \
+   ~/.claude/agents/
+
+# 每份 MD 的 frontmatter 已含 name + description，符合 subagent 规范
+# 此方式只挂载角色定义，不含 marketplace 级的插件管理
 ```
 
 > **注意**：Claude Code 是单 Agent 模式。Team型 expert 的多角色调度由 team-lead MD 内的"协作机制"指令模拟——它会自己调度各成员 agent MD 的内容。不会创建真正的 Team 实体，但所有规则、门控、红线都会被遵守。
@@ -93,9 +115,11 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 
 1. 打开 Claude Desktop
 2. 进入 **Settings** → **Plugins** → **Add Plugin**
-3. 输入仓库地址：`virologist/vet-med-ppt-team`
+3. 输入仓库地址：`virologist/vet-med-ppt-team`（Claude Desktop 会读取仓库根的 `.claude-plugin/marketplace.json`）
 4. 点击 **Install**
 5. 重启 Claude Desktop
+
+> 前提：Claude Desktop 需已配置 GitHub 凭据（本仓库为私有）。如无法配置，改用方法 B 手动放置。
 
 ### 方法 B：手动放置
 
@@ -186,6 +210,13 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 ---
 
 ## 故障排查
+
+### Q: 私有仓库 clone/marketplace add 返回 401 或 "repository not found"
+
+**A**: GitHub 对私有仓库的未认证访问统一返回 404/401 以避免泄露存在性。解决：
+1. 终端运行 `gh auth login`，按提示完成浏览器授权
+2. 验证：`gh repo view virologist/vet-med-ppt-team` 应返回仓库信息
+3. 重试安装命令
 
 ### Q: 安装后看不到专家团
 

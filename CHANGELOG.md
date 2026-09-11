@@ -6,6 +6,23 @@
 
 ---
 
+## [v1.4.1] - 2026-09-11
+
+### Added
+- **双 marketplace 清单**：仓库根新增 `.claude-plugin/marketplace.json`（Claude Code）与 `.codebuddy-plugin/marketplace.json`（WorkBuddy），`/plugin marketplace add virologist/vet-med-ppt-team` 从此真正可用
+- **Claude Code 插件清单**：`packages/vet-med-ppt-team/.claude-plugin/plugin.json`（与 WorkBuddy 版内容对齐，满足 Claude Code 目录名规范）
+- **私有仓库认证说明**：INSTALL.md 顶部前置条件 + 故障排查新增 401 条目
+- **Claude Code subagent 挂载方式**：INSTALL.md 方法 C（agent MD 直接复制到 `~/.claude/agents/`）
+
+### Fixed
+- **安装命令语法错误**：`/plugin install virologist/vet-med-ppt-team@packages/vet-med-ppt-team`（语法不存在的路径式引用）修正为标准两步：`/plugin marketplace add virologist/vet-med-ppt-team` → `/plugin install vet-med-ppt-team@vet-med-ppt-team`
+- **zip 分发版过期**：内含旧版 team-lead MD（21002B vs 仓库 22471B）且嵌套多余 zip，重新打包并消除嵌套
+
+### Removed
+- **skillstash 方法**（INSTALL.md WorkBuddy 原方法 C）：未经本人环境验证的第三方工具指引，移除以避免误导
+
+---
+
 ## [v1.4.0] - 2026-09-10
 
 ### Changed
