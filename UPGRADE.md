@@ -4,6 +4,16 @@
 
 ## 维护流程总览
 
+> ## ⚠️ 禁止事项（2026-09-12 实际事故）
+>
+> **禁止把本仓库直接 `git clone` 到 `~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team/`。**
+>
+> 仓库根结构（README/packages/docs）≠ 插件包结构（agents/avatars/plugin.json）。直接 clone 覆盖会导致：
+> 1. `plugin.json` 被埋进 `packages/vet-med-ppt-team/.codebuddy-plugin/` 深处，WorkBuddy 扫描不到
+> 2. `my-experts/marketplace.json` 注册条目被自动清除 → 专家团从列表中消失、不可调用
+>
+> **正确更新方式**：只把 `packages/vet-med-ppt-team/` 的**内容**同步到插件目录（见下方场景 1/2），保持插件根为扁平结构。
+
 ```
 发现需求
   ↓
@@ -15,7 +25,7 @@ git commit
   ↓
 git push  → GitHub  virologist/vet-med-ppt-team
   ↓
-同步本地 WorkBuddy 专家目录
+同步本地 WorkBuddy 专家目录（rsync 包内容，勿覆盖目录结构）
   ↓
 打包新 zip 替换 packages/vet-med-ppt-team/vet-med-ppt-team.zip
   ↓
