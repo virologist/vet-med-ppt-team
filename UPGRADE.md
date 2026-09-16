@@ -34,6 +34,25 @@ git push  → GitHub  virologist/vet-med-ppt-team
 
 ---
 
+## ⚠️ 每次修改专家包后必做（2026-09-17 新增，第 5 步是血泪）
+
+修改 `agents/*.md` 或 `plugin.json` 后，**WorkBuddy 热重载会吞掉 `settings.json`**（已复现 4 次，同 marketplace 下其他 4 个 Team 型专家因未被修改而不受影响）。跳过第 5 步会导致 validate 报"Team type must have settings.json"、专家不可用。
+
+```bash
+cd ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
+
+# 5. 【必做】恢复 settings.json（幂等，可重复执行）
+python3 scripts/ensure_settings.py
+
+# 6. 校验 + 注册
+python3 /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/scripts/validate_expert.py .
+python3 /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/scripts/register_expert.py .
+```
+
+> 注：本机 `/usr/bin/git` 会触发 Xcode 许可证拦截（SIGTERM），推送请用 `/opt/homebrew/bin/git`。
+
+---
+
 ## 场景 1：日常微调（修改某个 agent 的某段 SOP）
 
 **触发**：用户偏好改变、发现小bug、补充案例
