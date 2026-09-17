@@ -6,6 +6,24 @@
 
 ---
 
+## [v1.5.2] - 2026-09-17
+
+### Added
+- **ensure_settings.py 升级为 doctor（4 项体检 + 1 项自愈）**：从"恢复 settings.json 单点工具"升级为发布前强制门禁。诊断耗时 <1s，4 项全绿才能发布
+  1. settings.json 存在且 `agent` 字段与 plugin.json 一致 → 缺失/损坏则**自愈**重建
+  2. `.codebuddy-plugin/plugin.json`（WorkBuddy 侧）与 `.claude-plugin/plugin.json`（Claude Code 侧）版本号一致 → 漂移则告警【只读】—— `validate_expert.py` 只校验前者，单靠官方工具查不出此项（2026-09-17 实证 v1.4.1→v1.5.1 漂移 2 个小版本未被发现）
+  3. 清单声明的 5 个 agent 文件全部存在 → 缺失则告警
+  4. `scripts/verify_deck.py`（机械验证门禁）随包分发 → 缺失则告警
+- **vet-med-ppt-team.zip 重打包**：旧包停在 2026-09-12 的 v1.4.1（仅 20 文件、无 scripts/、无 docs/），新版 32 文件、含 scripts/、含 docs/repo-meta/
+
+### Changed
+- **UPGRADE.md「修改后必做」段落**：从"必跑 ensure_settings.py 单点恢复"升级为"必跑 doctor 4 项门禁"。两插件清单版本漂移是导致 settings.json 反复丢失的潜在根因之一（每次手动 cp 都可能遗漏另一侧）
+
+### Fixed
+- **本插件包 5 次丢失 settings.json（2026-09-12、09-17×4）**：从"事后手动恢复"升级为"事先检测+事后自愈"闭环。同 marketplace 下其他 4 个 Team 型专家因未被持续修改而不丢失，确认删除源是 WorkBuddy 宿主热重载，不是随机故障
+
+---
+
 ## [v1.5.1] - 2026-09-17
 
 ### Fixed

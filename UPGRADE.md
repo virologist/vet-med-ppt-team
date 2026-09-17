@@ -34,17 +34,24 @@ git push  → GitHub  virologist/vet-med-ppt-team
 
 ---
 
-## ⚠️ 每次修改专家包后必做（2026-09-17 新增，第 5 步是血泪）
+## ⚠️ 每次修改专家包后必做（2026-09-17 升级为 doctor 4 项门禁）
 
-修改 `agents/*.md` 或 `plugin.json` 后，**WorkBuddy 热重载会吞掉 `settings.json`**（已复现 4 次，同 marketplace 下其他 4 个 Team 型专家因未被修改而不受影响）。跳过第 5 步会导致 validate 报"Team type must have settings.json"、专家不可用。
+修改 `agents/*.md` 或 `plugin.json` 后，**WorkBuddy 热重载会吞掉 `settings.json`**（已复现 5 次）。同时 `validate_expert.py` 只校验 `.codebuddy-plugin/plugin.json`，不查 `.claude-plugin/plugin.json` —— 两端版本漂移从未被官方工具发现（2026-09-17 实证 v1.4.1→v1.5.1 漂移 2 个小版本）。
+
+故 `scripts/ensure_settings.py` 已升级为 doctor：4 项体检 + 1 项自愈。**任一告警都必须先处理再发布**：
 
 ```bash
 cd ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
 
-# 5. 【必做】恢复 settings.json（幂等，可重复执行）
+# 5. 【必做】doctor 4 项（settings.json 自愈 + 版本/agent/门禁只读告警）
 python3 scripts/ensure_settings.py
+#   [1/4] settings.json 存在且 agent 字段正确（缺失则自动重建）
+#   [2/4] WorkBuddy 与 ClaudeCode 两侧清单版本一致（漂移则告警）
+#   [3/4] 5 个 agent 文件齐全（缺失则告警）
+#   [4/4] 机械验证门禁 verify_deck.py 随包分发（缺失则告警）
+# 退出码 0 = 全绿可发布；非 0 = 有告警必须先处理
 
-# 6. 校验 + 注册
+# 6. 官方校验 + 注册（必跑，doctor 取代不了）
 python3 /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/scripts/validate_expert.py .
 python3 /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/scripts/register_expert.py .
 ```
