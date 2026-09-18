@@ -45,6 +45,7 @@ THRESHOLD = {
     "overlap_ratio": 0.15,    # 重叠面积占较小框比例阈值
     "hours_page_range": {     # 课时 → (最少页, 最多页)
         1: (18, 28),
+        1.5: (35, 50),        # v1.6.0：1小时教学单元（60min）档位
         2: (36, 52),
         3: (55, 78),
         4: (72, 104),
@@ -293,7 +294,7 @@ def verify(path, hours=3, strict=False):
 def main():
     ap = argparse.ArgumentParser(description="教学课件机械验证器")
     ap.add_argument("deck", help="课件路径 .pptx")
-    ap.add_argument("--hours", type=int, default=3, help="课时数（默认3）")
+    ap.add_argument("--hours", type=float, default=3, help="课时数（默认3；1.5=1小时教学单元60min档，v1.6.0）")
     ap.add_argument("--json", help="输出 JSON 报告路径")
     ap.add_argument("--strict", action="store_true", help="严格模式：继承字号也算违规")
     ap.add_argument("--limit", type=int, default=25, help="终端最多打印多少条问题")
