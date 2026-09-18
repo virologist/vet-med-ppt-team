@@ -6,6 +6,25 @@
 
 ---
 
+## [v1.7.0] - 2026-09-18
+
+### Changed（Harness 工程化重构，基于 2025-2026 领域规范检索：Anthropic 四支柱/四失败模式、OpenAI 百万行实验、Anthropic 多智能体研究系统）
+- **主理人 MD 深度瘦身：212 行/24.2KB → 141 行/10.1KB（-58%）**——六阶段 SOP 细节与裁决/终检规则下沉至 references/（sop-stages.md + adjudication-rules.md），主理人 MD 只留索引+红线+schema+路由表。对齐 OpenAI "AGENTS.md ~100 行索引+地图" 规范，spawn 上下文负载减半，破 40% sweet spot 风险消除
+- **阶段4 复检改非作者交叉复检（Maker/Checker 分离）**：教学性改动→严真奥复检、科学性改动→苏学法复检、页面性改动→苏学法复检——复检人≠产出人，只答「从我的专业视角会不会埋雷」。对齐 Anthropic "Agents are incapable of accurately evaluating their own work"
+
+### Added
+- **任务复杂度分级（L0/L1/L2/L3）**：微任务直调零编排 / 轻任务 1-2 成员 / 标准 6 阶段 / 重任务打样-流水线+可选 RedTeam。对齐 Anthropic "Scale Effort to Query Complexity"（防简单任务过度编排、复杂任务偷工）
+- **下发任务包 schema（四要素委派协议）**：objective/output_format/constraints/task_boundary，spawn 必附；并行任务边界互斥。对齐 Anthropic "Teach the Orchestrator to Delegate"（防重复劳动与覆盖缺口）
+- **阶段5 终检结构化清单**：科学性门/教学性门/页面性门/交付完整性门四门逐项打勾，任一不过打回
+- **缺陷回流协议（熵回收）**：同类错误≥2次触发，流程缺陷→改规则、知识缺陷→严真奥知识回注、脚本缺陷→升级脚本。对齐 Mitchell Hashimoto "每发现一个错误就工程化消除其再现" + OpenAI 熵垃圾回收
+- **Compaction 最小集策略**：task_state.json 新增 compaction 字段（task_id/current_stage/关键决策/文件路径四必保），冷启动恢复=最小集+对应阶段章节，禁止重读全部历史。对齐 Anthropic 记忆持久化规范
+
+### References 新增
+- references/sop-stages.md（六阶段完整 SOP + task_state 规范 + Compaction 策略）
+- references/adjudication-rules.md（裁决优先级 + 六项自检 + 终检四门清单 + 缺陷回流协议 + 安全合规）
+
+---
+
 ## [v1.6.0] - 2026-09-18
 
 ### Added（用户教学理念 DNA 有机注入，经四项裁决：两边同步/扩展课时表/参数化泛养殖/分层时限）
