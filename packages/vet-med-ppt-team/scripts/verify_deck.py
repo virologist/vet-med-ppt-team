@@ -36,21 +36,48 @@ except ImportError:
     print("缺少依赖：pip install python-pptx", file=sys.stderr)
     sys.exit(2)
 
-# ============ 阈值（沿用 R10 实战基线 + 美学补充）============
-THRESHOLD = {
-    "body_min_pt": 12.0,      # 正文最小字号
-    "note_min_pt": 9.0,       # 图注/来源最小字号
-    "max_colors_per_slide": 5,  # 单页最多颜色数（超出=配色混乱）
-    "max_chars_per_slide": 400,  # 单页最多字符（超出=文字墙）
-    "overlap_ratio": 0.15,    # 重叠面积占较小框比例阈值
-    "hours_page_range": {     # 课时 → (最少页, 最多页)
+# ============ 阈值（单一数据源：config/visual-rules.yaml；回退=内置值）============
+# v1.9.0：红线参数化——批量脚本与本脚本共用同一配置，改红线只改 yaml（防 R18 两张皮事故）
+import os
+
+_FALLBACK = {
+    "body_min_pt": 12.0,
+    "note_min_pt": 9.0,
+    "max_colors_per_slide": 5,
+    "max_chars_per_slide": 400,
+    "overlap_ratio": 0.15,
+    "hours_page_range": {
         1: (18, 28),
-        1.5: (35, 50),        # v1.6.0：1小时教学单元（60min）档位
+        1.5: (35, 50),
         2: (36, 52),
         3: (55, 78),
         4: (72, 104),
     },
 }
+
+_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "..", "config", "visual-rules.yaml")
+
+def _load_threshold():
+    """优先读 config/visual-rules.yaml；失败回退内置值并告警（不中断裁判）。"""
+    try:
+        import yaml
+        with open(_RULES_PATH, encoding="utf-8") as f:
+            rules = yaml.safe_load(f)
+        hpr = {float(k): tuple(v) for k, v in rules["hours_page_range"].items()}
+        return {
+            "body_min_pt": float(rules["font"]["body_min_pt"]),
+            "note_min_pt": float(rules["font"]["note_min_pt"]),
+            "max_colors_per_slide": int(rules["density"]["max_colors_per_slide"]),
+            "max_chars_per_slide": int(rules["density"]["max_chars_per_slide"]),
+            "overlap_ratio": float(rules["geometry"]["overlap_ratio"]),
+            "hours_page_range": hpr,
+        }
+    except Exception as e:
+        print(f"⚠ visual-rules.yaml 加载失败（{e}），使用内置回退阈值", file=sys.stderr)
+        return dict(_FALLBACK)
+
+THRESHOLD = _load_threshold()
 
 EMU_PER_INCH = 914400
 
