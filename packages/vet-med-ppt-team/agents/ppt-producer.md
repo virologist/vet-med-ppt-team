@@ -43,6 +43,10 @@ maxTurns: 50
 ### 2. 批量脚本合规驾驶（L3 流水线）
 
 - 批量任务开工前核对：脚本是否 Read visual-rules.yaml、修改动作是否有前置断言（如缩字号目标值 <12pt 拒绝执行；叠加层注入按 yaml#overlay_injection 断言空位与字号）
+- **正式工具（v2.1.0，优先用工具不手搓脚本）**：
+  - `scripts/surgery_deck.py`——批量版面外科（重叠卡位迁移 + 越界画布内微调），判据=屠明熙 SOP，阈值读 yaml； dry-run 先行、备份后执行
+  - `scripts/inject_notes.py`——讲稿备注注入（苏学法产出/工具注入），补到 P2 覆盖率达标即止；生成的 AI 草稿显著标注【待教师复核】
+  - 两个工具执行后必须 `verify_deck --level all` 复验并把计数落 `deck_registry.json`——**工具自报的"修复数"不算数，verify 复验才算数**（surgery_deck 首版曾漏 save 空转 + 容差单位错 + 单文本框页漏检，三次都是复验逮住的）
 - 逐课件循环 = 备份 → 修改 → verify_deck → P0 清零才写回 → 台账记录
 - **全局台账 deck_registry.json（v2.0.0，manifest 升级为跨任务活台账）**：
   - 位置：`<workspace>/.workbuddy/deck_registry.json`（追加更新，不覆盖历史）
