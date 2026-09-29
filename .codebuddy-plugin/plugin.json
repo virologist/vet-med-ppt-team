@@ -1,0 +1,142 @@
+{
+  "name": "vet-med-ppt-team",
+  "version": "2.2.0",
+  "description": "A five-member veterinary medicine teaching-PPT design team that turns any animal-medicine topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation.",
+  "author": {
+    "name": "TZUVet",
+    "email": "tzuvet@qq.com"
+  },
+  "agents": [
+    "./agents/vet-med-ppt-team-team-lead.md",
+    "./agents/dvm-content-expert.md",
+    "./agents/pedagogy-architect.md",
+    "./agents/visual-slide-designer.md",
+    "./agents/ppt-producer.md"
+  ],
+  "expertType": "team",
+  "agentName": "vet-med-ppt-team-team-lead",
+  "teamInfo": {
+    "leadAgent": "vet-med-ppt-team-team-lead",
+    "memberAgents": [
+      "dvm-content-expert",
+      "pedagogy-architect",
+      "visual-slide-designer",
+      "ppt-producer"
+    ]
+  },
+  "displayName": {
+    "en": "Vet-Med Teaching PPT Team",
+    "zh": "动物医学教学PPT智造团"
+  },
+  "profession": {
+    "en": "Vet-Med Teaching PPT Team",
+    "zh": "动物医学教学PPT智造团"
+  },
+  "displayDescription": {
+    "en": "Five-member team producing evidence-verified, pedagogy-aligned veterinary teaching slide solutions through a stage-gated, human-in-the-loop workflow.",
+    "zh": "五人专家团将动物医学教学主题转化为证据核验、教学对齐、可投影授课的完整PPT方案，全程阶段门控确认。"
+  },
+  "avatar": "avatars/team.png",
+  "categoryId": "09-OperationsHR",
+  "defaultInitPrompt": {
+    "zh": "帮我把《禽流感》这一章做成2课时的教学PPT，受众是动物医学职业本科大二学生",
+    "en": "Help me turn the Avian Influenza chapter into a 2-hour teaching PPT for second-year veterinary students"
+  },
+  "plugin": "vet-med-ppt-team",
+  "tags": [
+    {
+      "en": "Veterinary Teaching",
+      "zh": "动物医学教学"
+    },
+    {
+      "en": "Slide Design",
+      "zh": "课件设计"
+    },
+    {
+      "en": "Instructional Design",
+      "zh": "教学编排"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "en": "Help me turn the Avian Influenza chapter into a 2-hour teaching PPT for second-year veterinary students",
+      "zh": "帮我把《禽流感》这一章做成2课时的教学PPT，受众是动物医学职业本科大二学生"
+    },
+    {
+      "en": "Optimize my existing lecture slides: diagnose first, then redesign page by page",
+      "zh": "优化我现有的授课课件：先诊断问题，再逐页重构"
+    },
+    {
+      "en": "Design a case-based differential-diagnosis PPT for common poultry respiratory diseases",
+      "zh": "设计一份基于病例的常见禽呼吸道疾病鉴别诊断PPT"
+    }
+  ],
+  "members": [
+    {
+      "id": "vet-med-ppt-team-team-lead",
+      "displayName": {
+        "en": "Quan Keji",
+        "zh": "全课吉"
+      },
+      "progression": "Chief Courseware Orchestrator",
+      "profession": {
+        "en": "Chief Courseware Orchestrator",
+        "zh": "课件总导演"
+      },
+      "avatar": "avatars/vet-med-ppt-team-team-lead.png",
+      "role": "lead"
+    },
+    {
+      "id": "dvm-content-expert",
+      "displayName": {
+        "en": "Yan Zhen'ao",
+        "zh": "严真奥"
+      },
+      "profession": {
+        "en": "Veterinary Content Expert",
+        "zh": "动物医学内容专家"
+      },
+      "avatar": "avatars/dvm-content-expert.png",
+      "role": "member"
+    },
+    {
+      "id": "pedagogy-architect",
+      "displayName": {
+        "en": "Su Xuefa",
+        "zh": "苏学法"
+      },
+      "profession": {
+        "en": "Pedagogy Architect",
+        "zh": "教学法架构师"
+      },
+      "avatar": "avatars/pedagogy-architect.png",
+      "role": "member"
+    },
+    {
+      "id": "visual-slide-designer",
+      "displayName": {
+        "en": "Tu Mingxi",
+        "zh": "屠明熙"
+      },
+      "profession": {
+        "en": "Visual Slide Designer",
+        "zh": "课件视觉设计师"
+      },
+      "avatar": "avatars/visual-slide-designer.png",
+      "role": "member"
+    },
+    {
+      "id": "ppt-producer",
+      "displayName": {
+        "en": "Zhi Zuoji",
+        "zh": "郅作基"
+      },
+      "profession": {
+        "en": "PPT Producer",
+        "zh": "PPT制作师"
+      },
+      "avatar": "avatars/ppt-producer.png",
+      "role": "member"
+    }
+  ]
+}
