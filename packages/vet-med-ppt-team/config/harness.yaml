@@ -1,0 +1,102 @@
+# harness.yaml — 编排层（状态机 / 路由 / 预算 / 白名单 / 降级）唯一数据源
+# ══════════════════════════════════════════════════════════
+# v2.2.0 新增。缘由（2026-09-29 基线实测）：
+#   编排全靠主理人自觉遵守 Markdown 纪律 → 成员不可调度即整链阻断（苏学法 ×3）、
+#   静默降级无人察觉（严真奥被登记为 general-purpose）、预算与耗时无任何计量。
+# 原则：**方法论下沉为代码**。本文件是编排事实的唯一源，scripts/harness.py 消费它，
+# MD 里只留"人读说明 + 指向本文件"，禁止 MD 与脚本各写一套。
+#
+# 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
+
+version: "2.2.0"
+
+# ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
+# 只认整数 0-5；任何其它取值（如 "M5A2"）一律判非法，禁止写入 task_state.json
+stages:
+  0: {name: "任务冻结与澄清", members: [],                                  gate: "user_confirm", next: 1}
+  1: {name: "教学蓝图",       members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
+  2: {name: "证据核验",       members: ["dvm-content-expert"],              gate: "user_confirm", next: 3}
+  3: {name: "页面级教学设计", members: ["pedagogy-architect", "visual-slide-designer"], gate: "user_confirm", next: 4}
+  4: {name: "迭代修订",       members: ["auto"],                            gate: "auto",        next: 5}
+  5: {name: "制作交付",       members: ["ppt-producer"],                    gate: "gate_script", next: null}
+
+# ── 成员注册表：职责、工具白名单、降级通道 ────────────────────
+# tools_whitelist 为"最小必要"；宿主不支持该字段时由主理人按本表人工约束
+members:
+  dvm-content-expert:
+    duty: "证据核验与分级（唯一内容权威）"
+    tools_whitelist: ["Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch", "DeferExecuteTool"]
+    writes_allowed: false          # 除回传外不落盘业务产物
+    fallback: "general-purpose+persona"
+  pedagogy-architect:
+    duty: "教学蓝图与页表教学列（含 speaker_note / page_role）"
+    tools_whitelist: ["Read", "Write"]
+    writes_allowed: true
+    fallback: "general-purpose+persona"
+  visual-slide-designer:
+    duty: "视觉规则引擎、版面外科判据、抽样复核"
+    tools_whitelist: ["Read", "Write"]
+    writes_allowed: true
+    fallback: "general-purpose+persona"
+  ppt-producer:
+    duty: "写回门禁、台账、批量脚本驾驶"
+    tools_whitelist: ["Read", "Bash", "Write"]
+    writes_allowed: true
+    fallback: "script_pipeline"   # 门禁本质是脚本，成员不可用时由脚本直接兜底
+
+# ── 复杂度分级 → spawn 计划（确定性路由，不再靠主理人临场判断）──
+routing:
+  L0: {team_create: false, spawn: [],                                                   confirm_gates: 1}
+  L1: {team_create: true,  spawn: ["按需1-2成员"],                                      confirm_gates: 2}
+  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "ppt-producer"], confirm_gates: 4}
+  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "ppt-producer"], confirm_gates: 6, red_team: true}
+
+# ── 降级协议（v2.2.0 新增：成员不可调度时不再整链阻断）──────────
+fallback:
+  max_spawn_attempts: 2            # 同一成员最多尝试 2 次（原实测 3 次全失败且无止损）
+  on_unavailable: "degrade"        # degrade | block —— 默认不再 block
+  degrade_modes:
+    general-purpose+persona: "spawn 通用子代理，并在任务包开头注入该成员 MD 全文（人格+红线）"
+    script_pipeline: "改由 scripts/ 下确定性脚本直接执行（仅适用 ppt-producer 门禁类职责）"
+  require_disclosure: true         # 降级必须在交付物与 trace 中显式声明，禁止静默
+
+# ── 预算护栏（任务级，宿主 maxTurns 之外的真正约束）────────────
+budgets:
+  max_member_spawns: 8             # 单任务累计成员调度次数
+  max_spawn_attempts_per_member: 2
+  max_react_rounds_per_gap: 3      # 严真奥单条证据缺口
+  max_react_rounds_total: 15
+  max_rework_rounds_per_stage: 2
+  max_stage_minutes: 20            # 单阶段挂钟上限（超时 → 上报，不等死）
+  max_artifact_bytes: 60000        # 单个成员产物字节上限；超限强制"只传路径+摘要"
+
+# ── 上下文压缩（隔离：主理人不吃全文）─────────────────────────
+context:
+  handoff_mode: "path_only"        # path_only | summary | full
+  summary_max_chars: 800           # 成员回传摘要上限；全文只落盘、不进对话
+  state_max_bytes: 32768           # task_state.json 体积上限，超限触发 compaction
+  state_allowed_keys:              # 白名单外的键一律拒绝写入
+    - task_id
+    - workflow
+    - current_stage
+    - stage_history
+    - user_confirmations_pending
+    - tool_probe_results
+    - budget
+    - next_action
+    - compaction
+
+# ── 可观测性 ────────────────────────────────────────────────
+observability:
+  trace_file: ".workbuddy/harness_trace.jsonl"   # 追加式 JSONL，每事件一行
+  trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
+                 "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded", "error"]
+  report_on_finish: true
+
+# ── 门禁退出码语义（主理人据此分流，不再一律"打回"）────────────
+gate_exit_codes:
+  0: "通过"
+  1: "P0 硬阻断——禁止写回，先组织修复"
+  2: "P1 阻断——可带修复计划写回，交付前清零"
+  3: "P2 阻断——备注覆盖率未达标"
+  4: "运行错误——脚本/文件问题，非课件质量；必须报 traceback 并走缺陷回流，不得当作红灯打回成员"

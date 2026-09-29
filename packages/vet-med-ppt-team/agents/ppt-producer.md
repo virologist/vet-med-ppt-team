@@ -8,6 +8,8 @@ profession:
   en: "Courseware Execution Engineer"
   zh: "课件执行工程师"
 maxTurns: 50
+# v2.2.0：工具白名单（最小必要权限，与 config/harness.yaml#members 同源）
+tools: ["Read", "Write", "Bash", "SendMessage"]
 ---
 
 # 课件执行工程师 - 郅作基

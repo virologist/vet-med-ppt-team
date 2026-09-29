@@ -102,8 +102,17 @@ def _load_threshold():
                 th["severity"][lv] = list(sev[lv])
         return th
     except Exception as e:
-        print(f"⚠ visual-rules.yaml 加载失败（{e}），使用内置回退阈值", file=sys.stderr)
-        return dict(_FALLBACK)
+        # v2.2.0：yaml 是红线唯一数据源，读不到 = 裁判失去准星。
+        # 静默回退会让"门禁通过"建立在未授权阈值上（护栏可绕过），故改为硬失败，
+        # 仅当显式设置环境变量 VERIFY_ALLOW_FALLBACK=1 才允许回退（并醒目告警）。
+        msg = (f"⛔ visual-rules.yaml 加载失败（{e}）——红线唯一数据源不可用，"
+               f"拒绝使用内置回退阈值继续裁判。")
+        if os.environ.get("VERIFY_ALLOW_FALLBACK") == "1":
+            print(msg + "（已显式开启 VERIFY_ALLOW_FALLBACK=1，按内置阈值继续，结果仅供参考）",
+                  file=sys.stderr)
+            return dict(_FALLBACK)
+        print(msg + " 修复 yaml 后重跑；确需临时放行请设 VERIFY_ALLOW_FALLBACK=1。", file=sys.stderr)
+        raise
 
 THRESHOLD = _load_threshold()
 
@@ -462,7 +471,14 @@ def verify(path, hours=3, strict=False):
                 if a["unresolved_runs"]:
                     stats["unknown_font"] += 1
                 continue
-            min_s = min(a["sizes"])
+            # v2.2.0 修复：sizes 可能含 None（部分 run 字号解析失败），
+            # min() 会返回 None，随后与阈值比较抛 TypeError → 整个门禁崩溃（exit 4）。
+            _sizes = [s for s in a["sizes"] if s is not None]
+            if not _sizes:
+                # 一个有效字号都没解析出来 → 记 P3「未知」，不参与 P0 判定
+                stats["unknown_font"] += 1
+                continue
+            min_s = min(_sizes)
             txt = a["text"]
             is_note = _is_note_candidate(txt)
             limit = THRESHOLD["note_min_pt"] if is_note else THRESHOLD["body_min_pt"]
@@ -491,6 +507,12 @@ def verify(path, hours=3, strict=False):
             r = a["rect"]
             if r is None or not a["text"]:
                 continue
+            # v2.2.0 修复：rect 四元组可能含 None（部分形状几何取不到，XML 兜底也失败），
+            # 直接参与比较会抛 TypeError 使整个门禁崩溃。取不到几何 = 该形状无法判定，
+            # 记 parse_errors（P3 明示），绝不因此让整份课件失去裁判。
+            if any(v is None for v in r):
+                stats["parse_errors"] += 1
+                continue
             x, y, w, h = r
             if (x < -tol or y < -tol or x + w > sw + tol or y + h > sh + tol):
                 stats["offcanvas"] += 1
@@ -506,6 +528,9 @@ def verify(path, hours=3, strict=False):
             r = a["rect"]
             if r is None or a["text"] or a["is_pic"]:
                 continue
+            if any(v is None for v in r):      # v2.2.0：同上，几何取不到不参与比较
+                stats["parse_errors"] += 1
+                continue
             x, y, w, h = r
             if (x < -tol or y < -tol or x + w > sw + tol or y + h > sh + tol):
                 stats["bleed_decor"] += 1
@@ -514,7 +539,10 @@ def verify(path, hours=3, strict=False):
         for i in range(len(text_adapters)):
             for j in range(i + 1, len(text_adapters)):
                 ra, rb = text_adapters[i]["rect"], text_adapters[j]["rect"]
-                if ra is None or rb is None:
+                # v2.2.0：rect 为 None 已挡，但四元组内部元素仍可能是 None（几何取不到），
+                # 会把 None 传进 _overlap_area 做 max()/min() 比较而崩溃。
+                if (ra is None or rb is None
+                        or any(v is None for v in ra) or any(v is None for v in rb)):
                     continue
                 inter, smaller = _overlap_area(ra, rb)
                 if smaller > 0 and inter / smaller > THRESHOLD["overlap_ratio"]:
@@ -633,7 +661,17 @@ def main():
         r = verify(a.deck, a.hours, a.strict)
     except Exception as e:
         # v2.0.0：致命错误退出码 4（不再与 P1 的 2 混淆）
+        # v2.2.0：必须打印 traceback —— 只打一行信息时，主理人无法区分
+        #         "课件有问题" 与 "脚本有 bug"，曾导致崩溃被当成红灯打回成员。
+        import traceback
         print(f"运行错误：{e}", file=sys.stderr)
+        print(f"错误类型：{type(e).__name__}", file=sys.stderr)
+        print("堆栈（用于缺陷回流，请附在 issue/CHANGELOG）：", file=sys.stderr)
+        traceback.print_exc()
+        print("\n处置指引：exit=4 属【运行错误】而非课件质量问题——"
+              "① 先确认文件是 .pptx（.ppt 老格式会报 Package not found）；"
+              "② 若是脚本异常，走缺陷回流修脚本，不得当作红灯打回成员；"
+              "③ 完整上下文见 scripts/harness.py gate 写入的 trace。", file=sys.stderr)
         sys.exit(4)
 
     s = r["stats"]

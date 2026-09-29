@@ -8,6 +8,8 @@ profession:
   en: "Visual Rules Engine Architect"
   zh: "视觉规则引擎架构师"
 maxTurns: 50
+# v2.2.0：工具白名单（最小必要权限，与 config/harness.yaml#members 同源）
+tools: ["Read", "Write", "SendMessage"]
 ---
 
 # 视觉规则引擎架构师 - 屠明熙
