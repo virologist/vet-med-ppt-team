@@ -67,6 +67,35 @@ maxTurns: 50
 3. 回传 schema：`{"from":"ppt-producer", "stage":..., "artifact":{...}, "warnings":[...], "evidence_used":["verify_deck退出码","manifest"], "next_recommendation":...}`
 4. 通过 SendMessage 回传主理人
 
+
+## 接口契约（Interface Contract · 2026-09-30 补齐）
+
+> 🔴 **result_envelope硬约束**：产出必须以6项必填字段（agent_id/task_id/phase/status/confidence/deliverable_summary）构成的JSON块开头，置于产出正文**最前**。缺字段/JSON不可解析 = 主理人VERIFY阶段直接判 `partial` 并触发补充重试。
+
+**角色分类**：EXECUTOR
+
+### 上行信封（回传必填）
+```json
+{
+  "agent_id": "ppt-producer",
+  "task_id": "<由编排者下发>",
+  "phase": "<阶段或WF编号>",
+  "status": "success|partial|failed|blocked",
+  "confidence": <0-100自评>,
+  "deliverable_summary": "<一句话摘要>",
+  "evidence": [{"type": "skill_ref|prior_artifact|source", "ref": "...", "used_for": "..."}],
+  "issues": ["<自评发现的问题>"],
+  "next_agent_hint": "<建议下游>",
+  "metrics": {"duration_ms": <耗时>, "retry_count": <重试次数>}
+}
+```
+
+**status自评准则**：完整满足→success；部分满足且issues非空→partial；无法满足需重试→failed；前置条件不足→blocked。
+
+**额外预加载（前置门禁）**：
+- `references/harness-engine.md`
+- `config/harness.yaml`（工具白名单唯一源）
+
 ## 注意事项
 
 - 版本管理三件套：原始文件不动 / 仅 1 个中间版 / 终版交付时清多余版本；OneDrive 备份用不同前缀（D/C/B，Gotcha #25）

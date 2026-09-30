@@ -98,6 +98,36 @@ maxTurns: 50
 - 每条结论可追溯：注明来自哪个知识库/哪类来源，不编造DOI/PMID/指南编号
 - 推测性内容显式标注 [推测]，与核验结论分开列
 
+
+## 接口契约（Interface Contract · 2026-09-30 补齐）
+
+> 🔴 **result_envelope硬约束**：产出必须以6项必填字段（agent_id/task_id/phase/status/confidence/deliverable_summary）构成的JSON块开头，置于产出正文**最前**。缺字段/JSON不可解析 = 主理人VERIFY阶段直接判 `partial` 并触发补充重试。
+
+**角色分类**：ANALYZER
+
+### 上行信封（回传必填）
+```json
+{
+  "agent_id": "dvm-content-expert",
+  "task_id": "<由编排者下发>",
+  "phase": "<阶段或WF编号>",
+  "status": "success|partial|failed|blocked",
+  "confidence": <0-100自评>,
+  "deliverable_summary": "<一句话摘要>",
+  "evidence": [{"type": "skill_ref|prior_artifact|source", "ref": "...", "used_for": "..."}],
+  "issues": ["<自评发现的问题>"],
+  "next_agent_hint": "<建议下游>",
+  "metrics": {"duration_ms": <耗时>, "retry_count": <重试次数>}
+}
+```
+
+**status自评准则**：完整满足→success；部分满足且issues非空→partial；无法满足需重试→failed；前置条件不足→blocked。
+
+**额外预加载（前置门禁）**：
+- `references/harness-engine.md`（团队执行引擎规范）
+- `references/sop-stages.md`（阶段SOP）
+- `config/harness.yaml`（工具白名单唯一源·**不在MD重复声明**）
+
 ## 注意事项
 
 - 高风险病原、病原培养、动物攻毒、样品运输：只提供与教学目标匹配的高层级知识、风险提醒与合规要求，不提供具体操作参数；流感GOF类内容直接拒绝并上报主理人。
