@@ -403,6 +403,72 @@ def cmd_verify_artifact(args):
     return 0
 
 
+# ─────────────────── 回传信封机器校验（B2）───────────────────
+ENVELOPE_REQUIRED = ["agent_id", "task_id", "phase", "status", "confidence",
+                     "deliverable_summary"]
+ENVELOPE_STATUS = {"success", "partial", "failed", "blocked"}
+
+
+def _extract_envelope(text):
+    """从 markdown 文本里取出第一个 JSON 对象（优先 ```json 代码块）。"""
+    import re as _re
+    m = _re.search(r"```json\s*(\{.*?\})\s*```", text, _re.S)
+    if m:
+        return m.group(1)
+    m = _re.search(r"\{.*\}", text, _re.S)
+    return m.group(0) if m else None
+
+
+def cmd_verify_envelope(args):
+    """校验成员回传的 result_envelope（把约定变成代码）。
+
+    缘由（2026-10-04）：result_envelope 由 commit 7013f87 引入，但只写在 MD 里，
+    成员"自觉遵守"——实测自报失真 4/4 个版本复发，说明约定必须有执行者。
+    """
+    p = os.path.abspath(args.path)
+    res = {"path": p, "exists": os.path.exists(p)}
+    if not res["exists"]:
+        res["verdict"] = "❌ 文件不存在"
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+    text = open(p, encoding="utf-8").read()
+    blob = _extract_envelope(text)
+    if not blob:
+        res["verdict"] = "❌ 未找到 result_envelope JSON 块"
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+    try:
+        env = json.loads(blob)
+    except Exception as e:
+        res["verdict"] = f"❌ result_envelope 不可解析：{e}"
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+
+    missing = [k for k in ENVELOPE_REQUIRED if k not in env or env.get(k) in (None, "")]
+    res["envelope"] = env
+    res["missing"] = missing
+    if missing:
+        res["verdict"] = f"❌ 信封缺字段：{missing}（判 partial，退回补充）"
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+    st = str(env.get("status", "")).lower()
+    if st not in ENVELOPE_STATUS:
+        res["verdict"] = f"❌ status 取值非法：{st!r}（应为 {'/'.join(sorted(ENVELOPE_STATUS))}）"
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+    # 产物路径真实性交叉核验（若有 artifact 字段）
+    art = env.get("artifact") or env.get("deliverable") or ""
+    if isinstance(art, str) and art.startswith("/") and not os.path.exists(art):
+        res["verdict"] = f"⚠ 信封声明的产物不存在：{art}（疑自评失真，先落盘再放行）"
+        res["verdict_ok"] = True          # 字段齐备，但需人工处理
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    res["verdict"] = "✅ 信封合规"
+    res["verdict_ok"] = True
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+    return 0
+
+
 # ─────────────────────────── main ───────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v2.2.0")
@@ -462,6 +528,11 @@ def main():
     p.add_argument("--actor", default="member")
     _ws(p)
     p.set_defaults(func=cmd_verify_artifact)
+
+    p = sub.add_parser("verify-envelope", help="校验成员回传 result_envelope 六字段（约定→代码）")
+    p.add_argument("--path", required=True)
+    _ws(p)
+    p.set_defaults(func=cmd_verify_envelope)
 
     a = ap.parse_args()
     sys.exit(a.func(a))

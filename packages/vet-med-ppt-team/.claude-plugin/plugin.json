@@ -1,6 +1,6 @@
 {
   "name": "vet-med-ppt-team",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Five-member veterinary medicine teaching-PPT design team that turns any animal-medicine topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation.",
   "author": {
     "name": "TZUVet",
@@ -22,6 +22,7 @@
     "./agents/dvm-content-expert.md",
     "./agents/pedagogy-architect.md",
     "./agents/visual-slide-designer.md",
-    "./agents/ppt-producer.md"
+    "./agents/ppt-producer.md",
+    "./agents/verifier.md"
   ]
 }

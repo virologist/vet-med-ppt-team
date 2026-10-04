@@ -1,0 +1,28 @@
+{
+  "name": "vet-med-ppt-team",
+  "version": "3.0.0",
+  "description": "Five-member veterinary medicine teaching-PPT design team that turns any animal-medicine topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation.",
+  "author": {
+    "name": "TZUVet",
+    "email": "tzuvet@qq.com"
+  },
+  "repository": "https://github.com/virologist/vet-med-ppt-team",
+  "homepage": "https://github.com/virologist/vet-med-ppt-team",
+  "license": "MIT",
+  "keywords": [
+    "veterinary",
+    "teaching",
+    "ppt",
+    "slide-design",
+    "instructional-design",
+    "multi-agent"
+  ],
+  "agents": [
+    "./agents/vet-med-ppt-team-team-lead.md",
+    "./agents/dvm-content-expert.md",
+    "./agents/pedagogy-architect.md",
+    "./agents/visual-slide-designer.md",
+    "./agents/ppt-producer.md",
+    "./agents/verifier.md"
+  ]
+}

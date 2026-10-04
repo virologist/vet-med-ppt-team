@@ -6,6 +6,47 @@
 
 ---
 
+## [v3.0.0] - 2026-10-04
+
+### 概述（第二轮组织诊断落地：唯一裁判 + 独立验证 + 四道闸）
+
+管家节点裁决四项全部执行：① 郅作基降级为按需调用（职责保留）② 新增按需验证者 ③ 门禁归一（非权威版降级不删）④ P2 覆盖率计入机器草稿但单独统计占比并明示。
+
+本轮先修**致命问题**（安装态门禁不可执行、同一批课件两个结论），再改组织（角色/流程），最后补机制（信封校验、护栏下沉）。
+
+### Fixed（三个致命问题，均由本轮实测逮住）
+- **安装态机器裁判断链**：整仓克隆导致根级 `scripts/` 只剩 1 个文件，6 个核心脚本（verify_deck/harness/surgery_deck/inject_notes/ensure_settings/test_harness）缺失 → MD 里的门禁命令必然 FileNotFoundError。已补齐并加第 5 项体检（全脚本完整性）
+- **唯一裁判缺失（B0）**：门禁语义曾有**三处各自独立的定义**——专家包 `verify_deck.py`（724 行，分级门禁）、工作区 `.claude/skills/vet-ppt-pipeline/verify_deck.py`（375 行，**无 `--level`**，被台账引为权威）、工作区 `registry_rebuild.py`（私自定义 `P0_KEYS` 排除"课时不达标"）。同一批 36 份课件得出 P0=15 与 P0=0 两个结论。
+  实测追查定案：**真因是课时口径而非 P0 定义**——非权威版用 `--auto-hours` 按可见页数反推课时，故永远"匹配"；权威版要求显式 `--hours`。修法：宣布专家包版为 SSOT、非权威版降级为"非门禁工具"（加显著横幅 + 运行告警，不删）、`registry_rebuild.py` 改为只读 yaml、台账新增 `judge_provenance` 与 `caliber_warning`
+- **`--hours` 由默认值改为必填**：原默认 3 会凭空判出"课时不达标"（B0 口径混乱源头之一）
+- 顺带：台账 md5/mtime 快照全部失效（36/36）→ 重建后刷新；`gate_cmd`/`ssot` 字段改指 SSOT
+
+### Added
+- **`agents/verifier.md`（都衡言，独立验证官）**：承接此前完全缺失的 V 层。依据是硬证据——**自评失真在 v1.5.1→v2.2.0 四个版本全部复发，跨 11 天一次没修好**（每轮修的是规则文本，不是产生自评的机制）。职责：自己重跑门禁复算（不采信任何自报）、裁判口径变更第二签、P0 挂账逐条审判（修/降级/例外签字）、抽页 ≥20%
+- **`harness.py verify-envelope`**：把 `result_envelope` 从文档约定变成代码校验（六字段齐备 + status 合法 + 产物路径交叉核验）
+- **`avatars/verifier.png`**
+- 回归测试从 10 → **13 例**（新增信封校验、judge 溯源字段、`--hours` 必填、机器草稿占比）
+
+### Changed
+- **流程：六阶段（0–5）→ 四道闸（0–3）**，确认门由"最少 2 最多 6"降为**固定 2 次**（设计确认 + 交付终审）。依据：实测 1 课时任务跑到阶段3 已耗 25 分钟；`stage_history` 75% 是 SOP 外非法值、`current_stage` 合法率 0/4
+- **角色**：郅作基职责一条未删但**不再常驻 spawn**（判据落点是 `harness.yaml#routing` 的默认 spawn 计划，不是角色存废；取证明确反对删除 M 级职责）；屠明熙职责收窄（红线参数与外科判据文本迁出，人只做高价值页设计与抽样裁决）；**二者不得合并**（Maker/Checker 对偶是 R18 防线）
+- **P2 覆盖率口径（裁决④）**：机器草稿**计入**覆盖率，但门禁单独输出 `machine_note_ratio`，终检清单要求交付物明示"其中 m 页为 AI 草稿，待教师复核"。依据：`inject_notes.py` 的 bootstrap 会批量生成讲稿，不统计就等于把没人复核的机器文本算作达标
+- **`ensure_settings.py` 4 项 → 7 项**：新增全脚本完整性、唯一裁判检测（包内同名 `verify_deck.py` 只许 1 份）、回归测试自跑
+- **护栏下沉**：`verify_deck.py` 开始真正消费 `config/visual-rules.yaml#severity`（此前 `registry_rebuild.py` 私自定义同名常量）
+- 规则去重：agents 内门禁规则定义收敛为**唯一定义源** `references/harness-engine.md#6`（其余改为引用）
+
+### 平台铁律备忘（写进来避免下轮重犯）
+⚠️ **WorkBuddy 专家包不支持 agent frontmatter 的 `tools:` 字段**（2026-09-30 实测确认，v2.2.0 的白名单方案已回退）。
+最小权限只能靠：① `assemble_spawn_prompt.py` 确定性注入人设 ② 任务包四要素约束 ③ `harness.yaml#members[*].tools_whitelist` 作为编排意图声明。
+
+### 已知遗留（如实挂账）
+- 36 份课件的历史 P0/P1 计数继承自**旧口径** checkpoint（`--auto-hours`），台账已加 `caliber_warning` 标注；**须用 SSOT + 显式 `--hours` 重跑全量**才能得到可比结论，本次未做（涉及 36 份课件只读全量扫描，另行安排）
+- 14/14 课件挂账超 3 天、58 个残余 P0 **尚无处置记录**；已把"挂账审判"写入 verifier 职责，待闸 4 首次运行时批量清偿
+- `overlay_injection` 四键（`min_font_pt`/`require_empty_slot`/`max_overlap_ratio`/`sample_review_ratio`）**仍零脚本消费**——R18 事故的对症药尚未装上，属 B2 批次待办
+- token/成本仍不可观测（平台不向主理人暴露成员用量），不以估算冒充
+
+---
+
 ## [v2.2.0] - 2026-09-29
 
 ### 概述（Harness 工程化：把编排纪律从提示词下沉为代码）

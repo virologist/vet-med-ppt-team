@@ -65,4 +65,4 @@
 
 - 元素重叠/文字墙 = **P1**：允许带修复计划中途写回磁盘，但交付前必须为 0
 - 修复期间 P1 挂账须写入 `deck_registry.json`（郅作基维护），`age_days > 3` 冷启动自动报警
-- 本 SOP 与 `sop-stages.md#阶段5`、`adjudication-rules.md` 冲突时，以三者中更严格者为准
+- 本 SOP 与 `sop-stages.md#闸4`、`adjudication-rules.md` 冲突时，以三者中更严格者为准

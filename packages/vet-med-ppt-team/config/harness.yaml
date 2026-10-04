@@ -8,48 +8,60 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "2.2.0"
+version: "3.0.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
-# 只认整数 0-5；任何其它取值（如 "M5A2"）一律判非法，禁止写入 task_state.json
+# v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
+# 只认整数 0-3；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
 stages:
-  0: {name: "任务冻结与澄清", members: [],                                  gate: "user_confirm", next: 1}
-  1: {name: "教学蓝图",       members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
-  2: {name: "证据核验",       members: ["dvm-content-expert"],              gate: "user_confirm", next: 3}
-  3: {name: "页面级教学设计", members: ["pedagogy-architect", "visual-slide-designer"], gate: "user_confirm", next: 4}
-  4: {name: "迭代修订",       members: ["auto"],                            gate: "auto",        next: 5}
-  5: {name: "制作交付",       members: ["ppt-producer"],                    gate: "gate_script", next: null}
+  0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", next: 1}
+  1: {name: "闸2 设计（蓝图∥证据）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
+  2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", next: 3}
+  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: null}
 
 # ── 成员注册表：职责、工具白名单、降级通道 ────────────────────
-# tools_whitelist 为"最小必要"；宿主不支持该字段时由主理人按本表人工约束
+# 工具白名单说明：WorkBuddy 专家包**不支持** agent frontmatter 的 tools 字段
+# （2026-09-30 commit cd6fc41 实测确认，属平台铁律）。
+# 因此最小权限靠「人设装配（assemble_spawn_prompt.py）+ 任务包约束」实现，
+# 本表是主理人编排时的意图声明，供 preflight 与人工核对。
 members:
   dvm-content-expert:
     duty: "证据核验与分级（唯一内容权威）"
     tools_whitelist: ["Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch", "DeferExecuteTool"]
-    writes_allowed: false          # 除回传外不落盘业务产物
+    writes_allowed: false
+    spawn: "常驻（L1+ 必调）"
     fallback: "general-purpose+persona"
   pedagogy-architect:
     duty: "教学蓝图与页表教学列（含 speaker_note / page_role）"
     tools_whitelist: ["Read", "Write"]
     writes_allowed: true
+    spawn: "常驻（L1+ 必调）"
     fallback: "general-purpose+persona"
   visual-slide-designer:
-    duty: "视觉规则引擎、版面外科判据、抽样复核"
+    duty: "高价值页人工设计 + 抽样复核裁决（红线参数与外科判据已下沉 yaml/SOP/脚本）"
     tools_whitelist: ["Read", "Write"]
     writes_allowed: true
+    spawn: "常驻（L2+）；L1 按需"
     fallback: "general-purpose+persona"
   ppt-producer:
-    duty: "写回门禁、台账、批量脚本驾驶"
+    duty: "门禁与台账的**职责保留**；v3.0.0 起不再常驻 spawn，改按需调用"
     tools_whitelist: ["Read", "Bash", "Write"]
     writes_allowed: true
-    fallback: "script_pipeline"   # 门禁本质是脚本，成员不可用时由脚本直接兜底
+    spawn: "按需（L3 批量 / 门禁异常 / 台账重建时）"
+    fallback: "script_pipeline"   # 门禁本质是脚本，成员不可用时由 harness gate 直跑
+  verifier:
+    duty: "独立验证（V 层）：终检独立复算、裁判口径第二签、挂账审判"
+    tools_whitelist: ["Read", "Bash", "Grep", "Glob"]
+    writes_allowed: true          # 只允许写验证报告，不得改课件
+    spawn: "按需（闸4 必调 + 口径变更时）"
+    fallback: "script_pipeline"   # 无成员时退化为 harness gate + verify-artifact 组合
 
-# ── 复杂度分级 → spawn 计划（确定性路由，不再靠主理人临场判断）──
+# ── 复杂度分级 → spawn 计划（v3.0.0：默认计划不含 ppt-producer，含 verifier）──
 routing:
-  L0: {team_create: false, spawn: [],                                                   confirm_gates: 1}
-  L1: {team_create: true,  spawn: ["按需1-2成员"],                                      confirm_gates: 2}
-  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "ppt-producer"], confirm_gates: 4}
-  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "ppt-producer"], confirm_gates: 6, red_team: true}
+  L0: {team_create: false, spawn: [],                                    confirm_gates: 1}
+  L1: {team_create: true,  spawn: ["pedagogy-architect|dvm-content-expert（按需1-2名）"], confirm_gates: 2}
+  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2}
+  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier", "ppt-producer（批量/台账）"], confirm_gates: 2, red_team: true}
 
 # ── 降级协议（v2.2.0 新增：成员不可调度时不再整链阻断）──────────
 fallback:

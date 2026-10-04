@@ -4,7 +4,7 @@
 > 制定依据：2026-09-29 基线实测——成员不可调度导致整链阻断、静默降级无人察觉、成本与耗时零计量。
 > 原则：**能用代码约束的，绝不靠自觉**。本文件只说明"什么时候跑哪个命令"，规则真身在 yaml。
 
-## 1. 开工三步（阶段0 内必做，缺一不可）
+## 1. 开工三步（闸1 内必做，缺一不可）
 
 ```bash
 H="python3 <专家包>/scripts/harness.py"
@@ -35,7 +35,7 @@ $H state init --workflow WF-1 --stage 0 --workspace "$W"
 
 ## 3. 状态机纪律
 
-- `current_stage` **只接受 0–5 整数**；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
+- `current_stage` **只接受 0–3 整数**（v3.0.0 四道闸）；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
 - `task_state.json` 只允许 `context.state_allowed_keys` 白名单内的键（防 27KB/32 键式膨胀）
 - 每次阶段切换：`state set --stage N` → 自动追加 `stage_history`，并写 trace
 
@@ -60,14 +60,34 @@ $H budget check --kind spawn            # 剩余额度查询
 ## 6. 门禁统一入口（不再裸调 verify_deck）
 
 ```bash
-$H gate --deck <课件.pptx> --hours 2 --level all
+$H gate --deck <课件.pptx> --hours <N> --level P0|all
 ```
 
 - exit 0/1/2/3 语义不变（通过 / P0 / P1 / P2）
 - **exit 4 = 运行错误**（脚本 bug 或文件不可读），**走缺陷回流修脚本，不得当作课件红灯打回成员**
+- ⚠️ **`--hours` 必填**（v3.0.0）：课时口径在闸 1 冻结并显式声明。**禁用按可见页数反推课时的 `--auto-hours`**——那是自证式通过（页数永远"符合"自己推导的档位），历史上正是它掩盖了真实的"课时不达标"
 - 每次调用自动写 trace（退出码、耗时、stderr 尾部）
+- **P2 覆盖率含机器草稿**，但输出会单独报 `machine_note_ratio`（AI 草稿页 / 已备注文页）；交付物必须明示该比例并标"待教师复核"（裁决④）
 
-## 7. 收尾
+## 7. 唯一裁判（B0：结论可比的前提）
+
+**全包只允许一份权威门禁**：`scripts/verify_deck.py`（SSOT）。理由：它具备 P0/P1/P2/P3 分级与退出码语义、3 个 None 崩溃修复史、trace 集成、judge 溯源字段。
+
+- ❌ **禁止**在包内出现第二份 `verify_deck.py`（`ensure_settings.py` 第 6 项会拦）
+- ❌ **禁止**任何脚本私自定义分级常量（`P0_KEYS` 之类）——分级唯一定义在 `config/visual-rules.yaml#severity`
+- 其它系统（如课程工作区的 `vet-ppt-pipeline` skill）里的同类脚本，只能是**非门禁工具**：快速体检、现场抽查，**不得产生放行结论**
+- 台账每条门禁结论必须记 `judge_provenance`（脚本绝对路径 + 角色 SSOT + 版本 + 等级 + 课时口径）
+- 口径变更（改 `severity` / 改阈值 / 改判定逻辑）**须经 verifier 第二签**，否则无效
+
+## 8. 工具白名单的平台铁律（不要再加回去）
+
+⚠️ **WorkBuddy 专家包不支持在 agent frontmatter 声明 `tools:` 字段**（2026-09-30 实测确认，已回退 v2.2.0 的相关改动）。
+最小权限的正确实现是：
+1. **人设装配**：`assemble_spawn_prompt.py --member <ID> --task-file <绝对路径> --check-task-package`（把成员 MD 全文 + 资源绝对路径确定性注入）
+2. **任务包约束**：在 `objective / output_format / constraints / task_boundary` 四要素里写清"不做什么"
+3. `config/harness.yaml#members[*].tools_whitelist` 是**主理人的编排意图声明**，供 preflight 与人工核对，不是平台强制
+
+## 9. 收尾
 
 ```bash
 $H trace report --workspace "$W"   # 事件计数、按成员统计、阶段耗时（秒）

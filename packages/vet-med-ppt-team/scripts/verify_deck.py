@@ -116,6 +116,10 @@ def _load_threshold():
 
 THRESHOLD = _load_threshold()
 
+# v3.0.0：机器草稿标记（与 inject_notes.py 注入的标记一致）。
+# 裁决④：机器草稿**计入** P2 覆盖率，但必须单独统计占比并在交付物明示。
+_MACHINE_NOTE_MARK = "AI草稿"
+
 # 问题类型 → 分级（从 yaml severity 反转生成）
 _TYPE_LEVEL = {}
 for _lv in ("P0", "P1", "P2"):
@@ -440,6 +444,7 @@ def verify(path, hours=3, strict=False):
         "overlap": 0, "color_chaos": 0, "text_wall": 0,
         "empty_slides": 0, "no_notes": 0, "unknown_font": 0,
         "bleed_decor": 0, "parse_errors": 0, "xml_fallback_slides": 0,
+        "machine_notes": 0,
     }
 
     visible = []
@@ -582,9 +587,13 @@ def verify(path, hours=3, strict=False):
 
         # ---------- 8. 备注 ----------
         try:
-            has_note = slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip()
+            note_text = slide.notes_slide.notes_text_frame.text.strip() if slide.has_notes_slide else ""
         except Exception:
-            has_note = False
+            note_text = ""
+        has_note = bool(note_text)
+        # v3.0.0：机器草稿单独计数（裁决④：机器草稿计入覆盖率，但必须单独统计占比并在交付物明示）
+        if has_note and _MACHINE_NOTE_MARK in note_text:
+            stats["machine_notes"] += 1
         if not has_note:
             stats["no_notes"] += 1
             issues.append({"slide": idx, "type": "缺备注", "detail": "该页无讲稿备注", "snippet": ""})
@@ -624,15 +633,22 @@ def verify(path, hours=3, strict=False):
 
     note_cov = 1.0 if n == 0 else round((n - stats["no_notes"]) / n, 3)
     p2_block = note_cov < THRESHOLD["p2_note_coverage"]
+    # 机器草稿占比（裁决④）：计入覆盖率，但必须单独报出，供交付物明示
+    noted = n - stats["no_notes"]
+    machine_ratio = round(stats["machine_notes"] / noted, 3) if noted else 0.0
 
     p3 = stats["unknown_font"] + stats["parse_errors"] + stats["bleed_decor"]
 
     stats["note_coverage"] = note_cov
+    stats["machine_note_pages"] = stats["machine_notes"]
+    stats["machine_note_ratio"] = machine_ratio
 
     return {"stats": stats, "red": red, "issues": issues,
             "gate": {"p0": p0, "p1": p1, "note_coverage": note_cov,
                      "p2_threshold": THRESHOLD["p2_note_coverage"],
-                     "p2_block": p2_block, "p3": p3}}
+                     "p2_block": p2_block, "p3": p3,
+                     "machine_note_ratio": machine_ratio,
+                     "machine_note_pages": stats["machine_notes"]}}
 
 
 def gate_decision(gate, level):
@@ -649,7 +665,10 @@ def gate_decision(gate, level):
 def main():
     ap = argparse.ArgumentParser(description="教学课件机械验证器（分级门禁 v2.0.0）")
     ap.add_argument("deck", help="课件路径 .pptx")
-    ap.add_argument("--hours", type=float, default=3, help="课时数（默认3；1.5=1小时教学单元60min档）")
+    ap.add_argument("--hours", type=float, required=True,
+                    help="课时数（v3.0.0 起必填：1 / 1.5 / 2 / 3 / 4。"
+                         "不再默认 3——默认值会凭空判出「课时不达标」，是 B0 口径混乱的源头之一。"
+                         "1.5=1小时教学单元60min档；扩展阅读页不计入可见页，由阶段0 冻结口径")
     ap.add_argument("--level", choices=["P0", "P1", "all"], default="all",
                     help="门禁级别：P0=写回门禁 / P1=中检门禁 / all=交付门禁（默认）")
     ap.add_argument("--json", help="输出 JSON 报告路径")
@@ -679,15 +698,23 @@ def main():
     blocked_by, code = gate_decision(g, a.level)
 
     print(f"\n{'='*62}\n课件验证报告：{s['file']}")
+    print(f"裁判：SSOT verify_deck.py（分级门禁 v3.0.0）｜阈值源 config/visual-rules.yaml"
+          f"｜等级 {a.level}｜课时口径 {a.hours}（显式声明）")
     print(f"总页 {s['total_slides']} / 可见 {s['visible_slides']} / 隐藏 {s['hidden_slides']} / 课时 {s['hours']}")
     print(f"目录页:{'✓' if s['has_toc'] else '✗'}  题页:{'✓' if s['has_quiz'] else '✗'}  课时匹配:{'✓' if s['hours_ok'] else '✗'}")
     print(f"{'='*62}")
 
-    print("分级门禁（v2.0.0）：")
+    print("分级门禁（v3.0.0）：")
     print(f"  {'🔴' if g['p0'] else '🟢'} P0 硬阻断（写回前必须=0）      {g['p0']}")
     print(f"  {'🔴' if g['p1'] else '🟢'} P1 必清（交付前必须=0）        {g['p1']}")
     cov = f"{g['note_coverage']*100:.1f}%"
     print(f"  {'🔴' if g['p2_block'] else '🟢'} P2 备注覆盖率（阈值 {g['p2_threshold']*100:.0f}%）  {cov}")
+    if g.get("machine_note_pages"):
+        print(f"    ├ 其中机器草稿【AI草稿·待教师复核】：{g['machine_note_pages']} 页"
+              f"（占已备注文 {g['machine_note_ratio']*100:.0f}%）——计入覆盖率，"
+              f"但交付物必须明示并经教师复核后转正")
+    else:
+        print(f"    └ 机器草稿 0 页（备注均为人工/AI-协作产出）")
     print(f"  ⚪ P3 明示（继承未取到/解析异常/装饰出血）  {g['p3']}")
     if s["xml_fallback_slides"]:
         print(f"  ⚠ XML 兜底解析页数：{s['xml_fallback_slides']}（该页部分形状经原始XML判定）")
@@ -713,6 +740,15 @@ def main():
     if a.json:
         r["exit_code"] = code
         r["level"] = a.level
+        # v3.0.0：裁判溯源信息随报告落盘——台账据此判断这条结论出自哪份脚本
+        r["judge"] = {
+            "script": os.path.abspath(__file__),
+            "role": "SSOT",
+            "version": "3.0.0",
+            "level_arg": a.level,
+            "hours_arg": a.hours,
+            "thresholds": os.path.abspath(_RULES_PATH),
+        }
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump(r, f, ensure_ascii=False, indent=2)
         print(f"\nJSON 报告已存：{a.json}")

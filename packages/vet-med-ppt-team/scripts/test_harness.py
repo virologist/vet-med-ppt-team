@@ -112,6 +112,19 @@ def main():
         check("产物核验：不存在→拒、存在→过、体积对不上→告警",
               rc == 1 and rc2 == 0 and rc3 == 1, f"got {rc},{rc2},{rc3}")
 
+        # 7-ter. 回传信封机器校验（约定 → 代码）
+        good = os.path.join(w, "env_good.md")
+        with open(good, "w", encoding="utf-8") as f:
+            f.write('# 产出\n```json\n{"agent_id":"x","task_id":"T1","phase":"3",'
+                    '"status":"success","confidence":80,"deliverable_summary":"ok"}\n```\n')
+        bad = os.path.join(w, "env_bad.md")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write('# 产出\n```json\n{"agent_id":"x","status":"成功"}\n```\n')
+        rc_e1, _, _ = run(["verify-envelope", "--path", good, "--workspace", w])
+        rc_e2, _, _ = run(["verify-envelope", "--path", bad, "--workspace", w])
+        check("信封校验：合规→过、缺字段→退回", rc_e1 == 0 and rc_e2 == 1,
+              f"got {rc_e1},{rc_e2}")
+
         # 8. 降级探测：构造一个把成员登记为 general-purpose 的假团队
         teams = os.path.expanduser("~/.workbuddy/teams")
         fake = os.path.join(teams, "_harness_selftest")
@@ -138,12 +151,50 @@ def main():
     # 9. 门禁冒烟（可选）：退出码不得为 4（运行错误）
     if a.deck:
         print(f"-- 门禁冒烟：{os.path.basename(a.deck)}")
-        p = subprocess.run([sys.executable, VERIFY, a.deck, "--level", "all"],
+        p = subprocess.run([sys.executable, VERIFY, a.deck, "--hours", "2", "--level", "all"],
                            capture_output=True, text=True)
         check(f"verify_deck 未崩溃（exit={p.returncode}，4=运行错误）", p.returncode != 4,
               (p.stderr or "")[:200])
     else:
         print("-- 门禁冒烟：未提供 --deck，跳过")
+
+    # 10. 机器草稿占比统计（裁决④：计入覆盖率但单独统计）——用合成样本，不依赖真实课件
+    print("-- 机器草稿占比（合成样本）")
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        d = tempfile.mkdtemp()
+        synth = os.path.join(d, "synth_note.pptx")
+        prs = Presentation()
+        for i in range(3):
+            sl = prs.slides.add_slide(prs.slide_layouts[5])
+            tf = sl.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1)).text_frame
+            tf.text = f"第{i+1}页"
+            tf.paragraphs[0].runs[0].font.size = Pt(24)
+            if i == 0:
+                sl.notes_slide.notes_text_frame.text = "教师人工讲稿：本页定位与讲法。"
+            if i == 1:
+                sl.notes_slide.notes_text_frame.text = "【AI草稿·待教师复核】机器草稿…"
+        prs.save(synth)
+        out = os.path.join(d, "r.json")
+        p = subprocess.run([sys.executable, VERIFY, synth, "--hours", "1",
+                            "--level", "all", "--json", out],
+                           capture_output=True, text=True)
+        r = json.load(open(out, encoding="utf-8"))
+        g = r["gate"]
+        check("机器草稿单独计数且计入覆盖率（2 页备注 / 1 页机器 = 50%）",
+              g.get("machine_note_pages") == 1 and abs(g.get("machine_note_ratio", 0) - 0.5) < 1e-6,
+              f"got pages={g.get('machine_note_pages')} ratio={g.get('machine_note_ratio')}")
+        check("judge 溯源字段落盘（SSOT + 版本 + 课时口径）",
+              r.get("judge", {}).get("role") == "SSOT" and r.get("judge", {}).get("hours_arg") == 1.0,
+              json.dumps(r.get("judge"), ensure_ascii=False)[:120])
+        # --hours 必填
+        p2 = subprocess.run([sys.executable, VERIFY, synth], capture_output=True, text=True)
+        check("--hours 缺省被拒（防默认值凭空判课时不达标）", p2.returncode != 0)
+    except ImportError:
+        print("   （跳过：python-pptx 未安装）")
+    except Exception as e:
+        check("机器草稿占比统计", False, str(e)[:120])
 
     print(f"\n通过 {len(PASS)} / 失败 {len(FAIL)}")
     if FAIL:

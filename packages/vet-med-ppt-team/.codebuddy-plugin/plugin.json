@@ -1,6 +1,6 @@
 {
   "name": "vet-med-ppt-team",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "A five-member veterinary medicine teaching-PPT design team that turns any animal-medicine topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation.",
   "author": {
     "name": "TZUVet",
@@ -11,7 +11,8 @@
     "./agents/dvm-content-expert.md",
     "./agents/pedagogy-architect.md",
     "./agents/visual-slide-designer.md",
-    "./agents/ppt-producer.md"
+    "./agents/ppt-producer.md",
+    "./agents/verifier.md"
   ],
   "expertType": "team",
   "agentName": "vet-med-ppt-team-team-lead",
@@ -21,7 +22,8 @@
       "dvm-content-expert",
       "pedagogy-architect",
       "visual-slide-designer",
-      "ppt-producer"
+      "ppt-producer",
+      "verifier"
     ]
   },
   "displayName": {
@@ -132,10 +134,25 @@
         "zh": "郅作基"
       },
       "profession": {
-        "en": "PPT Producer",
-        "zh": "PPT制作师"
+        "en": "Courseware Execution Engineer (on-demand)",
+        "zh": "课件执行工程师（按需调用）"
       },
       "avatar": "avatars/ppt-producer.png",
+      "role": "member",
+      "progression": "Courseware Execution Engineer (on-demand)"
+    },
+    {
+      "id": "verifier",
+      "displayName": {
+        "en": "Du Hengyan",
+        "zh": "都衡言"
+      },
+      "progression": "Independent Verifier",
+      "profession": {
+        "en": "Independent Verifier",
+        "zh": "独立验证官"
+      },
+      "avatar": "avatars/verifier.png",
       "role": "member"
     }
   ]
