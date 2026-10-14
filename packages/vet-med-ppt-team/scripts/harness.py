@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v2.2.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.4.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -10,16 +10,25 @@ harness.py — vet-med-ppt-team 编排内核（确定性工程层）v2.2.0
      主理人完全不知情 → 静默降级。
   3. 全程无执行日志、无预算计数、无耗时统计，A/B 无法对比。
 
+v3.4.0（2026-10-14 专家团治理批）：
+  + R1 doctor 子命令——LLM 友好"可发现性表"，一次返回所有 9 子命令的 usage/examples
+  + R2 修 budget check 矛盾（kind=None 路径返回 0 退出而非 exceeded=true）
+  + R3 修 trace report 死值（event='event' 标 + stage_seconds 空字典注释 + 4 缺失成员提示）
+  + R5 spawn 子命令——主理人/脚本可显式 spawn 某 agent 写 trace
+  + R6 token 估算字段（input_chars/output_chars）入 trace
+
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
 不做任何语义判断（识别、匹配、权衡仍归 LLM 与主理人）。
 
-用法：
+用法（推荐先跑 `python3 scripts/harness.py doctor` 看可发现性表）：
+    python3 scripts/harness.py doctor     # 所有子命令的 usage/examples/exit_codes
     python3 scripts/harness.py preflight  [--team <团队名>] [--workspace <路径>]
     python3 scripts/harness.py route      --level L0|L1|L2|L3
     python3 scripts/harness.py state init|get|set|validate  [--workspace <路径>] [--stage N] [--key K --value V]
     python3 scripts/harness.py budget check|spend|reset --kind spawn|react|rework [--n 1] [--workspace <路径>]
     python3 scripts/harness.py trace log|report  [--event E] [--actor A] [--detail D] [--workspace <路径>]
+    python3 scripts/harness.py spawn     --agent <成员名> --task-id <id> [--stage N] [--input-bytes N] [--output-bytes N] [--workspace <路径>]
     python3 scripts/harness.py gate --deck <课件.pptx> [--hours 2] [--level P0|P1|all] [--workspace <路径>]
     python3 scripts/harness.py template-audit --root <课件根目录> [--json <出>] [--require-registered] [--workspace <路径>]
 
@@ -262,6 +271,12 @@ def cmd_budget(args):
         return 0
 
     if args.action == "check":
+        # v3.4.0 R2 修：kind 缺省时不再返回"used=0 limit=0 exceeded=true"的矛盾状态
+        if not args.kind:
+            print(json.dumps({"kind": None, "used": 0, "limit": 0, "exceeded": False,
+                              "remaining": 0, "hint": "指定 --kind spawn|react|rework"},
+                             ensure_ascii=False))
+            return 2  # 用法错误，提示重跑
         used = bud.get(args.kind, 0)
         lim = int(b.get(limit_map.get(args.kind, ""), 0))
         print(json.dumps({"kind": args.kind, "used": used, "limit": lim,
@@ -307,7 +322,7 @@ def cmd_trace(args):
         if not os.path.exists(p):
             print("（无 trace 记录）")
             return 0
-        ev, by_event, by_actor = [], {}, {}
+        ev, by_event, by_actor, dead_event_count = [], {}, {}, 0
         with open(p, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -318,8 +333,17 @@ def cmd_trace(args):
                 except Exception:
                     continue
                 ev.append(r)
+                # v3.4.0 R3-1：event='event' 是 trace log 漏写 --event 的死值
+                if r.get("event") == "event":
+                    dead_event_count += 1
                 by_event[r.get("event")] = by_event.get(r.get("event"), 0) + 1
                 by_actor[r.get("actor")] = by_actor.get(r.get("actor"), 0) + 1
+        # v3.4.0 R3-3：已知 6 成员 vs 实际 actor 缺口
+        expected_actors = {"vet-med-ppt-team-team-lead", "dvm-content-expert",
+                           "pedagogy-architect", "visual-slide-designer",
+                           "ppt-producer", "verifier"}
+        seen = set(by_actor.keys())
+        missing_actors = expected_actors - seen
         # 阶段耗时：stage_enter → stage_exit 配对
         spans, open_at = {}, {}
         for r in ev:
@@ -336,6 +360,12 @@ def cmd_trace(args):
                     pass
         out = {"events_total": len(ev), "by_event": by_event, "by_actor": by_actor,
                "stage_seconds": {k: v for k, v in spans.items()},
+               "stage_seconds_status": "未启用 stage 追踪（需显式发 stage_enter/exit 事件）" if not spans else "ok",
+               "dead_event_count": dead_event_count,
+               "dead_event_hint": f"{dead_event_count} 条 event='event' 死值（trace log 漏写 --event）" if dead_event_count else "ok",
+               "missing_actors": sorted(missing_actors),
+               "missing_actors_hint": (f"未观测到 {len(missing_actors)} 成员事件，需 spawn 时显式 trace log"
+                                       if missing_actors else "ok"),
                "first_ts": ev[0]["ts"] if ev else None, "last_ts": ev[-1]["ts"] if ev else None}
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
@@ -583,13 +613,79 @@ def cmd_template_audit(args):
 
 
 # ─────────────────────────── main ───────────────────────────
+def cmd_doctor(args):
+    """v3.4.0 R1：LLM 友好"可发现性表"——一次返回所有子命令的 usage/examples/exit_codes。
+    根因（2026-10-14 实测 6 步 3 步参数错位）：argparse 仅在运行时暴露错误，
+    AI 冷启动/新会话无 README 可查，本子命令填补"可发现性"缺口。
+    """
+    table = [
+        # (子命令, 一句话用途, 必填参数, 常用可选, 退出码, 示例)
+        ("doctor",     "可发现性表（你正在看）",                     "无",      "无",          "0", "harness.py doctor"),
+        ("preflight",  "开工前成员可用性预检",                        "--team",  "--workspace", "0/1", "harness.py preflight --team vet-med-ppt-team"),
+        ("route",      "复杂度 L0-L3 → spawn 计划",                  "--level", "--workspace", "0/1", "harness.py route --level L2"),
+        ("state",      "任务状态机读写（init/get/set/validate）",      "action",  "--stage/--key/--value", "0/1/2", "harness.py state set --stage 1 --key deliverable --value <path>"),
+        ("budget",     "预算计数（spawn/react/rework）",             "action",  "--kind/--n",  "0/1/2", "harness.py budget check --kind spawn"),
+        ("trace",      "执行日志 JSONL（log/report）",                "action",  "--event/--actor/--detail", "0/2", "harness.py trace report"),
+        ("spawn",      "v3.4.0：显式记录某成员 spawn（带 token 估算）",  "--agent", "--task-id/--input-bytes/--output-bytes", "0/1/2", "harness.py spawn --agent dvm-content-expert --task-id t1 --input-bytes 1200 --output-bytes 800"),
+        ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
+        ("verify-artifact", "核验成员自报落盘（反自评失真硬校验）",    "--path",  "--expect-bytes/--min-bytes", "0/1", "harness.py verify-artifact --path x.md --expect-bytes 1200"),
+        ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
+        ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
+    ]
+    out = {"version": "v3.4.0", "executable": __file__,
+           "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
+           "exit_codes": {
+               "0": "正常通过",
+               "1": "存在需处置项（降级/预算超/状态非法/P0 阻断）",
+               "2": "用法错误（缺参数/参数非法）",
+               "3": "依赖缺失（脚本/文件未找到）",
+               "4": "运行错误（脚本 bug/IO 异常）",
+               "5": "闸4.5 三源核验未达标"
+           },
+           "commands": [
+               {"name": n, "purpose": p, "required": r, "optional": o,
+                "exit": e, "example": x}
+               for (n, p, r, o, e, x) in table
+           ]}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_spawn(args):
+    """v3.4.0 R5：主理人/脚本可显式 spawn 某 agent 写 trace。
+    解决：trace 之前只能在 gate/lint/template_audit 三处自动写，4 成员（dvm/pedagogy/
+    visual/verifier）零事件。spawn 子命令让"主理人调了 dvm"这件事有 trace。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    members = cfg.get("members", {})
+    if args.agent not in members:
+        print(f"⚠ agent={args.agent!r} 不在 members 表（{list(members.keys())}）"
+              f"——仍记录（可能是外部 agent）", file=sys.stderr)
+    detail = {
+        "task_id": args.task_id,
+        "stage": getattr(args, "stage", None),
+        "input_chars": getattr(args, "input_bytes", 0),
+        "output_chars": getattr(args, "output_bytes", 0),
+    }
+    if detail["input_chars"] or detail["output_chars"]:
+        detail["approx_tokens"] = round((detail["input_chars"] + detail["output_chars"]) / 4)
+    rec = _trace(w, cfg, "agent_spawn", args.agent, detail)
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v2.2.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.4.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def _ws(sp):  # 允许 --workspace 写在子命令之前或之后
         sp.add_argument("--workspace", default=argparse.SUPPRESS, help="同主命令的 --workspace")
+
+    p = sub.add_parser("doctor", help="v3.4.0：可发现性表——所有子命令的 usage/examples/exit_codes")
+    _ws(p)
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("preflight", help="开工前成员可用性与静默降级预检")
     p.add_argument("--team", default="", help="团队名（读 ~/.workbuddy/teams/<team>/config.json）")
@@ -624,6 +720,16 @@ def main():
     p.add_argument("--detail", default="{}")
     _ws(p)
     p.set_defaults(func=cmd_trace)
+
+    # v3.4.0 R5：spawn 子命令——显式记录某成员 spawn 写 trace
+    p = sub.add_parser("spawn", help="v3.4.0：显式记录某成员 spawn（带 token 估算）")
+    p.add_argument("--agent", required=True, help="成员名（dvm-content-expert/pedagogy-architect/...）")
+    p.add_argument("--task-id", required=True, help="任务 ID（state.task_id 锚定）")
+    p.add_argument("--stage", type=int, default=None, help="当前闸号（0-4）")
+    p.add_argument("--input-bytes", type=int, default=0, help="输入 token 估算（按 1 token ≈ 4 chars）")
+    p.add_argument("--output-bytes", type=int, default=0, help="输出 token 估算（按 1 token ≈ 4 chars）")
+    _ws(p)
+    p.set_defaults(func=cmd_spawn)
 
     p = sub.add_parser("gate", help="包装 verify_deck，统一退出码语义并落 trace")
     p.add_argument("--deck", required=True)
