@@ -31,6 +31,12 @@ v3.4.2（2026-10-15 P0-P3 全量执行）：
   + P1-2 member_return/degrade 事件——成员回传与降级落 trace
   + P1-4 trace report 增 token 汇总（按 actor 聚合 + 预算使用率）
 
+v3.4.3（2026-10-15 采用迁移批，裁决=稳健核心10项）：
+  + A1 堵 --event 死值源（trace log 漏写/显式死值一律 exit 2，v3.4.0 R3 只清了已生数据）
+  + A2 verify-ref 增 --online（PubMed esearch 联网核验）+ --write-back（受控写回：
+    门禁→.bak 备份→写回→复检）——消除 v3.4.2 P0-2 "脚本直写绕过 verify-ref" 旁路
+  + E6 doctor 首跑归档；A3 eval 周期化（外部 automation 承接，不在本文件）
+
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
 不做任何语义判断（识别、匹配、权衡仍归 LLM 与主理人）。
@@ -327,6 +333,13 @@ def cmd_trace(args):
     cfg, _ = load_cfg()
     w = wkspace(args)
     if args.action == "log":
+        # v3.4.3 A1：死值防呆——漏写 --event（None）或显式传 "event" 都拒绝写入
+        if not args.event or args.event == "event":
+            sys.stderr.write(
+                "[trace log] --event 必填且不得为死值 \"event\"（v3.4.3 A1）。\n"
+                "  事件名请用语义名：gate/sweep/eval/template_audit/agent_spawn/"
+                "stage_enter/stage_exit/verify_ref/doctor/preflight 等。\n")
+            return 2
         try:
             d = json.loads(args.detail) if args.detail else {}
         except Exception:
@@ -572,22 +585,8 @@ def _check_one_ref(src: dict) -> dict:
     return {"verdict": "ok", "reason": "通过预检", "fix_hint": ""}
 
 
-def cmd_verify_ref(args):
-    """v3.4.2 P0-3：cases_library.json 文献引用预检。批量发现假 PMID/格式错/缺时间戳。
-    exit 0=全过；1=存在需处置项；2=文件错。
-    """
-    cfg, _ = load_cfg()
-    w = wkspace(args)
-    p = os.path.abspath(args.path)
-    if not os.path.isfile(p):
-        print(f"❌ cases_library 不存在: {p}", file=sys.stderr)
-        return 2
-    try:
-        d = json.loads(open(p, encoding="utf-8").read())
-    except Exception as e:
-        print(f"❌ 解析失败: {e}", file=sys.stderr)
-        return 2
-    cases = d.get("cases", d) if isinstance(d, dict) else d
+def _static_ref_report(cases):
+    """v3.4.3 A2：静态引用预检（自 cmd_verify_ref 抽出——--online 修复后需复跑同一逻辑）。"""
     report = {"total": len(cases), "fake": [], "stale_ok": [], "suspicious": [],
               "format_err": [], "ok": [], "fake_unverified": []}
     for c in cases:
@@ -602,6 +601,107 @@ def cmd_verify_ref(args):
                 continue
             report[v].append({"case_id": sid, "ref": src.get("ref"),
                               "reason": r["reason"]})
+    return report
+
+
+def _pmid_online_check(pmids):
+    """v3.4.3 A2：PubMed esearch 联网确认 PMID 真实存在（反"假核验"闭环核心）。
+    返回 {pmid: True/False/None}——True=存在 False=esearch 无记录 None=网络失败。
+    请求间 sleep 0.4s（NCBI 无 key 限速 3/s）；None 不参与写回判定（防半核验落盘）。
+    """
+    import urllib.request as _u
+    out = {}
+    base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    for pmid in pmids:
+        try:
+            url = f"{base}?db=pubmed&term={pmid}%5Buid%5D&retmode=json"
+            with _u.urlopen(url, timeout=15) as resp:
+                j = json.loads(resp.read().decode("utf-8"))
+            ids = (j.get("esearchresult") or {}).get("idlist") or []
+            out[pmid] = str(pmid) in [str(x) for x in ids]
+        except Exception:
+            out[pmid] = None
+        time.sleep(0.4)  # NCBI 限速（无 key 3 req/s）
+    return out
+
+
+def cmd_verify_ref(args):
+    """v3.4.2 P0-3（v3.4.3 A2 增强）：cases_library.json 文献引用预检。
+    默认：静态预检（假 PMID/格式错/缺时间戳红线），只读。
+    --online：对未核验的 pubmed 来源联网 PubMed esearch 确认，命中补 ok+verified_at。
+    --write-back：受控写回（静态门禁 → .bak 备份 → 写回 → 复检；net_err>0 拒写）。
+    背景：v3.4.2 P0-2 曾用一次性脚本直写 cases_library.json 绕过本命令（诊断 3.1 实证）——
+    A2 后「联网核验+写回」收编为本命令唯一受控路径，旁路消除。
+    exit 0=全过；1=存在需处置项；2=文件错。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    p = os.path.abspath(args.path)
+    if not os.path.isfile(p):
+        print(f"❌ cases_library 不存在: {p}", file=sys.stderr)
+        return 2
+    try:
+        d = json.loads(open(p, encoding="utf-8").read())
+    except Exception as e:
+        print(f"❌ 解析失败: {e}", file=sys.stderr)
+        return 2
+    cases = d.get("cases", d) if isinstance(d, dict) else d
+    report = _static_ref_report(cases)
+
+    # ── v3.4.3 A2：--online 联网核验（esearch 命中 → 补 ok+verified_at）──
+    online_summary = None
+    if getattr(args, "online", False):
+        todo = {}
+        for c in cases:
+            for src in (c.get("sources") or []):
+                if (src.get("kind") or "").lower() != "pubmed":
+                    continue
+                m = _PMID_RE.match((src.get("ref") or "").strip())
+                if not m or m.group(1) in _FAKE_PMIDS:
+                    continue
+                if not (src.get("ok") and src.get("verified_at")):
+                    todo[m.group(1)] = src
+        online_summary = {"checked": len(todo), "hit": 0, "miss": 0, "net_err": 0}
+        if todo:
+            res = _pmid_online_check(sorted(todo))
+            for pmid, verdict in res.items():
+                src = todo[pmid]
+                if verdict is True:
+                    src["ok"] = True
+                    src["verified_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+                    online_summary["hit"] += 1
+                elif verdict is False:
+                    online_summary["miss"] += 1
+                else:
+                    online_summary["net_err"] += 1
+            # 联网修复后复跑静态预检（ok 补齐后 stale_ok 应清零）
+            report = _static_ref_report(cases)
+        print(f"🌐 online 核验：checked={online_summary['checked']} "
+              f"hit={online_summary['hit']} miss={online_summary['miss']} "
+              f"net_err={online_summary['net_err']}")
+
+    # ── v3.4.3 A2：--write-back 受控写回（门禁 → 备份 → 写回 → 复检）──
+    wrote_back = False
+    if getattr(args, "write_back", False):
+        blockers = (report["fake"] or report["stale_ok"] or report["suspicious"]
+                    or report["format_err"])
+        net_partial = bool(online_summary and online_summary.get("net_err", 0) > 0)
+        if blockers:
+            print("🚫 拒绝写回：静态预检存在需处置项（先处置再 --write-back）",
+                  file=sys.stderr)
+        elif net_partial:
+            print("🚫 拒绝写回：--online 存在网络失败条目（防半核验状态落盘，"
+                  "重跑至 net_err=0 再写）", file=sys.stderr)
+        else:
+            bak = p + ".bak"
+            with open(bak, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+            report = _static_ref_report(cases)   # 写回后复检
+            wrote_back = True
+            print(f"💾 已写回 {p}（备份 {bak}）；复检 fake={len(report['fake'])} "
+                  f"stale_ok={len(report['stale_ok'])} suspicious={len(report['suspicious'])}")
     summary = {
         "total": report["total"],
         "fake_count": len(report["fake"]),
@@ -618,7 +718,10 @@ def cmd_verify_ref(args):
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     _trace(w, cfg, "verify_ref", args.actor or "verifier",
            {"path": p, "fake": len(report["fake"]),
-            "stale_ok": len(report["stale_ok"]), "suspicious": len(report["suspicious"])})
+            "stale_ok": len(report["stale_ok"]), "suspicious": len(report["suspicious"]),
+            "online": bool(getattr(args, "online", False)),
+            "write_back": wrote_back,
+            "online_summary": online_summary})
     if report["fake"] or report["stale_ok"] or report["suspicious"] or report["format_err"]:
         return 1
     return 0
@@ -768,13 +871,13 @@ def cmd_doctor(args):
         ("stage",      "v3.4.1：显式发 stage_enter/exit（填 stage_seconds）", "--action/--stage", "--task-id/--note", "0/2", "harness.py stage --action enter --stage 1"),
         ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
         ("verify-artifact", "核验成员自报落盘（反自评失真硬校验）",    "--path",  "--expect-bytes/--min-bytes", "0/1", "harness.py verify-artifact --path x.md --expect-bytes 1200"),
-        ("verify-ref",     "v3.4.2 P0-3：cases_library 文献引用预检（假 PMID/格式错/缺时间戳）", "--path", "无", "0/1/2", "harness.py verify-ref --path cases_library.json"),
+        ("verify-ref",     "v3.4.2 P0-3：cases_library 文献引用预检（假 PMID/格式错/缺时间戳）", "--path", "--online/--write-back", "0/1/2", "harness.py verify-ref --path cases_library.json --online --write-back"),
         ("sweep",         "v3.4.2 P0-1：递归扫全量 pptx → 收编 deck_registry（v3.1.0 失落的闸外能力）", "--root", "--hours/--level/--max-decks", "0/1/3/4", "harness.py sweep --root <工作区>"),
         ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
     ]
-    out = {"version": "v3.4.2", "executable": __file__,
+    out = {"version": "v3.4.3", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -1121,7 +1224,9 @@ def main():
 
     p = sub.add_parser("trace", help="执行日志（JSONL）")
     p.add_argument("action", choices=["log", "report"])
-    p.add_argument("--event", default="event")
+    # v3.4.3 A1：堵死值源——v3.4.0 R3 只清了已生死值，default="event" 未堵会再生；
+    # log 时必须显式传 --event，漏写或显式传 "event" 一律 exit 2
+    p.add_argument("--event", default=None)
     p.add_argument("--actor", default="main")
     p.add_argument("--detail", default="{}")
     _ws(p)
@@ -1189,9 +1294,13 @@ def main():
     _ws(p)
     p.set_defaults(func=cmd_verify_artifact)
 
-    # v3.4.2 P0-3：文献引用预检（反假 PMID 机器防御）
-    p = sub.add_parser("verify-ref", help="v3.4.2 P0-3：cases_library.json 文献引用预检（假 PMID/格式错/缺时间戳）")
+    # v3.4.2 P0-3：文献引用预检（反假 PMID 机器防御）；v3.4.3 A2 增联网核验+受控写回
+    p = sub.add_parser("verify-ref", help="v3.4.2 P0-3：cases_library.json 文献引用预检（假 PMID/格式错/缺时间戳；A2 增 --online 联网核验 + --write-back 受控写回）")
     p.add_argument("--path", required=True, help="cases_library.json 绝对路径")
+    p.add_argument("--online", action="store_true",
+                   help="v3.4.3 A2：PubMed esearch 联网核验未 verified 的 PMID，命中补 ok+verified_at")
+    p.add_argument("--write-back", dest="write_back", action="store_true",
+                   help="v3.4.3 A2：受控写回（静态门禁→.bak 备份→写回→复检；net_err>0 拒写）")
     p.add_argument("--actor", default="verifier")
     _ws(p)
     p.set_defaults(func=cmd_verify_ref)
