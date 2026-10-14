@@ -21,6 +21,7 @@ harness.py — vet-med-ppt-team 编排内核（确定性工程层）v2.2.0
     python3 scripts/harness.py budget check|spend|reset --kind spawn|react|rework [--n 1] [--workspace <路径>]
     python3 scripts/harness.py trace log|report  [--event E] [--actor A] [--detail D] [--workspace <路径>]
     python3 scripts/harness.py gate --deck <课件.pptx> [--hours 2] [--level P0|P1|all] [--workspace <路径>]
+    python3 scripts/harness.py template-audit --root <课件根目录> [--json <出>] [--require-registered] [--workspace <路径>]
 
 退出码：0=正常  1=存在需处置项（降级/预算超/状态非法）  2=用法错误  3=依赖缺失
 """
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
@@ -515,6 +517,60 @@ def cmd_verify_envelope(args):
     return 0
 
 
+# ─────────────────── 模板审计（v3.2.0-batch3）───────────────────
+def cmd_template_audit(args):
+    """模板盘点 + 登记册审计一步跑（薄封装 theme_fingerprint.batch_report）。
+
+    用途：批量迁移前的"先查册"闸门——未登记指纹的课件不许直接换模板
+    （用户裁决 2：换模板前先查此册，复用先登记）。
+    """
+    sys.path.insert(0, HERE)
+    try:
+        from theme_fingerprint import batch_report
+    except Exception as e:
+        print(f"依赖缺失：theme_fingerprint 导入失败（{e}）", file=sys.stderr)
+        return 3
+    root = os.path.abspath(args.root)
+    if not os.path.isdir(root):
+        print(f"用法错误：--root 不是目录：{root}", file=sys.stderr)
+        return 2
+
+    report = batch_report(Path(root))
+    reg_p = os.path.join(wkspace(args), ".workbuddy", "templates", "template_registry.json")
+    registered = set()
+    if os.path.exists(reg_p):
+        try:
+            with open(reg_p, encoding="utf-8") as f:
+                registered = {e.get("theme_fingerprint") for e in json.load(f)}
+        except Exception as e:
+            print(f"⚠ 登记册解析失败（{e}），按空册处理", file=sys.stderr)
+
+    fps = {fp: c for fp, c in report.get("fingerprint_counts", {}).items()} \
+        if isinstance(report.get("fingerprint_counts"), dict) else {}
+    matched = sorted(fps.keys() & registered)
+    unregistered = sorted(fps.keys() - registered)
+    out = {
+        "ts": now_iso(), "root": root,
+        "decks": report.get("deck_count"), "unique_fps": report.get("unique_count"),
+        "registry_path": reg_p, "registry_size": len(registered),
+        "registered_fps": matched, "unregistered_fps": unregistered,
+        "verdict": "all_registered" if not unregistered else "has_unregistered",
+    }
+    if unregistered:
+        out["advice"] = (f"指纹 {unregistered} 未登记。先 register 再迁移："
+                         f"python template_migrate.py register <模板.pptx> --name <名> "
+                         f"--use-case <场景> --domain <学科>")
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if args.json:
+        os.makedirs(os.path.dirname(os.path.abspath(args.json)) or ".", exist_ok=True)
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+    cfg, _ = load_cfg()
+    _trace(wkspace(args), cfg, "template_audit", "main",
+           {"root": root, "decks": out["decks"], "unregistered": len(unregistered)})
+    return 1 if (unregistered and args.require_registered) else 0
+
+
 # ─────────────────────────── main ───────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v2.2.0")
@@ -584,6 +640,14 @@ def main():
     p.add_argument("--path", required=True)
     _ws(p)
     p.set_defaults(func=cmd_verify_envelope)
+
+    p = sub.add_parser("template-audit", help="模板指纹盘点 + 登记册审计（换模板前先查册）")
+    p.add_argument("--root", required=True, help="课件根目录（递归盘点）")
+    p.add_argument("--json", dest="json", default="", help="审计结果落盘路径")
+    p.add_argument("--require-registered", action="store_true",
+                   help="存在未登记指纹时 exit 1（批量迁移前闸门）")
+    _ws(p)
+    p.set_defaults(func=cmd_template_audit)
 
     a = ap.parse_args()
     sys.exit(a.func(a))

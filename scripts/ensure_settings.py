@@ -58,10 +58,10 @@ MANIFESTS = [
 # 权威门禁：唯一裁判（SSOT）。同名多份 = 裁判失效，见检查 6。
 JUDGE = "verify_deck.py"
 
-# 全脚本清单（检查 5）。v3.2.0-batch2 新增 3 个：extract_assets/ooxml_lint/snapshot
+# 全脚本清单（检查 5）。v3.2.0-batch3 新增 2 个：theme_fingerprint/template_migrate
 REQUIRED_SCRIPTS = [
     "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback）
-    "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope）
+    "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope/template-audit）
     "surgery_deck.py",           # 批量版面外科
     "inject_notes.py",           # 讲稿注入
     "ensure_settings.py",        # 本体检器（自指）
@@ -71,6 +71,9 @@ REQUIRED_SCRIPTS = [
     "extract_assets.py",         # 资产化转换（Batch 1）
     "ooxml_lint.py",             # OOXML 兼容性检查（Batch 2）
     "snapshot.py",               # 快照库（Batch 2）
+    # v3.2.0-batch3 新增
+    "theme_fingerprint.py",      # 主题指纹 + 批量盘点（Batch 3）
+    "template_migrate.py",       # 三档模板迁移 + 登记册（Batch 3）
 ]
 
 N = 10  # 检查项总数（v3.2.0-batch2：7→10）
