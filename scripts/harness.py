@@ -541,17 +541,23 @@ def cmd_template_audit(args):
     if os.path.exists(reg_p):
         try:
             with open(reg_p, encoding="utf-8") as f:
-                registered = {e.get("theme_fingerprint") for e in json.load(f)}
+                # 登记册结构：{"schema_version":…, "templates":[{…, "fingerprint":{"theme":…}}]}
+                for e in json.load(f).get("templates", []):
+                    fp = e.get("fingerprint", {})
+                    theme = fp.get("theme") if isinstance(fp, dict) else fp
+                    if theme:
+                        registered.add(theme)
         except Exception as e:
             print(f"⚠ 登记册解析失败（{e}），按空册处理", file=sys.stderr)
 
-    fps = {fp: c for fp, c in report.get("fingerprint_counts", {}).items()} \
-        if isinstance(report.get("fingerprint_counts"), dict) else {}
+    # 盘点分布：distribution=[{fingerprint,count,…}] → {fp: count}
+    fps = {d["fingerprint"]: d["count"] for d in report.get("distribution", [])
+           if isinstance(d, dict) and d.get("fingerprint")}
     matched = sorted(fps.keys() & registered)
     unregistered = sorted(fps.keys() - registered)
     out = {
         "ts": now_iso(), "root": root,
-        "decks": report.get("deck_count"), "unique_fps": report.get("unique_count"),
+        "decks": report.get("total_decks"), "unique_fps": report.get("unique_fingerprints"),
         "registry_path": reg_p, "registry_size": len(registered),
         "registered_fps": matched, "unregistered_fps": unregistered,
         "verdict": "all_registered" if not unregistered else "has_unregistered",
