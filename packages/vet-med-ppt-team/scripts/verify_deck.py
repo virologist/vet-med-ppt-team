@@ -662,8 +662,68 @@ def gate_decision(gate, level):
     return None, 0
 
 
+# ─────────────────────── 闸4.5 三源核验（v3.3.0）───────────────────
+def three_source_check(workspace: str, deck: str) -> dict:
+    """闸4.5：抽 10% unverified=true 案例，查 sources 字段，输出通过率。
+
+    Args:
+        workspace: 课程工作区根（含 .workbuddy/cases/cases_library.json）
+        deck: 当前 deck 路径（仅用于过滤"此 deck 的案例"——非全库）
+
+    Returns:
+        dict: {total, sampled, unverified_sampled, verified_sampled, pass_rate, threshold, verdict, samples}
+        verdict: "pass" (≥80%) / "needs_more_verification" (<80%)
+    """
+    import json
+    import random
+    from pathlib import Path
+
+    # 1. 读 cases_library
+    cases_p = Path(workspace) / ".workbuddy" / "cases" / "cases_library.json"
+    if not cases_p.exists():
+        return {"verdict": "no_library", "error": f"未找到 {cases_p}",
+                "pass_rate": 0.0, "threshold": 0.8, "total": 0, "sampled": 0}
+
+    with open(cases_p, encoding="utf-8") as f:
+        lib = json.load(f)
+    cases = lib.get("cases", [])
+
+    # 2. 过滤：当前 deck 的案例（按 deck_path 后缀匹配）
+    deck_name = Path(deck).name
+    deck_cases = [c for c in cases if Path(c.get("deck_path", "")).name == deck_name]
+    unverified = [c for c in deck_cases if c.get("unverified", True)]
+
+    # 3. 抽 10%（domain_config.yaml 默认 sample_rate=0.1）
+    sample_n = max(1, int(len(unverified) * 0.1))
+    sampled = random.sample(unverified, min(sample_n, len(unverified)))
+
+    # 4. 验 sources：每个样本检查 sources 列表是否至少 1 条 ok=true
+    verified = 0
+    for s in sampled:
+        sources = s.get("sources", [])
+        if any(src.get("ok") is True for src in sources):
+            verified += 1
+
+    pass_rate = verified / max(len(sampled), 1)
+    threshold = 0.8
+    return {
+        "deck": deck_name,
+        "total_in_deck": len(deck_cases),
+        "unverified_in_deck": len(unverified),
+        "sampled": len(sampled),
+        "verified": verified,
+        "pass_rate": round(pass_rate, 3),
+        "threshold": threshold,
+        "verdict": "pass" if pass_rate >= threshold else "needs_more_verification",
+        "samples": [{"case_id": s.get("case_id"), "title": s.get("title"),
+                     "sources_count": len(s.get("sources", [])),
+                     "verified": any(src.get("ok") is True for src in s.get("sources", []))}
+                    for s in sampled[:5]],  # 仅展示前 5
+    }
+
+
 def main():
-    ap = argparse.ArgumentParser(description="教学课件机械验证器（分级门禁 v2.0.0）")
+    ap = argparse.ArgumentParser(description="教学课件机械验证器（分级门禁 v2.0.0 + v3.3.0 三源核验）")
     ap.add_argument("deck", help="课件路径 .pptx")
     ap.add_argument("--hours", type=float, required=True,
                     help="课时数（v3.0.0 起必填：1 / 1.5 / 2 / 3 / 4。"
@@ -674,7 +734,31 @@ def main():
     ap.add_argument("--json", help="输出 JSON 报告路径")
     ap.add_argument("--strict", action="store_true", help="严格模式：未解析字号也判 P0")
     ap.add_argument("--limit", type=int, default=25, help="终端最多打印多少条问题")
+    # v3.3.0：闸4.5 案例三源核验模式
+    ap.add_argument("--three-source-check", action="store_true",
+                    help="闸4.5：读 <workspace>/.workbuddy/cases/cases_library.json，"
+                         "抽 10% unverified=true 案例检查 sources 字段，输出核验通过率；"
+                         "≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）")
+    ap.add_argument("--workspace", default="",
+                    help="--three-source-check 必填：课程工作区根（含 .workbuddy/cases/）")
     a = ap.parse_args()
+
+    # v3.3.0 短路：--three-source-check 模式只跑三源核验，不跑主门禁
+    if a.three_source_check:
+        try:
+            r = three_source_check(a.workspace, a.deck)
+        except Exception as e:
+            import traceback
+            print(f"运行错误（三源核验）：{e}", file=sys.stderr)
+            traceback.print_exc()
+            sys.exit(4)
+        import json as _json
+        print(_json.dumps(r, ensure_ascii=False, indent=2))
+        if a.json:
+            with open(a.json, "w", encoding="utf-8") as f:
+                _json.dump(r, f, ensure_ascii=False, indent=2)
+        # 退出码：1=未达标 / 0=达标
+        sys.exit(0 if r.get("verdict") == "pass" else 1)
 
     try:
         r = verify(a.deck, a.hours, a.strict)

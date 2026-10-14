@@ -112,12 +112,12 @@ def extract_from_pptx(pptx_path: Path) -> list[CaseDraft]:
         log.error("python-pptx 缺失：%s", e)
         return []
 
-    # 病种模块：从父目录名提取（M4A1_禽流感 → M4A1）
-    m = re.match(r"(M[4-7][A-D][0-9]?)", pptx_path.parent.name)
+    # 病种模块：从父目录名提取（M4A1_禽流感 → M4A1 / M8A1_细菌学 → M8A1）
+    m = re.match(r"([MTP][0-9][A-D][0-9]?)", pptx_path.parent.name)
     if not m:
         return []
     disease_module = m.group(1)
-    disease_name = DISEASE_MAP.get(disease_module, "未知病种")
+    disease_name = resolve_disease_name(disease_module)
 
     drafts: list[CaseDraft] = []
     try:
@@ -165,9 +165,39 @@ def extract_from_pptx(pptx_path: Path) -> list[CaseDraft]:
             case_no=case_no, title=title, scenario=scenario, severity=severity,
             deck_path=str(pptx_path.resolve()), slide_idx=slide_idx,
             registered_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-            unverified=True,  # Q4：默认未三源核验，不阻断
+            unverified=True,
         ))
     return drafts
+
+
+# ─────────────────────────── domain_config 加载（v3.3.0） ───────────────────────────
+def _load_domain_config() -> tuple[dict, str]:
+    """读 config/domain_config.yaml；失败回退 DISEASE_MAP（deprecated）。"""
+    try:
+        import yaml  # noqa
+        # 候选路径：脚本同级的 ../config/（专家包）；或 <workspace>/.workbuddy/domain.yaml
+        candidates = [
+            Path(__file__).parent.parent / "config" / "domain_config.yaml",
+        ]
+        for p in candidates:
+            if p.exists():
+                with open(p, encoding="utf-8") as f:
+                    return yaml.safe_load(f), "yaml"
+    except Exception as e:
+        log.warning("domain_config.yaml 加载失败（%s），回退 DISEASE_MAP", e)
+    return {"disease_modules": {"animal-medicine": DISEASE_MAP}}, "fallback"
+
+
+_DOMAIN_CFG, _DOMAIN_SRC = _load_domain_config()
+
+
+def resolve_disease_name(module: str) -> str:
+    """v3.3.0：跨 4 domain 查病种中文名（替代 DISEASE_MAP 单层）。"""
+    modules = _DOMAIN_CFG.get("disease_modules", {})
+    for domain_id, m in modules.items():
+        if isinstance(m, dict) and module in m:
+            return m[module]
+    return "未知病种"
 
 
 # ─────────────────────────── 登记册读写 ───────────────────────────
@@ -296,7 +326,7 @@ def cmd_register(args):
     lib = load_library(Path(args.workspace).expanduser())
     draft = CaseDraft(
         case_id=args.case_id, disease_module=args.case_id.split("-")[1],
-        disease_name=DISEASE_MAP.get(args.case_id.split("-")[1], "未知"),
+        disease_name=resolve_disease_name(args.case_id.split("-")[1]),
         case_no=int(args.case_id.split("-")[2]),
         title=args.title or f"案例{args.case_id.split('-')[2]}",
         scenario=desensitize(args.scenario or ""),

@@ -1,0 +1,117 @@
+# domain_config.yaml — 学科域配置（v3.2.0-batch5 抽离）
+# ══════════════════════════════════════════════════════════
+# v3.3.0 立项依据：v4 通用化战略要求 domain 集中可配。
+# 原 DISEASE_MAP（case_extract.py）/ domain=animal-medicine/家禽（4 agent MD 描述）
+# 散落 5+ 文件，新增/修改 domain 需改多处。本文件为唯一源。
+#
+# 消费方：
+#   - scripts/case_extract.py（DISEASE_MAP 读本文件，标 deprecated 兜底）
+#   - scripts/verify_deck.py（--three-source-check 模式读 domain 列表）
+#   - 4 个 agent MD 描述（用 ${domain} 占位符，v3.3.0+ 装配时替换）
+#   - teams/vet-med-ppt-team/config.json（domain 字段同步）
+#
+# 覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件（团队级定制）
+
+version: "3.3.0"
+
+# ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
+# Q2 默认：animal-medicine / microbiology / pet / tcm-vet
+domains:
+  - id: animal-medicine
+    label_zh: "动物医学"
+    label_en: "Animal Medicine"
+    default_disease_module_prefix: "M[1-7]"   # 课件父目录匹配正则
+    case_id_prefix: "C"                        # case_id 格式 C-<模块>-<3位>
+    active: true
+    notes: "原 'animal-medicine/家禽' 拆分为'动物医学'顶级 + 子分项"
+
+  - id: microbiology
+    label_zh: "微生物学"
+    label_en: "Microbiology"
+    default_disease_module_prefix: "M8"        # 微生物课件统一 M8 开头
+    case_id_prefix: "C"
+    active: true
+    notes: "v3.3.0 新增；首批打样 1 件（M8A1 细菌学总论）"
+
+  - id: pet
+    label_zh: "宠物医学"
+    label_en: "Pet Medicine"
+    default_disease_module_prefix: "P[1-9]"   # 宠物课件 P 开头
+    case_id_prefix: "C"
+    active: false                              # v3.3.0 仅占位不启用
+    notes: "v3.4.0 拟启用"
+
+  - id: tcm-vet
+    label_zh: "中兽医"
+    label_en: "Traditional Chinese Veterinary"
+    default_disease_module_prefix: "T[1-9]"   # 中兽医 T 开头
+    case_id_prefix: "C"
+    active: false                              # v3.3.0 仅占位不启用
+    notes: "v3.4.0 拟启用"
+
+# ── 病种模块映射（替代 case_extract.DISEASE_MAP） ─────────────
+# 格式：<domain-id> → {<module>: <中文名>}
+disease_modules:
+  animal-medicine:
+    M4A1: "禽流感"
+    M4A2: "新城疫"
+    M4A3: "鸡传染性支气管炎"
+    M4A4: "传染性喉气管炎"
+    M4A5: "肿头综合征-偏肺病毒"
+    M4B1: "传染性法氏囊"
+    M4B2: "马立克"
+    M4B3: "禽白血病"
+    M4B4: "传染性贫血"
+    M4C1: "禽腺病毒"
+    M4C2: "禽痘"
+    M4C3: "禽脑脊髓炎"
+    M4C4: "禽病毒性关节炎"
+    M4D1: "鸭瘟(鸭病毒性肠炎)"
+    M4D2: "鸭病毒性肝炎"
+    M4D3: "水禽细小病毒病(小鹅瘟 番鸭细小病毒)"
+    M5A1: "大肠杆菌病"
+    M5A2: "禽沙门氏菌病(鸡白痢 禽伤寒 禽副伤寒)"
+    M5A3: "禽巴氏杆菌病(禽霍乱)"
+    M5A4: "鸭疫里默菌病"
+    M5A5: "禽传染性鼻炎"
+    M5B: "鸡支原体病"
+    M5C1: "禽葡萄球菌病"
+    M5C2: "禽结核"
+    M5D1: "禽曲霉菌"
+    M5D2: "禽念珠菌"
+    M6A1: "球虫"
+    M6A2: "住白细胞虫"
+    M6A3: "禽组织滴虫病"
+    M6B: "禽蠕虫"
+    M6C: "体表寄生虫"
+    M7A: "营养代谢病"
+    M7B: "禽中毒病"
+  microbiology:
+    M8A1: "细菌学总论"
+    M8A2: "病毒学总论"
+    M8A3: "真菌学总论"
+    M8A4: "免疫学基础"
+  pet: {}
+  tcm-vet: {}
+
+# ── 三源核验配置（Q6 ≥80% 阈值） ────────────────────────────
+three_source_check:
+  enabled: true
+  sample_rate: 0.1            # 抽检 10%
+  pass_threshold: 0.8          # 通过率 ≥80% 达标
+  sources:
+    - kind: pubmed
+      label: "PubMed 检索（PMID）"
+    - kind: textbook
+      label: "教辅/规划教材（ISBN）"
+    - kind: regulation
+      label: "国标/公告（GB/公告号）"
+
+# ── 5 闸扩展（Q1 追加 stage 4，v3.3.0 起生效） ───────────────
+gates:
+  0: {name: "闸1 任务冻结", active: true,  legacy_compat: true}
+  1: {name: "闸2 设计",     active: true,  legacy_compat: true}
+  2: {name: "闸3 成稿",     active: true,  legacy_compat: true}
+  3: {name: "闸4 交付",     active: true,  legacy_compat: true}
+  4: {name: "闸4.5 案例三源核验", active: true, legacy_compat: false,
+     notes: "v3.3.0 新增；双轨期 0-4 合法，旧 0-3 任务不报错"}

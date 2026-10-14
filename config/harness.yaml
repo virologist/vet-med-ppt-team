@@ -12,12 +12,14 @@ version: "3.0.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
-# 只认整数 0-3；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
+# v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
+# 只认整数 0-4；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
 stages:
   0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", next: 1}
   1: {name: "闸2 设计（蓝图∥证据）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
   2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", next: 3}
-  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: null}
+  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: 4}
+  4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", next: null}
 
 # ── 成员注册表：职责、工具白名单、降级通道 ────────────────────
 # 工具白名单说明：WorkBuddy 专家包**不支持** agent frontmatter 的 tools 字段
@@ -81,6 +83,9 @@ budgets:
   max_rework_rounds_per_stage: 2
   max_stage_minutes: 20            # 单阶段挂钟上限（超时 → 上报，不等死）
   max_artifact_bytes: 60000        # 单个成员产物字节上限；超限强制"只传路径+摘要"
+  # v3.3.0：闸4.5 三源核验预算
+  three_source_sample_rate: 0.1    # 抽检 10% cases
+  three_source_pass_threshold: 0.8 # 通过率 ≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）
 
 # ── 上下文压缩（隔离：主理人不吃全文）─────────────────────────
 context:

@@ -50,11 +50,14 @@ _FALLBACK = {
     "budgets": {"max_member_spawns": 8, "max_spawn_attempts_per_member": 2,
                 "max_react_rounds_per_gap": 3, "max_react_rounds_total": 15,
                 "max_rework_rounds_per_stage": 2, "max_stage_minutes": 20,
-                "max_artifact_bytes": 60000},
+                "max_artifact_bytes": 60000,
+                # v3.3.0：闸4.5 三源核验预算
+                "three_source_sample_rate": 0.1, "three_source_pass_threshold": 0.8},
     "context": {"handoff_mode": "path_only", "summary_max_chars": 800,
                 "state_max_bytes": 32768, "state_allowed_keys": []},
     "observability": {"trace_file": ".workbuddy/harness_trace.jsonl"},
-    "gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断", "4": "运行错误"},
+    "gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断",
+                        "4": "运行错误", "5": "闸4.5 三源核验未达标（v3.3.0）"},
 }
 
 
@@ -203,8 +206,9 @@ def cmd_state(args):
     if args.action == "validate":
         errs = []
         cs = st.get("current_stage")
-        if not isinstance(cs, int) or str(cs) not in stages:
-            errs.append(f"current_stage 非法：{cs!r}（必须是 0-5 的整数，不接受 M5A2 之类的便签值）")
+        # v3.3.0：双轨期 0-4 合法（4 闸→5 闸），旧任务 0-3 仍合法；只拒绝 5+ 整数
+        if not isinstance(cs, int) or cs < 0 or cs > 4:
+            errs.append(f"current_stage 非法：{cs!r}（v3.3.0 双轨期 0-4 整数，不接受 M5A2 之类的便签值）")
         if allowed:
             extra = [k for k in st if k not in allowed]
             if extra:
@@ -219,8 +223,9 @@ def cmd_state(args):
         return 0 if not errs else 1
     if args.action == "set":
         if args.stage is not None:
-            if not isinstance(args.stage, int) or str(args.stage) not in stages:
-                print(f"拒绝写入：阶段必须是 0-5 整数，收到 {args.stage!r}", file=sys.stderr)
+            # v3.3.0：双轨期 0-4 合法
+            if not isinstance(args.stage, int) or args.stage < 0 or args.stage > 4:
+                print(f"拒绝写入：阶段必须是 0-4 整数（v3.3.0 双轨期），收到 {args.stage!r}", file=sys.stderr)
                 return 1
             st["current_stage"] = args.stage
             st.setdefault("stage_history", []).append(

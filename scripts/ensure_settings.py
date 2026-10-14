@@ -60,7 +60,7 @@ JUDGE = "verify_deck.py"
 
 # 全脚本清单（检查 5）。v3.2.0-batch4 新增 2 个：case_extract / test_case_extract
 REQUIRED_SCRIPTS = [
-    "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback）
+    "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback + v3.3.0 三源核验）
     "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope/template-audit）
     "surgery_deck.py",           # 批量版面外科
     "inject_notes.py",           # 讲稿注入
@@ -77,6 +77,8 @@ REQUIRED_SCRIPTS = [
     # v3.2.0-batch4 新增
     "case_extract.py",           # 病例库登记册（Batch 4）
     "test_case_extract.py",      # 病例库回归测试（Batch 4）
+    # v3.2.0-batch5 新增
+    "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
 N = 10  # 检查项总数（v3.2.0-batch2：7→10）
