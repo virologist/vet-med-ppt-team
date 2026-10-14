@@ -81,7 +81,7 @@ REQUIRED_SCRIPTS = [
     "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
-N = 10  # 检查项总数（v3.2.0-batch2：7→10）
+N = 11  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11）
 
 
 # ── 8. 活跃目录文件数超限（D12）─────────────────────────────
@@ -305,6 +305,40 @@ def check_regression(expert_dir):
     return 1
 
 
+# ── 11. 工作区旁路版本检查（v3.3.1 治理批）──────────────────
+def check_bypass_versions(expert_dir):
+    """扫课程工作区一级目录的旁路版本文件（写回纪律违纪信号）。
+    模式：_v<数字> / 副本 / 优化版 / (1)(2) 序号括号，扩展名 .pptx/.ppt。
+    依据：主理人 MD#写回纪律（v3.3.1）——AI 修改必须原地写回，禁旁路新文件。
+    """
+    import re
+    ws = os.environ.get("VET_WS") or os.path.expanduser(
+        "~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治"
+    )
+    if not os.path.exists(ws):
+        print(f"[11/{N}] – 未找到工作区（VET_WS 或默认路径）")
+        return 0
+    pat = re.compile(r"(_v\d|副本|优化版|\(\d\))\.(pptx?|ppt)$")
+    hits = []
+    for d in os.listdir(ws):
+        full = os.path.join(ws, d)
+        if not os.path.isdir(full) or d.startswith((".", "_")):
+            continue
+        for f in os.listdir(full):
+            if pat.search(f):
+                hits.append(f"{d}/{f}")
+    if hits:
+        print(f"[11/{N}] ⚠ 旁路版本文件 {len(hits)} 个（写回纪律违纪，见主理人 MD#写回纪律）")
+        for h in hits[:5]:
+            print(f"     {h}")
+        if len(hits) > 5:
+            print(f"     ... 还有 {len(hits) - 5} 个")
+        print(f"     → 处置：合并内容后原地写回，旁路文件移 _trash_<date>/")
+        return 1
+    print(f"[11/{N}] ✓ 工作区无旁路版本文件（写回纪律达标）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -345,10 +379,12 @@ def main():
         rc |= check_active_dir_files(path)
         rc |= check_scratch_expiry(path)
         rc |= check_snapshot_size(path)
+        rc |= check_bypass_versions(path)
     else:
         print(f"[8/{N}] – 已按 --no-governance 跳过")
         print(f"[9/{N}] – 已按 --no-governance 跳过")
         print(f"[10/{N}] – 已按 --no-governance 跳过")
+        print(f"[11/{N}] – 已按 --no-governance 跳过")
 
     print()
     if rc == 0:
