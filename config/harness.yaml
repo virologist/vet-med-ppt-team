@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.0.0"
+version: "3.4.1"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -86,6 +86,20 @@ budgets:
   # v3.3.0：闸4.5 三源核验预算
   three_source_sample_rate: 0.1    # 抽检 10% cases
   three_source_pass_threshold: 0.8 # 通过率 ≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）
+
+# ── 快照策略（v3.3.1 治理批新增：痛点①备份膨胀的对症段）────────
+# 缘由（2026-10-14 诊断实测）：snapshot.py 自 Batch 2 就绪但 .snapshots/ 从未初始化，
+#   AI 迭代产物以 _v2_v3 旁路文件堆积（消毒剂使用规范-优化版E_v2_v3.pptx 实证），
+#   课程工作区 14G 中约半数为可再生/可归档内容。
+# 原则：**唯一活跃版 + 原始件双轨**——AI 修改课件原地写回（禁旁路新文件），
+#   写回前自动 snap；原始课件（非 AI 产物）永不覆盖，只读引用。
+snapshot:
+  enabled: true                    # 总开关（false 时 harness 跳过自动 snap）
+  max_mb: 500                      # 快照库容量上限（LRU 淘汰）
+  keep: 3                          # 每课件保留 K 份（里程碑点永久除外）
+  auto_snap_on_writeback: true     # ppt-producer 写回前自动打点（trigger=auto_pre_writeback）
+  milestone_tags_permanent: true   # milestone 类快照不参与 LRU
+  first_snap_targets: "194"        # 启用当日对全部存量课件打首版快照（baseline-v3.3.1）
 
 # ── 上下文压缩（隔离：主理人不吃全文）─────────────────────────
 context:

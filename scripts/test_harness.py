@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--deck", default="", help="可选：额外跑门禁冒烟的课件路径")
     a = ap.parse_args()
 
-    print("== 回归测试：vet-med-ppt-team harness v2.2.0 ==")
+    print("== 回归测试：vet-med-ppt-team harness v3.4.1 ==")
     with tempfile.TemporaryDirectory() as w:
         # 1. 路由确定性
         rc, out, _ = run(["route", "--level", "L2"])
@@ -89,6 +89,32 @@ def main():
         except Exception:
             ok = False
         check("trace 落盘并可按事件汇总", ok)
+
+        # 6-bis. stage enter/exit 配对（v3.4.1 R11：填 trace report 的 stage_seconds）
+        import time as _t
+        rc_e, _, _ = run(["stage", "--action", "enter", "--stage", "1",
+                          "--task-id", "T-stage", "--workspace", w])
+        _t.sleep(1.1)
+        rc_x, _, _ = run(["stage", "--action", "exit", "--stage", "1",
+                          "--task-id", "T-stage", "--workspace", w])
+        rc_r, out_r, _ = run(["trace", "report", "--workspace", w])
+        try:
+            rep2 = json.loads(out_r)
+            secs = rep2.get("stage_seconds", {}).get("1", [])
+            ok = (rc_e == 0 and rc_x == 0 and rc_r == 0
+                  and len(secs) == 1 and secs[0] >= 1
+                  and rep2.get("stage_seconds_status") == "ok")
+        except Exception:
+            ok = False
+        check("stage enter/exit 配对写入 stage_seconds", ok, out_r[:200])
+
+        # 6-ter. stage 边界（v3.4.1 R11）：非法 stage 拒绝 + 孤儿 exit 警告
+        rc_bad, _, _ = run(["stage", "--action", "enter", "--stage", "9", "--workspace", w])
+        rc_orphan, _, err_orphan = run(["stage", "--action", "exit", "--stage", "3",
+                                        "--workspace", w])
+        check("stage 边界：stage=9 拒绝（exit 2）、孤儿 exit 有警告",
+              rc_bad == 2 and rc_orphan == 0 and "孤儿" in err_orphan,
+              f"got bad={rc_bad} orphan={rc_orphan} err={err_orphan[:80]}")
 
         # 7. preflight 能识别成员 MD
         rc, out, _ = run(["preflight", "--workspace", w])

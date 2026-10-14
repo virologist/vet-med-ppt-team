@@ -104,7 +104,7 @@ maxTurns: 200
 
 > **上下文纪律**：本表只是索引。进入某闸时 Read `references/sop-stages.md` 对应章节执行，不全文预载。
 > **v3.0.0**：原六阶段（0–5）压缩为四道闸（0–3）；确认门由"最少 2 最多 6"改为**固定 2 次**。
-> 状态机只认 0–3 整数（`harness.py state` 强制）。
+> **v3.3.0**：扩为五道闸（0–4，新增闸4.5 案例三源核验）；状态机只认 0–4 整数（`harness.py state` 强制）。
 
 | 闸 | 谁干活 | 确认门槛 | 细节锚点 |
 |------|--------|---------|---------|
@@ -112,6 +112,7 @@ maxTurns: 200
 | **闸2** 设计 | 苏学法 ∥ 严真奥（并行） | **确认门 2/2（设计确认）** | 蓝图（七段+二八难点+页数锁定）+ 证据缺口 → #闸2 |
 | **闸3** 成稿 | 苏学法 ∥ 屠明熙（并行） | 免确认（小改动直接推进） | 合并页表五字段 + **迭代回路**（非作者交叉复检）→ #闸3 |
 | **闸4** 交付 | 脚本/郅作基 门禁 + **verifier 独立复判** | 交付终审 | 机器门禁 + 双校验 + 挂账审判 → #闸4 |
+| **闸4.5** 案例三源核验（v3.3.0） | 严真奥 ∥ verifier | 免确认 | `verify_deck.py --three-source-check`；抽 cases_library 10% 未核验案例重跑 → #闸4.5 |
 
 门控原则（v3.0.0）：**固定 2 次确认**——闸1 任务冻结、闸2 设计确认；闸3 免确认、闸4 交付终审。
 闸1 与闸2 的确认权永远保留给用户，不得跳过。闸3 的迭代回路只做交叉复检，不打断用户。
@@ -179,13 +180,13 @@ maxTurns: 200
 > 因此把编排层的路由/状态/预算/日志下沉为代码。**使用方法基本不变**（六阶段压缩为四道闸、郅作基改按需、新增验证者），核心仍是「四成员分工 + 阶段门控 + 机器门禁」。
 
 - **开工三步**：`harness.py preflight`（成员可用性与静默降级预检）→ `route --level Lx`（spawn 计划）→ `state init`（状态机+预算）
-- **每闸**：`state set --stage N`（只认 0–3）；每次 spawn 前 `budget spend --kind spawn --n 1`
+- **每闸**：`state set --stage N`（状态机，只认 0–4）+ **`stage --action enter --stage N`（v3.4.1 轨迹计时）**；离开该闸时 `stage --action exit --stage N --note <闸结论>`。两写分工：state 回答"现在在第几闸"（持久），stage 回答"每闸实际花了多少秒"（trace 配对）。每次 spawn 前 `budget spend --kind spawn --n 1`
 - **成员产出双校验（v3.0.0）**：`verify-artifact --path <绝对路径>`（文件真存在且非空）+ `verify-envelope --path <绝对路径>`（回传信封六字段齐备）——未过不得进入下一闸
 - **门禁**：一律走 `harness.py gate`（包装权威 verify_deck，统一退出码语义并落 trace）；`--hours` 必填；**exit=4=运行错误，走缺陷回流修脚本，不是课件红灯**
 - **唯一裁判**：全包只允许一份 `verify_deck.py`（SSOT）；其它系统的同类脚本只能是非门禁工具，不得产生放行结论；台账必须记 `judge_provenance`
 - **终检**：闸4 必调 `verifier`（按需 spawn）独立复算，自评与成员声明一律不作为放行依据
 - **上下文**：成员产出只回传「路径 + ≤800 字摘要」，全文落盘不进对话
-- **收尾**：`trace report` 输出事件计数与阶段耗时，附在交付物里
+- **收尾**：`trace report` 输出事件计数与阶段耗时（v3.4.1 起 `stage_seconds` 有数——每闸 enter/exit 已显式落 trace；若某闸秒数缺失，查是否有孤儿 exit 警告）
 - 细节：`references/harness-engine.md`；参数唯一源：`config/harness.yaml`
 
 ## 裁决与终检（细节按需 Read references/adjudication-rules.md）
