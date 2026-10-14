@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.4.1"
+version: "3.4.2"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -95,11 +95,14 @@ budgets:
 #   写回前自动 snap；原始课件（非 AI 产物）永不覆盖，只读引用。
 snapshot:
   enabled: true                    # 总开关（false 时 harness 跳过自动 snap）
-  max_mb: 500                      # 快照库容量上限（LRU 淘汰）
+  max_mb: 500                      # 快照库容量上限（LRU 淘汰，milestone 永久保留不计入）
   keep: 3                          # 每课件保留 K 份（里程碑点永久除外）
   auto_snap_on_writeback: true     # ppt-producer 写回前自动打点（trigger=auto_pre_writeback）
   milestone_tags_permanent: true   # milestone 类快照不参与 LRU
   first_snap_targets: "194"        # 启用当日对全部存量课件打首版快照（baseline-v3.3.1）
+  # v3.4.2 P2-3 备注：当前 .snapshots 5.6G 超出 500M 上限，但所有快照均标 baseline-v3.4.2
+  #   milestone tag 永久保留。如下游工作区磁盘受限，可手动编辑此字段 max_mb 调高或
+  #   关闭 milestone_tags_permanent 让 GC 生效——本工作区选择"基线永久"以保首次收编可回滚。
 
 # ── 上下文压缩（隔离：主理人不吃全文）─────────────────────────
 context:

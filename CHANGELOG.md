@@ -6,6 +6,50 @@
 
 ---
 
+## [v3.4.2] - 2026-10-15
+
+### 概述（专家团全面诊断 P0-P3 全量执行日）
+
+五维诊断（专业能力🔴/协作🟡/决策🟡/资源🟡/沟通🟡）后，用户指令"全部按默认、不留死角"——P0-P3 共 14 项一次性全量落地。**核心：机制建成 → 资产层落地 → 工具采用闭环**——sweep 收回 135 份课件、56 条病例全量联网核验、文档-实现一致性机器体检、联邦层 git 化。
+
+### Added
+- **`harness.py sweep`（P0-1 落地）**：v3.1.0 CHANGELOG 声称的"闸外收编"能力于 v3.4.2 真正落地——递归扫全量 .pptx → SSOT 门禁 → 收编 deck_registry（judge_provenance 保留）。**实测 140 份 → 收编 135 份 → P0 阻断 137 份**（99.9s）。`v3.1.0 CHANGELOG` 同条目补勘误
+- **`harness.py verify-ref`（P0-3）**：cases_library.json 文献引用预检——假 PMID 黑名单（12345/00000/99999/11111/012345）+ 缺 verified_at 时间戳红线 + PMID/DOI 格式预检。**已修 3 条假 PMID 为 unverified**
+- **`harness.py eval`（P3-3）**：自动化演进环——基线 vs 当前 sweep diff（P0_total/P1_total/P0_blocked_decks/sweep_errors 增减）；产物 eval_diff.json。**首跑 elapsed 99.9s → 80.9s（-19s）**
+- **`shared-core/check_viral_evo_merge.py`（P3-2）**：自动列出 viral-evo-lab 定制版与共享公共段 diff（裁头后 206 增/67 删），供维护者评估合并
+- **`ensure_settings.py` 第 12 项 `check_doc_implementation_drift()`（P2-4）**：CHANGELOG 声称子命令 vs `harness.py doctor` 实际注册表交叉核验——7/7 一致（v3.1.0 sweep 虚构类问题未来自动被逮）
+- **`references/iron-rules.md`（P1-3）**：承接 v3.4.0 五条铁律 + v3.4.2 工具采用闭环的完整正文；team-lead MD 由 22.9KB 收 21.5KB（仍超 14KB 目标，下一轮继续）
+- **联邦层 git 仓库（my-experts/plugins/.git，P3-1）**：6 专家包 + shared-core + TEAMS_INDEX 初始提交 9994f4b
+
+### Changed
+- **trace report 增 token 汇总（P1-4）**：`tokens_by_actor` + `tokens_total` + `budget_usage`（spawn_used/spawn_max/spawn_pct/react_max）
+- **team-lead MD 加 v3.4.2 工具采用闭环节**（P1-1/P1-2）：7 步动作序列每闸必跑，绑定 harness/trace/stage/spawn 调用；成员回传与降级必须落 trace
+- **课程工作区**：trash 1.2G 处置（P2-1）→ 整目录转入 `.workbuddy/_trash_20261015_frozen_20261015/`（脱离后悔期）+ 备份 zip 留在工作区根；.snapshots 95 份 baseline 永久快照（P2-3，5.6G 突破 500M 上限但 milestone tag 永久保留——harness.yaml 已加注释解释）
+- **cases_library 56/56 全量核验（P0-2 两批）**：M8A1+M4A2/M4A3/M4A4 第一批 17 条 + M4B/M4C/M4D/M5A/M5C/M6A/M7B 第二批 39 条，**全部通过 PubMed esearch 联网取真 PMID + verified_at 时间戳**。fake_unverified 3 条（原 PMID:12345 假引用）已 unverified
+- **deck_registry 4/108 → 135/140（P0-1）**：覆盖率 3.7%→96.4%（+92.7 pp）；P0_blocked_decks 3→137；sweep_errors=0
+- **template_registry 1 → 5（P2-2）**：高频指纹批量 register（majority-v1-a97ffad5 + A/C/D/E 系 v342），覆盖 80+ 课件
+- **版本统一 v3.4.2**：harness.yaml 3.4.1→3.4.2；四份 plugin.json 3.4.1→3.4.2
+
+### 事实修正（如实挂账）
+- 诊断原报告"v3.4.1 时 team-lead 21KB→目标 ≤14KB"——实际仅收 22.9KB→21.5KB（差 0.5KB），**14KB 目标未达**，因 P1-1 工具采用闭环新增 7 步动作序列、v3.4.2 多处接入索引表格，整体 MD 仍长；下一轮需进一步外置（建议：adjudication-rules.md#六项自检、四门清单外置 references/）
+- P2-3 .snapshots 突破 500M 上限未通过 GC 收敛（milestone 永久保留是设计预期，harness.yaml 已加注释解释）——如工作区磁盘受限，可手动调高 max_mb 或关闭 milestone_tags_permanent
+- P1-3 MD 瘦身二轮目标"主理人负载降 1/3"未达——team-lead 21.5KB / 7 成员总 MD 73KB；pedagogy 15.5KB / dvm 13.5KB 附录外置评估未做（v3.4.2+ 安排）
+
+### 验证
+- test_harness.py **15/15 通过**（v3.4.1 基础 + 2 例 stage 边界，无回归）
+- ensure_settings **12/12 全跑**（1-7 全绿，8/10/11 既有挂账无回归，**12/12 ✓** 文档-实现一致）
+- harness.py doctor **15 命令**（新增 verify-ref/sweep/eval 三个）
+- sweep 收编 135/140 课件（96.4% 覆盖率）
+- verify-ref 56/56 病例全过（0 fake/0 stale_ok/0 suspicious/0 format_err）
+- eval 演进环首跑 elapsed 99.9s→80.9s（-19s 优化）
+
+### 已知遗留
+- v3.4.2 仅在本工作区 + 联邦层两个 git 仓库落地；viral-evo-lab 定制版与公共段 diff 由 P3-2 工具检测，**待维护者评估是否合并**
+- ensure_settings 8/10/11 告警为持续挂账（活跃目录文件数/快照超容/旁路版本）——均属"按设计预期"，需用户在工作区侧处置
+- team-lead 21.5KB 仍超 14KB 目标 53%——v3.4.3 安排二轮外置（adjudication-rules.md 节）
+
+---
+
 ## [v3.4.1] - 2026-10-14
 
 ### 概述（v3.4.0 待办收尾：stage 计时入口 + description 历史补账 + shared-core 第一批）

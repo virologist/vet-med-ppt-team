@@ -22,6 +22,15 @@ v3.4.1（2026-10-14 待办收尾）：
     让 trace report 的 stage_seconds 真正有数（此前无入口发事件，字段恒空）；
     带孤儿 exit 防护（同 stage 无未闭合 enter 时警告，防 stage_seconds 静默丢失）
 
+v3.4.2（2026-10-15 P0-P3 全量执行）：
+  + P0-3 verify-ref 子命令——cases_library.json 文献引用预检（假 PMID 黑名单
+    + 缺 verified_at 时间戳红线 + 格式预检），不依赖 PubMed 联网实检
+  + P0-1 sweep 子命令——从 CHANGELOG v3.1.0 失落的"闸外收编"能力落地：递归扫
+    全量 pptx → gate 收编 deck_registry（judge_provenance 保留）
+  + P1-1 stage 工具采用闭环——主理人 MD 收尾步强制 stage_seconds 贴交付物
+  + P1-2 member_return/degrade 事件——成员回传与降级落 trace
+  + P1-4 trace report 增 token 汇总（按 actor 聚合 + 预算使用率）
+
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
 不做任何语义判断（识别、匹配、权衡仍归 LLM 与主理人）。
@@ -46,6 +55,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -364,6 +374,20 @@ def cmd_trace(args):
                     spans.setdefault(s, []).append(round((t1 - t0).total_seconds(), 1))
                 except Exception:
                     pass
+        # v3.4.2 P1-4：按 actor 聚合 token 估算 + 预算使用率
+        tokens_by_actor = {}
+        for r in ev:
+            d = r.get("detail") or {}
+            t = d.get("approx_tokens")
+            if isinstance(t, (int, float)):
+                a = r.get("actor", "unknown")
+                tokens_by_actor[a] = tokens_by_actor.get(a, 0) + int(t)
+        # 预算（从 config/harness.yaml 读，无则用默认）
+        budgets_cfg = cfg.get("budgets", {}) or {}
+        max_spawns = budgets_cfg.get("max_member_spawns", 8)
+        max_react = budgets_cfg.get("max_react_rounds_total", 15)
+        spawn_count = sum(v for k, v in by_actor.items() if k)
+        usage_pct = round(spawn_count / max_spawns * 100, 1) if max_spawns else 0
         out = {"events_total": len(ev), "by_event": by_event, "by_actor": by_actor,
                "stage_seconds": {k: v for k, v in spans.items()},
                "stage_seconds_status": "未启用 stage 追踪（需显式发 stage_enter/exit 事件）" if not spans else "ok",
@@ -372,6 +396,14 @@ def cmd_trace(args):
                "missing_actors": sorted(missing_actors),
                "missing_actors_hint": (f"未观测到 {len(missing_actors)} 成员事件，需 spawn 时显式 trace log"
                                        if missing_actors else "ok"),
+               # v3.4.2 P1-4 成本可见性
+               "tokens_by_actor": tokens_by_actor,
+               "tokens_total": sum(tokens_by_actor.values()),
+               "budget_usage": {
+                   "spawn_used": spawn_count, "spawn_max": max_spawns,
+                   "spawn_pct": usage_pct,
+                   "react_max": max_react,
+               },
                "first_ts": ev[0]["ts"] if ev else None, "last_ts": ev[-1]["ts"] if ev else None}
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
@@ -489,6 +521,106 @@ def cmd_verify_artifact(args):
         return 1
     res["verdict"] = "✅ 落盘属实"
     print(json.dumps(res, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ─────────────────── 文献引用预检（v3.4.2 P0-3：反假 PMID）────────────
+# 背景：v3.4.2 诊断实测——cases_library 3 条 ok=true 全是 PMID:12345 假引用（假号复用 3 次）。
+# dvm MD 规定"核验通过 = 三个来源至少两个命中"被击穿：ok 判定无实检无时间戳。
+# 本子命令对 cases_library.json 做静态预检，发现假号模式直接拒，不依赖 PubMed 实检（联网见 P0-2 真正核验）。
+
+import re as _re_ref
+_PMID_RE = _re_ref.compile(r"^PMID:\s*(\d+)$", _re_ref.I)
+_DOI_RE = _re_ref.compile(r"^(?:DOI:|https?://(?:dx\.)?doi\.org/)?\s*(10\.\d{4,}/\S+)$", _re_ref.I)
+# 假号黑名单：占位号、明显测试号（按 PubMed 实测无有效对应）
+_FAKE_PMIDS = {"12345", "00000", "99999", "11111", "012345"}
+# 旧 cases_library "ok" 无 verified_at → 一律判 unverified 候选
+_OK_NO_TS = _re_ref.compile(r"\"ok\"\s*:\s*true", _re_ref.I)
+
+
+def _check_one_ref(src: dict) -> dict:
+    """单条来源预检：返回 {verdict, reason, fix_hint}。
+    v3.4.2 红线：ok=true 但无 verified_at → 假通过（最高优先级，先判）。
+    真黑名单号（PMID:12345 等占位号）即使 ok=false 也报 fake，便于核验时挑出。
+    """
+    kind = (src.get("kind") or "").lower()
+    ref = (src.get("ref") or "").strip()
+    has_ts = bool(src.get("verified_at"))
+    ok_flag = bool(src.get("ok"))
+    if not kind or not ref:
+        return {"verdict": "invalid", "reason": "缺 kind 或 ref",
+                "fix_hint": "补 kind+ref，或改 unverified=true"}
+    if ok_flag and not has_ts:
+        return {"verdict": "stale_ok", "reason": "ok=true 但缺 verified_at 时间戳（v3.4.2 红线）",
+                "fix_hint": "改为 ok=false + verified_at 留空，或联网实检后补 verified_at"}
+    if kind == "pubmed":
+        m = _PMID_RE.match(ref)
+        if not m:
+            return {"verdict": "format_err", "reason": f"PMID 格式不合规: {ref!r}",
+                    "fix_hint": "应为 PMID:<数字>，如 PMID:12345678"}
+        if m.group(1) in _FAKE_PMIDS:
+            return {"verdict": "fake", "reason": f"PMID:{m.group(1)} 在黑名单（占位号/测试号）",
+                    "fix_hint": ("降级 unverified=true（推荐保留历史但禁用）"
+                                 if not ok_flag else "联网实检替换为真实 PMID")}
+        if len(m.group(1)) < 6:
+            return {"verdict": "suspicious", "reason": f"PMID 长度 < 6 位（{m.group(1)}）",
+                    "fix_hint": "PubMed PMID 实际多 7-8 位，过短疑为占位"}
+    if kind == "doi":
+        if not _DOI_RE.match(ref):
+            return {"verdict": "format_err", "reason": f"DOI 格式不合规: {ref!r}",
+                    "fix_hint": "应为 10.xxxx/<suffix>，可带 DOI: 前缀或 doi.org URL"}
+    return {"verdict": "ok", "reason": "通过预检", "fix_hint": ""}
+
+
+def cmd_verify_ref(args):
+    """v3.4.2 P0-3：cases_library.json 文献引用预检。批量发现假 PMID/格式错/缺时间戳。
+    exit 0=全过；1=存在需处置项；2=文件错。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    p = os.path.abspath(args.path)
+    if not os.path.isfile(p):
+        print(f"❌ cases_library 不存在: {p}", file=sys.stderr)
+        return 2
+    try:
+        d = json.loads(open(p, encoding="utf-8").read())
+    except Exception as e:
+        print(f"❌ 解析失败: {e}", file=sys.stderr)
+        return 2
+    cases = d.get("cases", d) if isinstance(d, dict) else d
+    report = {"total": len(cases), "fake": [], "stale_ok": [], "suspicious": [],
+              "format_err": [], "ok": [], "fake_unverified": []}
+    for c in cases:
+        sid = c.get("case_id", c.get("title", "?"))
+        for src in (c.get("sources") or []):
+            r = _check_one_ref(src)
+            v = r["verdict"]
+            # 已 unverified 的黑名单号不阻断（仅标出便于核验时挑出）
+            if v == "fake" and not src.get("ok"):
+                report["fake_unverified"].append({"case_id": sid, "ref": src.get("ref"),
+                                                   "reason": r["reason"]})
+                continue
+            report[v].append({"case_id": sid, "ref": src.get("ref"),
+                              "reason": r["reason"]})
+    summary = {
+        "total": report["total"],
+        "fake_count": len(report["fake"]),
+        "stale_ok_count": len(report["stale_ok"]),
+        "suspicious_count": len(report["suspicious"]),
+        "format_err_count": len(report["format_err"]),
+        "ok_count": len(report["ok"]),
+        "fake_unverified_count": len(report["fake_unverified"]),
+        "verdict": ("✅ 全过" if not (report["fake"] or report["stale_ok"]
+                                       or report["suspicious"] or report["format_err"])
+                     else "❌ 存在需处置项"),
+        "details": {k: v for k, v in report.items() if k != "total" and v},
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    _trace(w, cfg, "verify_ref", args.actor or "verifier",
+           {"path": p, "fake": len(report["fake"]),
+            "stale_ok": len(report["stale_ok"]), "suspicious": len(report["suspicious"])})
+    if report["fake"] or report["stale_ok"] or report["suspicious"] or report["format_err"]:
+        return 1
     return 0
 
 
@@ -636,10 +768,13 @@ def cmd_doctor(args):
         ("stage",      "v3.4.1：显式发 stage_enter/exit（填 stage_seconds）", "--action/--stage", "--task-id/--note", "0/2", "harness.py stage --action enter --stage 1"),
         ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
         ("verify-artifact", "核验成员自报落盘（反自评失真硬校验）",    "--path",  "--expect-bytes/--min-bytes", "0/1", "harness.py verify-artifact --path x.md --expect-bytes 1200"),
+        ("verify-ref",     "v3.4.2 P0-3：cases_library 文献引用预检（假 PMID/格式错/缺时间戳）", "--path", "无", "0/1/2", "harness.py verify-ref --path cases_library.json"),
+        ("sweep",         "v3.4.2 P0-1：递归扫全量 pptx → 收编 deck_registry（v3.1.0 失落的闸外能力）", "--root", "--hours/--level/--max-decks", "0/1/3/4", "harness.py sweep --root <工作区>"),
+        ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
     ]
-    out = {"version": "v3.4.1", "executable": __file__,
+    out = {"version": "v3.4.2", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -680,6 +815,215 @@ def cmd_spawn(args):
     rec = _trace(w, cfg, "agent_spawn", args.agent, detail)
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_sweep(args):
+    """v3.4.2 P0-1：闸外收编（v3.1.0 失落的"冷启动合法"基础能力终于落地）。
+
+    背景：v3.4.2 诊断实测——CHANGELOG v3.1.0 自 v3.1.0 至 HEAD 声称"harness.py sweep 已实现+16/16 测试通过"，
+    但 git 全历史确认 harness.py 从未含 sweep 子命令；deck_registry.json 的 generator 字段一直自称由它生成。
+    连带：台账仅覆盖 4 份课件（3.7%），工作区 108 份 pptx 在监管外。本子命令一次性补救。
+
+    行为：
+      1. 递归扫 --root 下所有 .pptx（自动跳过 _trash_*、~ 临时文件、.snapshots 快照库）；
+      2. 每份跑 verify_deck.py SSOT 门禁（--hours 默认 2，--level P0）；
+      3. 收编到 <workspace>/.workbuddy/deck_registry.json：decks[<name>] = {p0/p1/p3/visible_pages/age_days/first_seen/judge_provenance}；
+      4. 写 trace event=sweep；判定 exit 0=全过、1=部分阻断、3=依赖缺失、4=运行错误、2=用法错。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    root = os.path.abspath(args.root)
+    if not os.path.isdir(root):
+        print(f"用法错误：--root 不是目录：{root}", file=sys.stderr)
+        return 2
+    vd = os.path.join(HERE, "verify_deck.py")
+    if not os.path.isfile(vd):
+        print(f"依赖缺失：{vd}", file=sys.stderr)
+        return 3
+    hours = float(getattr(args, "hours", 2) or 2)
+    level = getattr(args, "level", "P0") or "P0"
+    max_decks = int(getattr(args, "max_decks", 0) or 0)  # 0=不限
+
+    # 扫盘：递归 .pptx，过滤 _trash_/~/snapshots/.git
+    skip_dirs = ("_trash_", "~", ".snapshots", ".git", "node_modules")
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fn in filenames:
+            if not fn.lower().endswith(".pptx"):
+                continue
+            if fn.startswith("~$"):
+                continue
+            found.append(os.path.join(dirpath, fn))
+    if max_decks and len(found) > max_decks:
+        print(f"⚠ 发现 {len(found)} 份，仅处理前 {max_decks} 份（其余由下次 sweep 补）")
+        found = found[:max_decks]
+
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    decks = {}
+    p0_total = p1_total = p3_total = 0
+    blocked = []
+    errors = []
+    t0 = time.time()
+    for i, deck in enumerate(found, 1):
+        name = os.path.basename(deck)
+        # 用临时 JSON 文件收集门禁结果（避免 stdout 污染）
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            tmp_json = tf.name
+        try:
+            r = subprocess.run([sys.executable, vd, deck, "--hours", str(hours),
+                                "--level", level, "--json", tmp_json],
+                               capture_output=True, text=True, timeout=180)
+            if r.returncode == 4:
+                # 走缺陷回流（脚本问题，非课件质量）
+                errors.append({"deck": name, "exit": 4,
+                               "stderr_tail": (r.stderr or "")[-200:]})
+                continue
+            try:
+                rep = json.loads(open(tmp_json, encoding="utf-8").read())
+            except Exception as e:
+                errors.append({"deck": name, "exit": 5, "reason": f"JSON 解析失败: {e}"})
+                continue
+            g = rep.get("gate", {})
+            stats = rep.get("stats", {})
+            jdg = rep.get("judge", {})
+            p0 = g.get("p0", 0); p1 = g.get("p1", 0); p3 = g.get("p3", 0)
+            p0_total += p0; p1_total += p1; p3_total += p3
+            if p0 > 0:
+                blocked.append(name)
+            entry = {
+                "deck_path": deck,
+                "visible_pages": stats.get("visible_pages", stats.get("total_slides")),
+                "total_slides": stats.get("total_slides"),
+                "hours": hours,
+                "first_seen": now_iso,
+                "age_days": 0,
+                "gate": {"P0": p0, "P1": p1, "P3": p3,
+                          "note_coverage": g.get("note_coverage")},
+                "judge_provenance": {
+                    "SSOT": "vet-med-ppt-team/scripts/verify_deck.py",
+                    "SSOT_version": jdg.get("version", "3.0.0"),
+                    "thresholds": jdg.get("thresholds",
+                                          "vet-med-ppt-team/config/visual-rules.yaml"),
+                    "hours_caliber": f"sweep --hours {hours}（CSV 显式/默认）",
+                    "level_arg": level,
+                },
+            }
+            decks[name] = entry
+            if i % 10 == 0 or i == len(found):
+                print(f"  [{i}/{len(found)}] {name}  P0={p0} P1={p1} P3={p3}", file=sys.stderr)
+        finally:
+            try: os.unlink(tmp_json)
+            except OSError: pass
+
+    elapsed = round(time.time() - t0, 1)
+    # 收编到 deck_registry.json
+    reg_p = os.path.join(w, ".workbuddy", "deck_registry.json")
+    os.makedirs(os.path.dirname(reg_p), exist_ok=True)
+    reg = {
+        "version": 8,
+        "updated": now_iso,
+        "generator": ("harness.py sweep v3.4.2（v3.1.0 CHANGELOG 声称的'闸外收编'能力实际于 v3.4.2 落地）"
+                      "——递归扫 --root 全量 pptx → 逐份 SSOT 门禁 → 收编 deck_registry，不依赖 checkpoint"),
+        "judge_provenance": {
+            "SSOT": "vet-med-ppt-team/scripts/verify_deck.py",
+            "SSOT_version": "3.0.0",
+            "thresholds": "vet-med-ppt-team/config/visual-rules.yaml",
+            "hours_caliber": f"sweep --hours {hours}（CSV 显式/默认，绝不按页数反推）",
+        },
+        "counters": {
+            "decks": len(decks), "P0_total": p0_total, "P1_total": p1_total,
+            "P3_total": p3_total, "P0_blocked_decks": len(blocked),
+            "sweep_errors": len(errors), "elapsed_seconds": elapsed,
+        },
+        "P0_blocked_list": blocked,
+        "decks": decks,
+    }
+    with open(reg_p, "w", encoding="utf-8") as f:
+        json.dump(reg, f, ensure_ascii=False, indent=2)
+    print(f"✅ sweep 完成：扫描 {len(found)} 份 → 收编 {len(decks)} 份 → P0阻断 {len(blocked)} 份"
+          f"（耗时 {elapsed}s）→ 写入 {reg_p}")
+    _trace(w, cfg, "sweep", "harness",
+           {"root": root, "found": len(found), "admitted": len(decks),
+            "P0_total": p0_total, "P1_total": p1_total, "P0_blocked": len(blocked),
+            "errors": len(errors), "elapsed_seconds": elapsed, "hours": hours, "level": level})
+    return 1 if (blocked or errors) else 0
+
+
+def cmd_eval(args):
+    """v3.4.2 P3-3：自动化演进环——同任务重跑 diff（A/B 演进基线）。
+
+    用途：固化 v3.4.0/v3.4.1 重构时手写的"同任务重跑对比"工作流为代码子命令。
+    工作流：
+      1. 存当前 deck_registry 为 baseline（若无）；
+      2. 跑 sweep 收编当前全量课件；
+      3. diff 两次报告的 counters.P0_total / P1_total / P0_blocked_decks / errors；
+      4. 输出 diff 报告，写 trace event=eval。
+
+    退出码：0=无恶化、1=有 P0 恶化、2=参数错。
+    """
+    import shutil
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    root = os.path.abspath(args.root)
+    if not os.path.isdir(root):
+        print(f"用法错误：--root 不是目录：{root}", file=sys.stderr)
+        return 2
+    reg_path = os.path.join(w, ".workbuddy", "deck_registry.json")
+    baseline_path = os.path.join(w, ".workbuddy", "deck_registry.eval_baseline.json")
+    sweep_args = type("A", (), {"root": root, "hours": float(getattr(args, "hours", 2) or 2),
+                                  "level": "P0", "max_decks": 0, "actor": "harness",
+                                  "workspace": w})()
+    if not os.path.exists(reg_path):
+        print(f"❌ 当前 deck_registry 不存在：{reg_path}（先跑 sweep 生成基线）", file=sys.stderr)
+        return 2
+    if getattr(args, "reset_baseline", False) or not os.path.exists(baseline_path):
+        shutil.copyfile(reg_path, baseline_path)
+        print(f"📌 已存基线：{baseline_path}")
+        rc = cmd_sweep(sweep_args)
+        print(f"   sweep exit={rc}")
+        return 0 if rc == 0 else 1
+    # 有基线：跑当前 sweep 然后 diff
+    before = json.load(open(baseline_path, encoding="utf-8"))
+    rc = cmd_sweep(sweep_args)
+    after = json.load(open(reg_path, encoding="utf-8"))
+    bc = before.get("counters", {})
+    ac = after.get("counters", {})
+    diff = {
+        "decks": ac.get("decks", 0) - bc.get("decks", 0),
+        "P0_total": ac.get("P0_total", 0) - bc.get("P0_total", 0),
+        "P1_total": ac.get("P1_total", 0) - bc.get("P1_total", 0),
+        "P0_blocked_decks": ac.get("P0_blocked_decks", 0) - bc.get("P0_blocked_decks", 0),
+        "sweep_errors": ac.get("sweep_errors", 0) - bc.get("sweep_errors", 0),
+        "elapsed_seconds": round(ac.get("elapsed_seconds", 0) - bc.get("elapsed_seconds", 0), 1),
+    }
+    print(f"\n=== A/B 演进 diff（基线 → 当前） ===")
+    for k, v in diff.items():
+        arrow = "↑" if v > 0 else ("↓" if v < 0 else "·")
+        print(f"  {k:24s} {arrow} {v:+d}" if isinstance(v, int) else f"  {k:24s} {arrow} {v}")
+    # 评价
+    regress = []
+    if diff["P0_total"] > 0:
+        regress.append(f"P0_total 上升 {diff['P0_total']}")
+    if diff["P0_blocked_decks"] > 0:
+        regress.append(f"P0_blocked_decks 上升 {diff['P0_blocked_decks']}")
+    if diff["sweep_errors"] > 0:
+        regress.append(f"sweep_errors 上升 {diff['sweep_errors']}")
+    if regress:
+        print(f"\n⚠ 演进恶化: {'; '.join(regress)}")
+    else:
+        print("\n✅ 演进无恶化（P0/P1/errors 全部持平或下降）")
+    # trace
+    _trace(w, cfg, "eval", "harness", {"diff": diff, "regress": regress, "rc_sweep": rc})
+    # 产物
+    out = os.path.join(w, ".workbuddy", "artifacts", "v342_verify", "eval_diff.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump({"before": bc, "after": ac, "diff": diff, "regress": regress,
+                   "ts": datetime.now().astimezone().isoformat(timespec="seconds")},
+                  f, ensure_ascii=False, indent=2)
+    print(f"  diff 报告: {out}")
+    return 1 if regress else 0
 
 
 def cmd_stage(args):
@@ -738,7 +1082,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.4.1")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.4.2")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -804,6 +1148,25 @@ def main():
     _ws(p)
     p.set_defaults(func=cmd_stage)
 
+    # v3.4.2 P0-1：sweep 子命令——CHANGELOG v3.1.0 失落的闸外收编能力终于落地
+    p = sub.add_parser("sweep", help="v3.4.2 P0-1：递归扫全量 .pptx → SSOT 门禁 → 收编 deck_registry")
+    p.add_argument("--root", required=True, help="课件根目录（递归扫 .pptx，自动跳过 _trash_/~/snapshots）")
+    p.add_argument("--hours", type=float, default=2, help="课时口径（默认 2，禁止按页数反推）")
+    p.add_argument("--level", choices=["P0", "P1", "all"], default="P0", help="门禁等级")
+    p.add_argument("--max-decks", type=int, default=0, help="0=不限；>0 时仅处理前 N 份（分批 sweeP 用）")
+    p.add_argument("--actor", default="harness")
+    _ws(p)
+    p.set_defaults(func=cmd_sweep)
+
+    # v3.4.2 P3-3：eval 子命令——自动化演进环（A/B 重跑 diff）
+    p = sub.add_parser("eval", help="v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）")
+    p.add_argument("--root", required=True, help="课件根目录（同 sweep）")
+    p.add_argument("--hours", type=float, default=2)
+    p.add_argument("--reset-baseline", action="store_true",
+                   help="存当前 deck_registry 为新基线（首次跑或主动重置）")
+    _ws(p)
+    p.set_defaults(func=cmd_eval)
+
     p = sub.add_parser("gate", help="包装 verify_deck，统一退出码语义并落 trace")
     p.add_argument("--deck", required=True)
     p.add_argument("--hours", type=float, default=2)
@@ -825,6 +1188,13 @@ def main():
     p.add_argument("--actor", default="member")
     _ws(p)
     p.set_defaults(func=cmd_verify_artifact)
+
+    # v3.4.2 P0-3：文献引用预检（反假 PMID 机器防御）
+    p = sub.add_parser("verify-ref", help="v3.4.2 P0-3：cases_library.json 文献引用预检（假 PMID/格式错/缺时间戳）")
+    p.add_argument("--path", required=True, help="cases_library.json 绝对路径")
+    p.add_argument("--actor", default="verifier")
+    _ws(p)
+    p.set_defaults(func=cmd_verify_ref)
 
     p = sub.add_parser("verify-envelope", help="校验成员回传 result_envelope 六字段（约定→代码）")
     p.add_argument("--path", required=True)

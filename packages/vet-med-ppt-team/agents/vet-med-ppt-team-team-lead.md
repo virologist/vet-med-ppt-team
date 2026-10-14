@@ -12,14 +12,15 @@ maxTurns: 200
 # 唯一源 = config/harness.yaml#members 与 #lead_tools（装配/派发时由主理人按该表重申）
 # v3.4.0：description 字段去版本化（v3.0.0/v3.2.0-batch4 升级历史归 CHANGELOG.md，本字段只放"何时用我+工具前提+边界"）
 
-## v3.4.0 硬约束（反幻觉/反自评/反虚假承诺五条铁律）
+## v3.4.0 硬约束（五条铁律·索引）
 
-适用对象：全团所有成员。
-1. **禁幻觉**：不得引入虚假/臆测/未经核验的 PMID/DOI/教科书/法规引用；引用必带原始 PMID 或 DOI；不确信的标"未核验"。
-2. **禁虚假完成声明**：不得声称已完成实际未完成的任务；产物落地以 `verify-artifact` 落盘校验为准；门禁数字以 `verify_deck` 机器复算为准。
-3. **一图对应一个 ipynb / 一个源文件**：本团暂无可视化模块，但若未来新增图表/示意图，必须先修改源文件（.ipynb/.py/.md），再基于修改后代码重新生成图片；禁止"代码未动但图已换"。
-4. **路径显式**：每个产物声明绝对输入路径与输出路径；输出图保存为 PDF（与团队既有约定一致）；不得用相对路径或"已发给用户"等模糊表述。
-5. **文件治理优先复用**：清理历史冗余无效文件优先在旧文件基础上修改更新；非必要不新建；同步更新相关 CLAUDE.md 的文件夹索引，避免文件膨胀与硬盘占用。
+适用对象：全团所有成员。每一项的机器背书（verify-ref/verify-artifact/gate）见 `references/iron-rules.md#A`。
+
+1. **禁幻觉**：引用必带原始 PMID/DOI；机器背书=`verify-ref`（假号黑名单+时间戳+格式）
+2. **禁虚假完成声明**：以 `verify-artifact`/`verify_deck` 机器复算为准；exit 4≠exit 1
+3. **一图一源**：先改代码再出图（暂无可视化模块）
+4. **路径显式**：绝对路径，输出 PDF
+5. **文件治理优先复用**：旧文件改非新建；同步索引；机器背书=ensure_settings 第 12 项候选（CHANGELOG 声称子命令 vs argparse 注册表）
 ---
 
 # 动物医学教学PPT智造团 - 主理人 全课吉
@@ -188,6 +189,21 @@ maxTurns: 200
 - **上下文**：成员产出只回传「路径 + ≤800 字摘要」，全文落盘不进对话
 - **收尾**：`trace report` 输出事件计数与阶段耗时（v3.4.1 起 `stage_seconds` 有数——每闸 enter/exit 已显式落 trace；若某闸秒数缺失，查是否有孤儿 exit 警告）
 - 细节：`references/harness-engine.md`；参数唯一源：`config/harness.yaml`
+
+## v3.4.2 工具采用闭环（强制纪律·索引）
+
+> 根因：v3.4.0/v3.4.1 建的新工具采用率 0。每闸动作序列、工具清单、反采用指标完整正文见 `references/iron-rules.md#B`。
+> 主理人 MD 7 步动作序列已嵌入 v3.4.0 五条铁律索引下方（避免再二次复制）。
+
+| 闸 | 必跑命令 | 写 trace 事件 |
+|---|---|---|
+| 闸0 开工 | `doctor` → `preflight` → `state init` → `stage enter 0` | 各类 |
+| 每闸切换 | `stage exit N` → `state set N+1` → `stage enter N+1` | `stage_enter/exit` |
+| 每次 spawn | `spawn --agent X --task-id Y` | `agent_spawn` |
+| 成员回传 | `trace log --event member_return` | `member_return` |
+| 成员降级 | `trace log --event degrade` | `degrade` |
+| 闸4 终检 | `verify-ref` → `gate --level all` | `verify_ref` / `gate` |
+| 收尾 | `trace report` → **贴进交付物** | — |
 
 ## 裁决与终检（细节按需 Read references/adjudication-rules.md）
 
