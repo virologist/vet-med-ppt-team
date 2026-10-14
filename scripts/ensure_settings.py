@@ -58,7 +58,7 @@ MANIFESTS = [
 # 权威门禁：唯一裁判（SSOT）。同名多份 = 裁判失效，见检查 6。
 JUDGE = "verify_deck.py"
 
-# 全脚本清单（检查 5）。v3.2.0-batch3 新增 2 个：theme_fingerprint/template_migrate
+# 全脚本清单（检查 5）。v3.2.0-batch4 新增 2 个：case_extract / test_case_extract
 REQUIRED_SCRIPTS = [
     "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback）
     "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope/template-audit）
@@ -74,6 +74,9 @@ REQUIRED_SCRIPTS = [
     # v3.2.0-batch3 新增
     "theme_fingerprint.py",      # 主题指纹 + 批量盘点（Batch 3）
     "template_migrate.py",       # 三档模板迁移 + 登记册（Batch 3）
+    # v3.2.0-batch4 新增
+    "case_extract.py",           # 病例库登记册（Batch 4）
+    "test_case_extract.py",      # 病例库回归测试（Batch 4）
 ]
 
 N = 10  # 检查项总数（v3.2.0-batch2：7→10）
