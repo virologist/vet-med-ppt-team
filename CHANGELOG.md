@@ -6,6 +6,39 @@
 
 ---
 
+## [v3.2.0] - 2026-10-14
+
+### 概述（第四轮：v4 通用化战略级纠偏 + WF-2R 旧课件诊疗流水线基础）
+
+应用户战略级纠偏——**项目是测试和迭代的试验地，不是产品归属**。本批完成 4 项通用化修订 + v3.2.0 升版 + Batch 1 资产化 + Batch 2 兼容性 lint 与快照治理。动物医学工作区作为"测试样本 A"被显式声明，未来可换测试样本 B（猪病）/C（宠物）/D（水产）/任何学科；产品目标 = 通用教学 PPT 诊断与设计专家团。
+
+### Added
+- **`scripts/extract_assets.py`**（Batch 1）：S1 资产化转换层，8 类形状分流（PICTURE/CHART/TABLE/MEDIA/OLE/GROUP/SMARTART/TEXT），生成 `<课件>_assets/manifest.json`（六字段 + 7 派生）
+- **`scripts/ooxml_lint.py`**（Batch 2）：OOXML 兼容性检查器，6 组检查码（PKG/REL/CT/ID/XML/SYN），ERROR 阻断 + WARN 明示；支持 baseline 对照 + 强模式
+- **`scripts/snapshot.py`**（Batch 2）：快照库，K=3+里程碑+500MB+LRU 治理，sha256 去重；支持 snap/list/rollback/gc/status 子命令
+- **`references/ooxml-compat.md`**（Batch 2）：D11 防线病例库，初始 7 病例（PKG001 删页残留 / deepcopy 重复 rels / 悬空 rId / CT 漏登记 / ID 冲突 / 非法字符 / md5 复核）
+- **`references/extract_assets_usage.md`**（Batch 1）+ **`references/snapshot_usage.md`**（Batch 2）：8 节人读手册
+- **`scripts/test_extract_assets.py`**（Batch 1，8 例 + 4 subtest）+ **`scripts/test_ooxml_lint.py`**（Batch 2，10 例 + 4 subtest）+ **`scripts/test_snapshot.py`**（Batch 2，6 例）：回归测试
+- **`ensure_settings.py` +3 项治理自检**（D12 备份膨胀）：活跃目录文件数 / scratch 超期 / 快照库超容；7→10 项
+
+### Changed
+- **`.claude-plugin/plugin.json` + `.codebuddy-plugin/plugin.json`**：version 3.1.0→3.2.0；description 去 `veterinary medicine` 改 `domain-portable`；通用化声明
+- **`harness.py cmd_gate`**：lint 前置集成（ERROR→exit 1 阻断）+ snapshot 写回前自动打点（`--no-snap` 可跳）
+- **`ensure_settings.py`**：7 项→10 项，+3 项治理自检（D12）；脚本清单 7 个→10 个（+extract_assets/ooxml_lint/snapshot）
+
+### Discipline
+- **D11 修复对话框**（用户实锤痛点）：ooxml_lint 四层防线（lint/基线/纪律/病例库）
+- **D12 备份膨胀**（用户实锤痛点）：snapshot.py + 治理自检 + 一原一活模型
+- **v4 通用化**：项目层与常驻用户层解耦；样本可换；agent ID 命名巧合保留；description 改通用
+- **陈述真实性律**：4 份挂账样本 lint 全 0 ERROR = 实证"用户痛点不是普遍"事实修正（XML-003 a:t 空格 WARN 15+8+6+2=31 次，与学科无关）
+
+### Batch 状态
+- Batch 1 ✅ 完成（2026-10-14 上午）
+- Batch 2 ✅ 完成（2026-10-14 上午）
+- Batch 3-5 待确认后实施
+
+---
+
 ## [v3.1.0] - 2026-10-14
 
 ### 概述（第三轮：闸外防护 + 用户五条纪律 + 状态自愈）

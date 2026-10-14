@@ -340,6 +340,8 @@ def cmd_gate(args):
     """包装 verify_deck：统一退出码语义 + 抓 traceback + 写入 trace。
     关键：exit 4（运行错误）必须与 exit 1（P0 阻断）分流处置——
     前者是脚本/文件问题，后者才是课件质量问题，混为一谈会导致"拿脚本 bug 当红灯打回成员"。
+
+    v3.2.0-batch2：lint 前置——ooxml_lint ERROR→exit 1 阻断；snapshot 写回前自动打点。
     """
     cfg, _ = load_cfg()
     w = wkspace(args)
@@ -347,6 +349,50 @@ def cmd_gate(args):
     if not os.path.exists(vd):
         print(f"依赖缺失：{vd}", file=sys.stderr)
         return 3
+
+    # v3.2.0-batch2：lint 前置（O1）
+    lint = os.path.join(HERE, "ooxml_lint.py")
+    if os.path.exists(lint):
+        lint_cmd = [sys.executable, lint, args.deck]
+        if getattr(args, "baseline", None):
+            lint_cmd += ["--baseline", args.baseline]
+        if getattr(args, "strict", False):
+            lint_cmd += ["--strict"]
+        t1 = time.time()
+        lp = subprocess.run(lint_cmd, capture_output=True, text=True)
+        lint_secs = round(time.time() - t1, 2)
+        # 输出 lint 报告
+        if lp.stdout:
+            print(lp.stdout, end="")
+        if lp.returncode == 1:
+            # D11 苗子：lint ERROR 阻断
+            _trace(w, cfg, "lint_blocked", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": 1, "seconds": lint_secs,
+                    "stderr_tail": (lp.stderr or "")[-300:]})
+            print(f"\n[harness.gate] ooxml_lint ERROR 阻断（D11 苗子）耗时 {lint_secs}s —— "
+                  f"请先修复 OOXML 兼容性问题再跑 verify_deck。")
+            return 1
+        if lp.returncode == 4:
+            # lint 运行错误，不当红灯
+            _trace(w, cfg, "lint_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": 4, "seconds": lint_secs,
+                    "stderr_tail": (lp.stderr or "")[-300:]})
+            print(f"\n[harness.gate] ooxml_lint 脚本运行错误（exit 4）—— 走缺陷回流修脚本，"
+                  f"不当课件红灯。", file=sys.stderr)
+            return 4
+        _trace(w, cfg, "lint_passed", args.actor or "ppt-producer",
+               {"deck": os.path.basename(args.deck), "exit": lp.returncode, "seconds": lint_secs})
+
+    # v3.2.0-batch2：snapshot 写回前自动打点（O2，可选）
+    snap = os.path.join(HERE, "snapshot.py")
+    if os.path.exists(snap) and not getattr(args, "no_snap", False):
+        snap_cmd = [sys.executable, snap, "snap", args.deck,
+                    "--workspace", w, "--trigger", "auto_pre_writeback",
+                    "--gate-exit", "0"]
+        if getattr(args, "tag", None):
+            snap_cmd += ["--tag", args.tag]
+        sp = subprocess.run(snap_cmd, capture_output=True, text=True)
+
     cmd = [sys.executable, vd, args.deck, "--hours", str(args.hours), "--level", args.level]
     if args.json:
         cmd += ["--json", args.json]
@@ -518,6 +564,11 @@ def main():
     p.add_argument("--level", default="all", choices=["P0", "P1", "all"])
     p.add_argument("--json", dest="json", default="")
     p.add_argument("--actor", default="ppt-producer")
+    # v3.2.0-batch2：lint/snap 集成参数
+    p.add_argument("--baseline", default=None, help="ooxml_lint 基线对照（original 副本）")
+    p.add_argument("--strict", action="store_true", help="lint 强模式")
+    p.add_argument("--no-snap", action="store_true", help="跳过 snapshot 写回前打点")
+    p.add_argument("--tag", default=None, help="snapshot 里程碑标签")
     _ws(p)
     p.set_defaults(func=cmd_gate)
 

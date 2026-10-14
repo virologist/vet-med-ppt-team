@@ -26,3 +26,10 @@ __pycache__/
 .env
 *.local
 secrets.yaml
+
+# 打包产物（v3.2.0 新增：历史 .git 有 5 个 2.5MB zip 版本，属体积浪费）
+# 导出 zip 请放工作区 outputs/，不入库
+*.zip
+packages/vet-med-ppt-team/*.zip
+__pycache__/
+.pytest_cache/

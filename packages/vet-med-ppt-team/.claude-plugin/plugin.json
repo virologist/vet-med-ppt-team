@@ -1,7 +1,7 @@
 {
   "name": "vet-med-ppt-team",
-  "version": "3.1.0",
-  "description": "Five-member veterinary medicine teaching-PPT design team that turns any animal-medicine topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation.",
+  "version": "3.2.0",
+  "description": "Five-member teaching-PPT engineering team that turns any subject-domain topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation. The animal-medicine workspace is a test bench, not a product boundary: the workflow is designed to be portable across vocational/tertiary subject domains (animal-medicine today, swinemedicine/pet/aquaculture tomorrow, or any pedagogical subject with adequate evidence base).",
   "author": {
     "name": "TZUVet",
     "email": "tzuvet@qq.com"
@@ -10,12 +10,14 @@
   "homepage": "https://github.com/virologist/vet-med-ppt-team",
   "license": "MIT",
   "keywords": [
-    "veterinary",
     "teaching",
     "ppt",
     "slide-design",
     "instructional-design",
-    "multi-agent"
+    "vocational-education",
+    "multi-agent",
+    "slide-engineering",
+    "domain-portable"
   ],
   "agents": [
     "./agents/vet-med-ppt-team-team-lead.md",

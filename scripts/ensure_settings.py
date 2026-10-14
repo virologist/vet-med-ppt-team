@@ -15,18 +15,23 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
      - 根级包与 packages/vet-med-ppt-team/ 双份并存且已内容漂移。
      - 同名 verify_deck.py 在包内出现多份 → "唯一裁判"失效，结论不可比。
 
-因此本脚本从 4 项扩到 7 项：
+因此本脚本从 4 项扩到 7 项（v3.1.0），v3.2.0-batch2 再 +3 项治理自检 = 10 项：
   1 settings.json 存在且 agent 名与清单一致        → 缺失/损坏则重建【自愈】
   2 两侧清单版本号一致                            → 漂移则告警【只读】
   3 清单声明的 agent 文件全部存在                 → 缺失则告警【只读】
   4 权威门禁 verify_deck.py 存在                 → 缺失则告警【只读】
-  5 全脚本完整性（7 个脚本）                      → 缺失则告警【只读】★新
+  5 全脚本完整性（9 个脚本，v3.2.0 +extract_assets/ooxml_lint/snapshot）  → 缺失则告警【只读】★扩
   6 双份与多裁判检测（同名 verify_deck.py 计数） → 告警【只读】★新
   7 回归测试自跑（test_harness.py）              → 失败则告警【只读】★新
+  ★ v3.2.0-batch2 新增 3 项治理自检：
+  8 活跃目录文件数超限（D12 备份膨胀）            → 告警【只读】
+  9 scratch 超期（D12 备份膨胀）                  → 告警【只读】
+  10 快照库超容（D12 备份膨胀）                   → 告警【只读】
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
     python3 scripts/ensure_settings.py <路径> --quick    # 跳过第 7 项（耗时项）
+    python3 scripts/ensure_settings.py <路径> --no-governance  # 跳过 8/9/10（治理项）
 
 默认路径：~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
 退出码：0 = 全部通过（可发布）  1 = 存在需人工处理的告警
@@ -36,6 +41,9 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
 
 DEFAULT = os.path.expanduser(
     "~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team"
@@ -50,7 +58,7 @@ MANIFESTS = [
 # 权威门禁：唯一裁判（SSOT）。同名多份 = 裁判失效，见检查 6。
 JUDGE = "verify_deck.py"
 
-# 全脚本清单（检查 5）。assemble_spawn_prompt.py 于 v3.0.0 收编为正式包资产。
+# 全脚本清单（检查 5）。v3.2.0-batch2 新增 3 个：extract_assets/ooxml_lint/snapshot
 REQUIRED_SCRIPTS = [
     "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback）
     "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope）
@@ -59,9 +67,103 @@ REQUIRED_SCRIPTS = [
     "ensure_settings.py",        # 本体检器（自指）
     "test_harness.py",           # 回归测试
     "assemble_spawn_prompt.py",  # 人设装配器
+    # v3.2.0-batch2 新增
+    "extract_assets.py",         # 资产化转换（Batch 1）
+    "ooxml_lint.py",             # OOXML 兼容性检查（Batch 2）
+    "snapshot.py",               # 快照库（Batch 2）
 ]
 
-N = 7  # 检查项总数（用于打印 [x/7]）
+N = 10  # 检查项总数（v3.2.0-batch2：7→10）
+
+
+# ── 8. 活跃目录文件数超限（D12）─────────────────────────────
+def check_active_dir_files(expert_dir):
+    """扫描课程工作区活跃课件目录，文件数超 20 报警。
+    排除项：4 类常驻（.pptx / .original_YYYYMMDD.pptx / _diagnosis/ / _assets/） + .snapshots/ + .scratch/
+    """
+    # 简单实现：找工作区（heuristic：用户工作区可能不在 expert_dir 路径下；
+    # 实际可由环境变量或主理人指定，本批仅做 best-effort 提示）
+    ws = os.environ.get("VET_WS") or os.path.expanduser("~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
+    if not os.path.exists(ws):
+        print(f"[8/{N}] – 未找到工作区（VET_WS 或默认路径）")
+        return 0
+    over_limit = []
+    for d in os.listdir(ws):
+        full = os.path.join(ws, d)
+        if not os.path.isdir(full):
+            continue
+        if d.startswith("."):
+            continue
+        # 数文件（不含子目录）
+        files = [f for f in os.listdir(full) if os.path.isfile(os.path.join(full, f))]
+        # 排除 _assets/ _diagnosis/ 等常驻
+        kept = [f for f in files if not f.endswith("_assets") and "_diagnosis" not in f]
+        if len(kept) > 20:
+            over_limit.append((d, len(kept)))
+    if over_limit:
+        print(f"[8/{N}] ⚠ 活跃目录文件数超限（D12 备份膨胀）: {len(over_limit)} 个目录")
+        for d, n in over_limit[:5]:
+            print(f"     {d}: {n} 个文件")
+        if len(over_limit) > 5:
+            print(f"     ... 还有 {len(over_limit) - 5} 个")
+        print(f"     → 启用 snapshot.py gc 与 scratch 清理")
+        return 1
+    print(f"[8/{N}] ✓ 活跃目录文件数正常（无 >20 文件目录）")
+    return 0
+
+
+# ── 9. scratch 超期（D12）────────────────────────────────────
+def check_scratch_expiry(expert_dir):
+    """<workspace>/.scratch/<task_id>/ mtime > 7 天报警。"""
+    ws = os.environ.get("VET_WS") or os.path.expanduser("~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
+    scratch_root = os.path.join(ws, ".scratch")
+    if not os.path.exists(scratch_root):
+        print(f"[9/{N}] ✓ scratch 目录不存在（无累积）")
+        return 0
+    over = []
+    now = time.time()
+    for d in os.listdir(scratch_root):
+        full = os.path.join(scratch_root, d)
+        if not os.path.isdir(full):
+            continue
+        mtime = os.path.getmtime(full)
+        age_days = (now - mtime) / 86400
+        if age_days > 7:
+            over.append((d, round(age_days, 1)))
+    if over:
+        print(f"[9/{N}] ⚠ scratch 超期（>7 天）: {len(over)} 个 task")
+        for d, age in over[:5]:
+            print(f"     {d}: {age} 天前")
+        if len(over) > 5:
+            print(f"     ... 还有 {len(over) - 5} 个")
+        print(f"     → 手动 `rm -rf {scratch_root}/<task_id>` 清理")
+        return 1
+    print(f"[9/{N}] ✓ scratch 无超期 task")
+    return 0
+
+
+# ── 10. 快照库超容（D12）────────────────────────────────────
+def check_snapshot_size(expert_dir):
+    """<workspace>/.snapshots/ 总大小 > 500MB 报警。"""
+    ws = os.environ.get("VET_WS") or os.path.expanduser("~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
+    snap_root = os.path.join(ws, ".snapshots")
+    if not os.path.exists(snap_root):
+        print(f"[10/{N}] ✓ 快照库未初始化（无 .snapshots/）")
+        return 0
+    total = 0
+    for dp, dn, fn in os.walk(snap_root):
+        for f in fn:
+            try:
+                total += os.path.getsize(os.path.join(dp, f))
+            except OSError:
+                pass
+    total_mb = total / (1024 * 1024)
+    if total_mb > 500:
+        print(f"[10/{N}] ⚠ 快照库超容（D12 备份膨胀）: {total_mb:.0f} MB > 500 MB")
+        print(f"     → 跑 `python3 scripts/snapshot.py gc --workspace {ws}`")
+        return 1
+    print(f"[10/{N}] ✓ 快照库容量正常（{total_mb:.0f} MB）")
+    return 0
 
 
 def _load(path):
@@ -229,6 +331,16 @@ def main():
         rc |= check_regression(path)
     else:
         print(f"[7/{N}] – 已按 --quick 跳过回归测试")
+    # v3.2.0-batch2：3 项治理自检（D12 备份膨胀）
+    no_governance = "--no-governance" in sys.argv
+    if not no_governance:
+        rc |= check_active_dir_files(path)
+        rc |= check_scratch_expiry(path)
+        rc |= check_snapshot_size(path)
+    else:
+        print(f"[8/{N}] – 已按 --no-governance 跳过")
+        print(f"[9/{N}] – 已按 --no-governance 跳过")
+        print(f"[10/{N}] – 已按 --no-governance 跳过")
 
     print()
     if rc == 0:
