@@ -6,6 +6,43 @@
 
 ---
 
+## [v3.1.0] - 2026-10-14
+
+### 概述（第三轮：闸外防护 + 用户五条纪律 + 状态自愈）
+
+v3.0.0 发布后 10 天的真实使用数据（trace/state/registry 全空、10-13 大清理把状态层抹掉）暴露一个根本性缺口：v3.0.0 修的是"被调用时的行为"，**没有任何机制保证"它被调用"**。v3.1.0 不再只盯闸内，**给闸外也装上钩子**：闸外产物能事后收编、状态基础设施缺失时专家团能自愈、用户五条工程纪律入各角色提示词。
+
+### Added
+- **`harness.py sweep`（P0-1 闸外收编）**：扫描工作区全 .pptx，逐份跑 SSOT 门禁，从课件现状重建 `deck_registry.json`（**不依赖任何 checkpoint**），含 `judge_provenance`（SSOT/版本/3.1.0/课时口径来源 csv 或 default）与 `disposition` 字段（verifier 挂账审判落点）。课时口径支持 CSV 显式声明（阶段1 冻结值），绝不按页数反推
+- **`preflight` 环境自愈提示（P0-3）**：检测工作区 `.workbuddy/` 三件套（task_state/deck_registry/trace）状态，缺失则报 `degraded_env` 并给一行重建指引（state init / sweep）。实测 10-13 实例：环境被外部清理时专家团此前毫无感知，现在报"环境缺失但冷启动合法"
+- **`harness.py gate --dry-run`**：verifier 只读边界——不写 JSON、trace 仍记
+
+### Changed
+- **6 个 agent MD 全部纳入用户五条工程纪律**（v3.1.0，2026-10-14）：
+  - **陈述真实性律**（主理人 MD + verifier 抽样复核）——反幻觉/不虚报完成/陈述可核查/数字与历史一致；反面教材：2026-10-13 的清理清单"39 隔离候选"实际只移走 2、且丢失 2 个原始目录未在清单外披露
+  - **一图一 ipynb**（屠明熙主责）——图与代码必须绑定，先改代码再出图
+  - **输入输出路径标明**（屠明熙主责）——绝对路径，输出 pdf 格式
+  - **文件治理律**（主理人 MD）——优先改旧非必要不新建；清理只能产清单，动手必须用户圈定；清单与实际一致
+  - **CLAUDE.md 索引同步**（主理人 MD 文件治理子条款）
+- 成员回传 schema 增 `self_check`（一句话自述本回传最可能不实的点，verifier 定向核查）
+
+### Fixed
+- `verify_deck.py` 写 JSON 前 `os.makedirs(..., exist_ok=True)`——根因：冷启动时 `.workbuddy/` 不存在导致所有 JSON 报告失败，sweep 测试中逮住
+- `sweep` 预创建 `.workbuddy/`，与上一条配套
+
+### 验证
+- `test_harness.py` **16/16 通过**（v3.0.0 13/13 + 3 条新：sweep 重建台账 / preflight 环境报告 / gate --dry-run 不写盘）
+- 安装态 `ensure_settings.py` **7/7 全绿**（6 agent / 7 脚本 / 唯一裁判 / 回归自跑 / 版本一致）
+- 端到端：M4A1 实测 `sweep` 4 份课件 3 秒收编；P0 总 62，3 份被阻断（其中"禽流感病毒全链攻防术" P0=34 + 备注 0%——正是闸外未受护约束生产）
+
+### 已知遗留
+- 36 份历史 `deck_registry` 已无 checkpoint 可继承（10-13 清理抹掉），`sweep` 是新基线
+- 14 份旧课件 P0>0 的挂账审判仍待 verifier 在闸4 首次运行时批量清偿（`sweep` 已输出 `P0_blocked_list`，verifier 直接据表行事）
+- `overlay_injection` 四键（min_font_pt/require_empty_slot/max_overlap_ratio/sample_review_ratio）**仍零脚本消费**——R18 事故的对症药，下一版
+- token/成本仍不可观测（平台不向主理人暴露成员用量），不以估算冒充
+
+---
+
 ## [v3.0.0] - 2026-10-04
 
 ### 概述（第二轮组织诊断落地：唯一裁判 + 独立验证 + 四道闸）
