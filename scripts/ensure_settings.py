@@ -58,10 +58,10 @@ MANIFESTS = [
 # 权威门禁：唯一裁判（SSOT）。同名多份 = 裁判失效，见检查 6。
 JUDGE = "verify_deck.py"
 
-# 全脚本清单（检查 5）。v3.2.0-batch2 新增 3 个：extract_assets/ooxml_lint/snapshot
+# 全脚本清单（检查 5）。v3.2.0-batch4 新增 2 个：case_extract / test_case_extract
 REQUIRED_SCRIPTS = [
-    "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback）
-    "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope）
+    "verify_deck.py",            # 权威门禁（分级 + 退出码语义 + traceback + v3.3.0 三源核验）
+    "harness.py",                # 编排内核（preflight/route/state/budget/trace/gate/verify-artifact/verify-envelope/template-audit）
     "surgery_deck.py",           # 批量版面外科
     "inject_notes.py",           # 讲稿注入
     "ensure_settings.py",        # 本体检器（自指）
@@ -71,9 +71,17 @@ REQUIRED_SCRIPTS = [
     "extract_assets.py",         # 资产化转换（Batch 1）
     "ooxml_lint.py",             # OOXML 兼容性检查（Batch 2）
     "snapshot.py",               # 快照库（Batch 2）
+    # v3.2.0-batch3 新增
+    "theme_fingerprint.py",      # 主题指纹 + 批量盘点（Batch 3）
+    "template_migrate.py",       # 三档模板迁移 + 登记册（Batch 3）
+    # v3.2.0-batch4 新增
+    "case_extract.py",           # 病例库登记册（Batch 4）
+    "test_case_extract.py",      # 病例库回归测试（Batch 4）
+    # v3.2.0-batch5 新增
+    "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
-N = 10  # 检查项总数（v3.2.0-batch2：7→10）
+N = 13  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检）
 
 
 # ── 8. 活跃目录文件数超限（D12）─────────────────────────────
@@ -297,6 +305,177 @@ def check_regression(expert_dir):
     return 1
 
 
+# ── 11. 工作区旁路版本检查（v3.3.1 治理批）──────────────────
+def check_bypass_versions(expert_dir):
+    """扫课程工作区一级目录的旁路版本文件（写回纪律违纪信号）。
+    模式：_v<数字> / 副本 / 优化版 / (1)(2) 序号括号，扩展名 .pptx/.ppt。
+    依据：主理人 MD#写回纪律（v3.3.1）——AI 修改必须原地写回，禁旁路新文件。
+    """
+    import re
+    ws = os.environ.get("VET_WS") or os.path.expanduser(
+        "~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治"
+    )
+    if not os.path.exists(ws):
+        print(f"[11/{N}] – 未找到工作区（VET_WS 或默认路径）")
+        return 0
+    pat = re.compile(r"(_v\d|副本|优化版|\(\d\))\.(pptx?|ppt)$")
+    hits = []
+    for d in os.listdir(ws):
+        full = os.path.join(ws, d)
+        if not os.path.isdir(full) or d.startswith((".", "_")):
+            continue
+        for f in os.listdir(full):
+            if pat.search(f):
+                hits.append(f"{d}/{f}")
+    if hits:
+        print(f"[11/{N}] ⚠ 旁路版本文件 {len(hits)} 个（写回纪律违纪，见主理人 MD#写回纪律）")
+        for h in hits[:5]:
+            print(f"     {h}")
+        if len(hits) > 5:
+            print(f"     ... 还有 {len(hits) - 5} 个")
+        print(f"     → 处置：合并内容后原地写回，旁路文件移 _trash_<date>/")
+        return 1
+    print(f"[11/{N}] ✓ 工作区无旁路版本文件（写回纪律达标）")
+    return 0
+
+
+def check_doc_implementation_drift(expert_dir):
+    """v3.4.2 P2-4：CHANGELOG 声称子命令 vs argparse 实际注册表交叉核验。
+
+    背景（2026-10-15 五维诊断发现）：CHANGELOG v3.1.0 声称"harness.py sweep 已实现+16/16 测试通过"，
+    git 全历史确认 harness.py 从未含 sweep 子命令。ensure_settings 此前 11 项体检无一项能发现——
+    因为没有检查问"CHANGELOG 声称的能力是否存在"。
+
+    方法：
+      1. 扫 CHANGELOG.md，提取 `**`...**子命令**` 的提及（或更简单的：匹配 `harness.py <cmd>` 字样）；
+      2. 对每个声称的子命令，运行 `harness.py --help` 或 `harness.py <cmd> --help`（用 exit 2/usage 判存在）；
+      3. 声称但不可执行的 → exit 1 挂账。
+
+    设计取舍：CHANGELOG 表述多样（"`harness.py sweep`（P0-1 闸外收编）"），正则匹配
+    抓 `harness.py <command>` 形式（命令在 2-30 字符之间），覆盖最常见声明。
+    """
+    import re, subprocess, sys
+    chlog = os.path.join(expert_dir, "CHANGELOG.md")
+    hrns = os.path.join(expert_dir, "scripts", "harness.py")
+    if not os.path.exists(chlog) or not os.path.exists(hrns):
+        print(f"[12/{N}] – CHANGELOG/harness.py 不存在，跳过")
+        return 0
+    # 1) 扫 CHANGELOG 声称的子命令
+    chlog_text = open(chlog, encoding="utf-8").read()
+    # 匹配 `harness.py <command>` 形式（命令在 2-30 字符之间）
+    # 排除：`harness.py --help` / `harness.py <cmd>` 子命令 / `harness.py 描述` 中的 cmd 等
+    pat = re.compile(r"harness\.py\s+([a-z][a-z0-9-]{2,30})", re.I)
+    claimed = sorted(set(pat.findall(chlog_text)))
+    # 过滤：`cmd` 是 argparse 主命令的占位词，doctor/stage/trace 等都是子命令但个别不是
+    # 已知子命令白名单（v3.4.2 共 14 个），只保留在此白名单里的——更稳的"声称必须是真子命令"
+    SUB_WHITELIST = {"doctor", "preflight", "route", "state", "budget", "trace",
+                     "spawn", "stage", "gate", "verify-artifact", "verify-envelope",
+                     "verify-ref", "sweep", "template-audit", "eval"}
+    claimed = [c for c in claimed if c in SUB_WHITELIST]
+    if not claimed:
+        print(f"[12/{N}] ✓ CHANGELOG 无 harness.py 子命令声称（无漂移风险）")
+        return 0
+    # 2) 跑 harness.py <cmd> --help 判存在
+    # 改：--help 可能因 argparse 顺序报非 0/2；改用更稳的判据：argv 含未知子命令必 exit 2
+    # 真存在：运行 <cmd> 时 exit 在 {0,1,2,3,4,5}（命令处理了），exit 2=用法错（命令存在但不接 --help）
+    # 不存在：main argparse 直接报 invalid choice → exit 2 + "invalid choice: '<cmd>'" 在 stderr
+    missing = []
+    checked = 0
+    for cmd in claimed:
+        checked += 1
+        try:
+            r = subprocess.run([sys.executable, hrns, "--help"],
+                               capture_output=True, text=True, timeout=10)
+            # 从主 --help 输出提取已注册子命令
+            out = (r.stdout or "") + (r.stderr or "")
+            # 解析 argparse 实际注册表
+            registered = set()
+            for line in out.splitlines():
+                m = re.search(r"\{[\"']?([a-z][a-z0-9-]*)[\"']?\s*[,}]", line)
+                # argparse 子命令的 help 格式："{doctor,preflight,...}" 或 "{doctor, ...}"
+                pass
+            # 简单方法：再跑一次 harness 抽 doctor 的输出（doctor 列出所有子命令）
+            r2 = subprocess.run([sys.executable, hrns, "doctor"],
+                                capture_output=True, text=True, timeout=10)
+            try:
+                docd = json.loads(r2.stdout)
+                reg_names = {c.get("name") for c in docd.get("commands", [])}
+            except Exception:
+                reg_names = set()
+            if cmd not in reg_names:
+                missing.append((cmd, f"doctor 列出 {len(reg_names)} 个子命令，无 {cmd}"))
+        except Exception as e:
+            missing.append((cmd, "exception", str(e)[:80]))
+    if missing:
+        print(f"[12/{N}] ❌ 文档-实现漂移：CHANGELOG 声称 {len(claimed)} 个子命令，其中 {len(missing)} 个未在 doctor 表中")
+        for cmd, info in missing:
+            print(f"     {cmd}  → {info[:100]}")
+        print(f"     → 处置：①实现缺失子命令（最常见：只改 CHANGELOG 未落 harness.py）；②或从 CHANGELOG 删除声称（补勘误）")
+        return 1
+    print(f"[12/{N}] ✓ 文档-实现一致：CHANGELOG 声称 {len(claimed)} 个子命令，全部在 doctor 表中")
+    return 0
+
+
+def check_federation_sync(expert_dir):
+    """v3.4.3 B3：联邦 shim 巡检——各包 shim 版本声明一致性 + vendor 副本哈希比对。
+
+    背景（2026-10-15 五维诊断 2.1 实证）：v3.4.2 P0-1 升级了 smart-textbook-team 的
+    shim（60 行 R9 → 102 行 P0-1，vendor 兜底），research-orchestration-team /
+    triz-invention-team 停留 v3.4.1 R9 未跟升——此前 12 项体检无一项问
+    "联邦各包的 shim 是否还在同一版本"（R2 联邦断层直到独立诊断才暴露）。
+
+    方法：
+      1. 扫联邦 plugins/ 下各包 scripts/assemble_spawn_prompt.py 头部 40 行，
+         提取最新版本声明（"v3.4.2 P0-1" 为当前标准；"v3.4.1 R9" = 未跟升 ⚠）；
+      2. 包内有 vendor/shared-core/ 副本时，比对 sha256 == 联邦真源（防漂移）；
+      3. viral-evo-lab（独立定制版）与 shared-core 自身跳过。
+    判据从"行数"改为"声明标准"：行数会随实现微调，声明字符串才是版本契约。
+    """
+    import hashlib
+    plugins_root = os.path.dirname(os.path.abspath(expert_dir))
+    core = os.path.join(plugins_root, "shared-core", "assemble_spawn_prompt.py")
+    if not os.path.isdir(plugins_root) or not os.path.isfile(core):
+        print(f"[13/{N}] – 联邦 plugins/shared-core 不存在（非安装态），跳过")
+        return 0
+    core_sha = hashlib.sha256(open(core, "rb").read()).hexdigest()
+    STANDARD = "v3.4.2 P0-1"
+    LAGACY = "v3.4.1 R9"
+    skip = {"shared-core", "viral-evo-lab", expert_dir and os.path.basename(expert_dir)}
+    rows, stale, drift = [], [], []
+    for name in sorted(os.listdir(plugins_root)):
+        pkg = os.path.join(plugins_root, name)
+        shim = os.path.join(pkg, "scripts", "assemble_spawn_prompt.py")
+        if not os.path.isdir(pkg) or name in skip or not os.path.isfile(shim):
+            continue
+        head = "".join(open(shim, encoding="utf-8", errors="replace").readlines()[:40])
+        if STANDARD in head:
+            ver = "P0-1 ✅"
+        elif LAGACY in head:
+            ver = "R9 ⚠ 未跟升"
+            stale.append(name)
+        else:
+            ver = "无标准声明（独立版/待审）"
+        # vendor 副本哈希比对（存在才查）
+        vend = os.path.join(pkg, "vendor", "shared-core", "assemble_spawn_prompt.py")
+        if os.path.isfile(vend):
+            vsha = hashlib.sha256(open(vend, "rb").read()).hexdigest()
+            if vsha != core_sha:
+                ver += " | vendor漂移❌"
+                drift.append(name)
+        rows.append((name, ver))
+    if stale or drift:
+        print(f"[13/{N}] ⚠ 联邦同步有缺口：{len(stale)} 包 shim 未跟升 {STANDARD}、{len(drift)} 包 vendor 漂移")
+        for n, v in rows:
+            print(f"     {n:32s} {v}")
+        print(f"     → 处置：未跟升包按 smart-textbook-team 先例升级（shim+vendor+test 三件套）；"
+              f"vendor 漂移包 cp 联邦 core 后更新 VENDOR.json")
+        return 1
+    print(f"[13/{N}] ✓ 联邦同步一致：{len(rows)} 包 shim 均达 {STANDARD}，vendor 哈希无漂移")
+    for n, v in rows:
+        print(f"     {n:32s} {v}")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -337,10 +516,13 @@ def main():
         rc |= check_active_dir_files(path)
         rc |= check_scratch_expiry(path)
         rc |= check_snapshot_size(path)
+        rc |= check_bypass_versions(path)
     else:
         print(f"[8/{N}] – 已按 --no-governance 跳过")
-        print(f"[9/{N}] – 已按 --no-governance 跳过")
-        print(f"[10/{N}] – 已按 --no-governance 跳过")
+    # v3.4.2 P2-4：文档-实现一致性（无论 quick/no-governance 均跑）
+    rc |= check_doc_implementation_drift(path)
+    # v3.4.3 B3：联邦 shim 巡检（无论 quick/no-governance 均跑）
+    rc |= check_federation_sync(path)
 
     print()
     if rc == 0:
