@@ -6,6 +6,30 @@
 
 ---
 
+## [v3.4.3] - 2026-10-15
+
+### 概述（采用迁移批：机制 94% → 拉采用率）
+
+五维独立诊断的定性是"工程完工 vs 实际采用脱节（94% vs 68%）"，本版**不加新机制**，四个裁决点经用户拍板后执行：稳健核心 10 项 + 模板按频次补登 + 挂账无风险部分；stage 强制采用挂起等下次真实任务。
+
+### Added
+- **`harness.py verify-ref --online / --write-back`**：PubMed esearch 联网核验 + 受控写回（静态门禁→.bak 备份→写回→复检，net_err>0 拒写）——消除上一版"脚本直写绕过预检"的旁路；全链路实测 hit=1/拒绝门禁生效
+- **`ensure_settings.py` 第 13 项联邦 shim 巡检**：各包 shim 声明版本一致性 + vendor sha256 比对（上线当日即抓到跨会话改 core 未同步 vendor 的漂移）
+- **`harness eval` 周期化**：WorkBuddy automation 每周一 08:30 自动跑（首跑归档 outputs/harness-ab/eval_weekly/）
+
+### Changed
+- **trace log 死值源堵死**：`--event` 漏写或传 "event" 一律 exit 2（上一版只清了已生数据，默认值未堵）
+- **联邦 shim 全对齐 P0-1**：research-orchestration-team + triz-invention-team 60 行 R9 → 102 行（vendor 兜底 + 防漂移测试 6/6 PASS），shared-core README 勘误（"45 行"→分档版本表）
+- **template_registry 4 → 26 指纹**：活跃口径按频次补登，96 份活跃 deck 覆盖 35.4%→90.6%；顺带修 theme_fingerprint.batch_report 混入快照副本的口径缺陷（238→96）
+- **挂账 [10]/[11] 转绿**：harness.yaml snapshot.max_mb 对齐"基线永久"决策（500→6000，未删快照）；2 份旁路版本副本移 _trash_ 区（zip 双保险）；ensure_settings 快照上限改读 yaml 去硬编码
+- **lessons.md L12-L15**：虚假完成复利损耗 / 双仓库同步缺口（安装态 git 落后三个版本的教训与双仓同批 commit 纪律）/ 零采用四分类口径 / CHANGELOG 密度红线（单条版本号提及 ≤3 次）
+
+### 验证
+- A1 三场景 + A2 全链路（含拒绝门禁）+ test_vendor_core 6/6×2 包 + test_harness 15/15 全过
+- ensure_settings 13 项：11 ✓（[10]/[11] 新转绿）、[8] 目录整理按裁决另开战线、[13] ⚠ 为并行会话 P2-5 改 core 未同步 vendor 的真实漂移（待其收敛后消化）
+
+---
+
 ## [v3.4.2] - 2026-10-15
 
 ### 概述（专家团全面诊断 P0-P3 全量执行日）
