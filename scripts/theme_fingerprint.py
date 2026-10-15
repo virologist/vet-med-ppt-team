@@ -144,9 +144,23 @@ def fingerprint_deck(deck_path: Path) -> DeckFingerprint:
     )
 
 
+def _active_deck(p: Path) -> bool:
+    """v3.4.3 C2 口径修复：只统计活跃课件——跳过 .snapshots 快照库 / _trash_ 归档 /
+    . 开头隐藏目录 / ~ 临时文件，与 harness sweep 纪律对齐（sweep 注释"自动跳过
+    _trash_*、~ 临时文件、.snapshots 快照库"）。
+    背景：此前 batch_report 无过滤，238 总数混入约百份快照副本，覆盖统计失真
+    （example_decks 全是 hash 命名快照，直接 register 会把快照当模板登记）。"""
+    if p.name.startswith("~"):
+        return False
+    for part in p.parts[1:-1]:      # 跳过根自身与文件名，只查中间目录
+        if part == ".snapshots" or part.startswith("_trash_") or part.startswith("."):
+            return False
+    return True
+
+
 def batch_report(root_dir: Path) -> dict:
-    """目录批量扫描 + 统一性报告。"""
-    decks = sorted(root_dir.rglob("*.pptx"))
+    """目录批量扫描 + 统一性报告（v3.4.3 C2：仅活跃 deck，跳过 .snapshots/_trash_/~）。"""
+    decks = sorted(p for p in root_dir.rglob("*.pptx") if _active_deck(p))
     fps: list[DeckFingerprint] = []
     errors = 0
     for d in decks:

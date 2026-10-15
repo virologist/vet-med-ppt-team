@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.4.2"
+version: "3.4.3"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -95,7 +95,10 @@ budgets:
 #   写回前自动 snap；原始课件（非 AI 产物）永不覆盖，只读引用。
 snapshot:
   enabled: true                    # 总开关（false 时 harness 跳过自动 snap）
-  max_mb: 500                      # 快照库容量上限（LRU 淘汰，milestone 永久保留不计入）
+  max_mb: 6000                     # 快照库容量上限（LRU 淘汰，milestone 永久保留不计入）
+                                   # v3.4.3 C3（裁决3-B）：500→6000——5.5G 实际水位是 v3.4.2 P2-3
+                                   # 的"基线永久"有意决策（见下注），非意外膨胀；上限对齐设计
+                                   # 以消除体检误报，未删任何快照。未来磁盘受限可按下行注释降级。
   keep: 3                          # 每课件保留 K 份（里程碑点永久除外）
   auto_snap_on_writeback: true     # ppt-producer 写回前自动打点（trigger=auto_pre_writeback）
   milestone_tags_permanent: true   # milestone 类快照不参与 LRU
