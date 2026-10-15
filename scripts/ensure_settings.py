@@ -24,7 +24,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   6 双份与多裁判检测（同名 verify_deck.py 计数） → 告警【只读】★新
   7 回归测试自跑（test_harness.py）              → 失败则告警【只读】★新
   ★ v3.2.0-batch2 新增 3 项治理自检：
-  8 活跃目录文件数超限（D12 备份膨胀）            → 告警【只读】
+  8 活跃目录备份膨胀（D12，只数备份/旁路模式文件 ≥3） → 告警【只读】
   9 scratch 超期（D12 备份膨胀）                  → 告警【只读】
   10 快照库超容（D12 备份膨胀）                   → 告警【只读】
 
@@ -39,6 +39,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -84,39 +85,42 @@ REQUIRED_SCRIPTS = [
 N = 13  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检）
 
 
-# ── 8. 活跃目录文件数超限（D12）─────────────────────────────
+# ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
+# v3.4.3 遗留批口径修复：原实现按"目录文件总数 >20"报警，把合法教学内容目录
+# （任务课件 27 份/企业环控资料/教学视频，无一备份）误报为膨胀——检测语义对齐
+# 告警名"备份膨胀"：只统计备份/旁路模式文件，≥3 个报警。与写回纪律一致
+# （team-lead MD：禁 _v2/副本/优化版旁路文件）。
+_BACKUP_PAT = re.compile(
+    r"[（(]\s*\d+\s*[)）]\.\w{3,5}$"   # "xxx (1).ppt" 括号数字后缀（半/全角）
+    r"|-副本|_副本|副本\.|优化版|修改版|旧版|backup"  # 中文旁路命名
+    r"|_v\d+\.|-v\d+\.|\.bak$"          # 版本后缀 / .bak
+)
+
+
 def check_active_dir_files(expert_dir):
-    """扫描课程工作区活跃课件目录，文件数超 20 报警。
-    排除项：4 类常驻（.pptx / .original_YYYYMMDD.pptx / _diagnosis/ / _assets/） + .snapshots/ + .scratch/
-    """
-    # 简单实现：找工作区（heuristic：用户工作区可能不在 expert_dir 路径下；
-    # 实际可由环境变量或主理人指定，本批仅做 best-effort 提示）
+    """扫描课程工作区活跃目录的备份/旁路文件堆积（D12 备份膨胀）。"""
     ws = os.environ.get("VET_WS") or os.path.expanduser("~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
     if not os.path.exists(ws):
         print(f"[8/{N}] – 未找到工作区（VET_WS 或默认路径）")
         return 0
     over_limit = []
-    for d in os.listdir(ws):
+    for d in sorted(os.listdir(ws)):
         full = os.path.join(ws, d)
-        if not os.path.isdir(full):
-            continue
-        if d.startswith("."):
-            continue
-        # 数文件（不含子目录）
-        files = [f for f in os.listdir(full) if os.path.isfile(os.path.join(full, f))]
-        # 排除 _assets/ _diagnosis/ 等常驻
-        kept = [f for f in files if not f.endswith("_assets") and "_diagnosis" not in f]
-        if len(kept) > 20:
-            over_limit.append((d, len(kept)))
+        if not os.path.isdir(full) or d.startswith(".") or d.startswith("_trash"):
+            continue  # 隐藏目录与 _trash 归档区不计
+        hits = [f for f in os.listdir(full)
+                if os.path.isfile(os.path.join(full, f))
+                and not f.startswith("~$")           # Office 锁文件是临时态
+                and _BACKUP_PAT.search(f)]
+        if len(hits) >= 3:
+            over_limit.append((d, len(hits), hits[:3]))
     if over_limit:
-        print(f"[8/{N}] ⚠ 活跃目录文件数超限（D12 备份膨胀）: {len(over_limit)} 个目录")
-        for d, n in over_limit[:5]:
-            print(f"     {d}: {n} 个文件")
-        if len(over_limit) > 5:
-            print(f"     ... 还有 {len(over_limit) - 5} 个")
-        print(f"     → 启用 snapshot.py gc 与 scratch 清理")
+        print(f"[8/{N}] ⚠ 活跃目录备份膨胀（D12）: {len(over_limit)} 个目录含 ≥3 个备份/旁路文件")
+        for d, n, ex in over_limit[:5]:
+            print(f"     {d}: {n} 个，如 {ex}")
+        print(f"     → 旁路文件按写回纪律归并 _trash 区；版本史交 snapshot 库")
         return 1
-    print(f"[8/{N}] ✓ 活跃目录文件数正常（无 >20 文件目录）")
+    print(f"[8/{N}] ✓ 活跃目录无备份膨胀（各目录备份/旁路文件均 <3）")
     return 0
 
 
@@ -152,9 +156,32 @@ def check_scratch_expiry(expert_dir):
 
 # ── 10. 快照库超容（D12）────────────────────────────────────
 def check_snapshot_size(expert_dir):
-    """<workspace>/.snapshots/ 总大小 > 500MB 报警。"""
+    """<workspace>/.snapshots/ 总大小 > max_mb 报警。
+    v3.4.3 C3：上限改从 harness.yaml snapshot.max_mb 读取（原硬编码 500 与配置脱节——
+    5.5G 基线是 v3.4.2 P2-3 的"基线永久"有意决策，体检器却按写死 500 持续误报）。"""
     ws = os.environ.get("VET_WS") or os.path.expanduser("~/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
     snap_root = os.path.join(ws, ".snapshots")
+    max_mb = 500  # 兜底默认（yaml 不可读时）
+    yaml_path = os.path.join(expert_dir, "config", "harness.yaml")
+    try:
+        in_snap = False
+        for line in open(yaml_path, encoding="utf-8"):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("snapshot:"):
+                in_snap = True
+                continue
+            if in_snap:
+                if not s.startswith(("max_mb:", "enabled:", "keep:", "auto_snap",
+                                     "milestone", "first_snap", "#")) and s[0].isalpha():
+                    break  # 离开 snapshot 段
+                if s.startswith("max_mb:"):
+                    val = s.split("#", 1)[0].split(":", 1)[1].strip()
+                    max_mb = int(float(val))
+                    break
+    except Exception:
+        pass
     if not os.path.exists(snap_root):
         print(f"[10/{N}] ✓ 快照库未初始化（无 .snapshots/）")
         return 0
@@ -166,11 +193,13 @@ def check_snapshot_size(expert_dir):
             except OSError:
                 pass
     total_mb = total / (1024 * 1024)
-    if total_mb > 500:
-        print(f"[10/{N}] ⚠ 快照库超容（D12 备份膨胀）: {total_mb:.0f} MB > 500 MB")
-        print(f"     → 跑 `python3 scripts/snapshot.py gc --workspace {ws}`")
+    if total_mb > max_mb:
+        print(f"[10/{N}] ⚠ 快照库超容（D12 备份膨胀）: {total_mb:.0f} MB > {max_mb} MB"
+              f"（harness.yaml snapshot.max_mb）")
+        print(f"     → 跑 `python3 scripts/snapshot.py gc --workspace {ws}`，"
+              f"或确认水位后调 harness.yaml max_mb")
         return 1
-    print(f"[10/{N}] ✓ 快照库容量正常（{total_mb:.0f} MB）")
+    print(f"[10/{N}] ✓ 快照库容量正常（{total_mb:.0f} MB ≤ {max_mb} MB，上限与 harness.yaml 对齐）")
     return 0
 
 
