@@ -81,7 +81,7 @@ REQUIRED_SCRIPTS = [
     "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
-N = 12  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：+doc-implementation drift）
+N = 13  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检）
 
 
 # ── 8. 活跃目录文件数超限（D12）─────────────────────────────
@@ -370,7 +370,7 @@ def check_doc_implementation_drift(expert_dir):
     # 已知子命令白名单（v3.4.2 共 14 个），只保留在此白名单里的——更稳的"声称必须是真子命令"
     SUB_WHITELIST = {"doctor", "preflight", "route", "state", "budget", "trace",
                      "spawn", "stage", "gate", "verify-artifact", "verify-envelope",
-                     "verify-ref", "sweep", "template-audit"}
+                     "verify-ref", "sweep", "template-audit", "eval"}
     claimed = [c for c in claimed if c in SUB_WHITELIST]
     if not claimed:
         print(f"[12/{N}] ✓ CHANGELOG 无 harness.py 子命令声称（无漂移风险）")
@@ -413,6 +413,66 @@ def check_doc_implementation_drift(expert_dir):
         print(f"     → 处置：①实现缺失子命令（最常见：只改 CHANGELOG 未落 harness.py）；②或从 CHANGELOG 删除声称（补勘误）")
         return 1
     print(f"[12/{N}] ✓ 文档-实现一致：CHANGELOG 声称 {len(claimed)} 个子命令，全部在 doctor 表中")
+    return 0
+
+
+def check_federation_sync(expert_dir):
+    """v3.4.3 B3：联邦 shim 巡检——各包 shim 版本声明一致性 + vendor 副本哈希比对。
+
+    背景（2026-10-15 五维诊断 2.1 实证）：v3.4.2 P0-1 升级了 smart-textbook-team 的
+    shim（60 行 R9 → 102 行 P0-1，vendor 兜底），research-orchestration-team /
+    triz-invention-team 停留 v3.4.1 R9 未跟升——此前 12 项体检无一项问
+    "联邦各包的 shim 是否还在同一版本"（R2 联邦断层直到独立诊断才暴露）。
+
+    方法：
+      1. 扫联邦 plugins/ 下各包 scripts/assemble_spawn_prompt.py 头部 40 行，
+         提取最新版本声明（"v3.4.2 P0-1" 为当前标准；"v3.4.1 R9" = 未跟升 ⚠）；
+      2. 包内有 vendor/shared-core/ 副本时，比对 sha256 == 联邦真源（防漂移）；
+      3. viral-evo-lab（独立定制版）与 shared-core 自身跳过。
+    判据从"行数"改为"声明标准"：行数会随实现微调，声明字符串才是版本契约。
+    """
+    import hashlib
+    plugins_root = os.path.dirname(os.path.abspath(expert_dir))
+    core = os.path.join(plugins_root, "shared-core", "assemble_spawn_prompt.py")
+    if not os.path.isdir(plugins_root) or not os.path.isfile(core):
+        print(f"[13/{N}] – 联邦 plugins/shared-core 不存在（非安装态），跳过")
+        return 0
+    core_sha = hashlib.sha256(open(core, "rb").read()).hexdigest()
+    STANDARD = "v3.4.2 P0-1"
+    LAGACY = "v3.4.1 R9"
+    skip = {"shared-core", "viral-evo-lab", expert_dir and os.path.basename(expert_dir)}
+    rows, stale, drift = [], [], []
+    for name in sorted(os.listdir(plugins_root)):
+        pkg = os.path.join(plugins_root, name)
+        shim = os.path.join(pkg, "scripts", "assemble_spawn_prompt.py")
+        if not os.path.isdir(pkg) or name in skip or not os.path.isfile(shim):
+            continue
+        head = "".join(open(shim, encoding="utf-8", errors="replace").readlines()[:40])
+        if STANDARD in head:
+            ver = "P0-1 ✅"
+        elif LAGACY in head:
+            ver = "R9 ⚠ 未跟升"
+            stale.append(name)
+        else:
+            ver = "无标准声明（独立版/待审）"
+        # vendor 副本哈希比对（存在才查）
+        vend = os.path.join(pkg, "vendor", "shared-core", "assemble_spawn_prompt.py")
+        if os.path.isfile(vend):
+            vsha = hashlib.sha256(open(vend, "rb").read()).hexdigest()
+            if vsha != core_sha:
+                ver += " | vendor漂移❌"
+                drift.append(name)
+        rows.append((name, ver))
+    if stale or drift:
+        print(f"[13/{N}] ⚠ 联邦同步有缺口：{len(stale)} 包 shim 未跟升 {STANDARD}、{len(drift)} 包 vendor 漂移")
+        for n, v in rows:
+            print(f"     {n:32s} {v}")
+        print(f"     → 处置：未跟升包按 smart-textbook-team 先例升级（shim+vendor+test 三件套）；"
+              f"vendor 漂移包 cp 联邦 core 后更新 VENDOR.json")
+        return 1
+    print(f"[13/{N}] ✓ 联邦同步一致：{len(rows)} 包 shim 均达 {STANDARD}，vendor 哈希无漂移")
+    for n, v in rows:
+        print(f"     {n:32s} {v}")
     return 0
 
 
@@ -461,6 +521,8 @@ def main():
         print(f"[8/{N}] – 已按 --no-governance 跳过")
     # v3.4.2 P2-4：文档-实现一致性（无论 quick/no-governance 均跑）
     rc |= check_doc_implementation_drift(path)
+    # v3.4.3 B3：联邦 shim 巡检（无论 quick/no-governance 均跑）
+    rc |= check_federation_sync(path)
 
     print()
     if rc == 0:
