@@ -1,0 +1,20 @@
+{
+  "vendored_from": "my-experts/plugins/shared-core/assemble_spawn_prompt.py",
+  "upstream_repo": "my-experts/vet-med-ppt-team",
+  "file": "assemble_spawn_prompt.py",
+  "sha256": "02a69d1faa1fb2d0e6e9bb8f8673a9aa02d4d59fb44005f97e18f6a5a20a6134",
+  "lines": 401,
+  "synced_at": "2026-10-15",
+  "synced_by": "P0-S4-1 5包vendor分发v2",
+  "role": "兜底副本（vendored fallback）",
+  "priority": "运行时优先联邦真源；仅在联邦 core 缺失时（git clone / CI / 开发态）启用本副本",
+  "drift_guard": "tests/test_vendor_core.py —— 安装态若联邦 core 存在则比对 sha256，不一致即 FAIL",
+  "sync_command": "cp ~/.workbuddy/plugins/marketplaces/my-experts/plugins/shared-core/assemble_spawn_prompt.py vendor/shared-core/ && 更新本文件 sha256/lines/synced_at",
+  "members": [
+    "dvm-content-expert",
+    "pedagogy-architect",
+    "visual-slide-designer",
+    "ppt-producer",
+    "verifier"
+  ]
+}

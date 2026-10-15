@@ -217,6 +217,24 @@ def check_task_package(task_text: str) -> tuple[bool, list[str]]:
     return (not missing), missing
 
 
+def resolve_body_skills(expert_dir: Path, body: str) -> list[str]:
+    """从成员 MD 正文提取 skills/<name>/SKILL.md 相对路径并解析为绝对路径。
+
+    背景（P2-5, 2026-10-15，e2e-p1 真实运行实证）：各包成员把技能预加载声明写在
+    【正文】（如 subject-writer「额外预加载skills（前置门禁）」），而 frontmatter
+    均未声明 skills → resolve_skill_paths 恒为空，装配产物中技能只有相对路径，
+    成员 spawn 后 cwd=WORK_ROOT 不可达，「前置门禁」实际不可执行。
+    本函数补上正文声明这一来源；仅收录真实存在的文件（防御性：路径写错不注入死链）。
+    """
+    out: list[str] = []
+    for m in re.finditer(r"skills/[\w\-]+/SKILL\.md", body or ""):
+        rel = m.group(0)
+        p = expert_dir / rel
+        if p.is_file() and str(p) not in out:
+            out.append(str(p))
+    return out
+
+
 # ---------------------------------------------------------------- 装配
 
 def assemble(expert_dir: Path, member_id: str, fm: dict, body: str,
@@ -226,6 +244,11 @@ def assemble(expert_dir: Path, member_id: str, fm: dict, body: str,
     """拼装最终 spawn prompt。结构固定，便于审计与 diff。"""
     skills = fm.get("skills") or []
     skill_paths = resolve_skill_paths(expert_dir, skills)
+    # P2-5: 正文声明的技能路径（相对）解析为绝对路径注入——否则「前置门禁」不可达
+    body_skill_paths = resolve_body_skills(expert_dir, body)
+    for p in body_skill_paths:
+        if p not in skill_paths:
+            skill_paths.append(p)
     shared = resolve_shared_refs(expert_dir)
 
     lines: list[str] = []
