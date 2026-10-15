@@ -8,16 +8,18 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.0.0"
+version: "3.4.3"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
-# 只认整数 0-3；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
+# v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
+# 只认整数 0-4；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
 stages:
   0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", next: 1}
   1: {name: "闸2 设计（蓝图∥证据）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
   2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", next: 3}
-  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: null}
+  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: 4}
+  4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", next: null}
 
 # ── 成员注册表：职责、工具白名单、降级通道 ────────────────────
 # 工具白名单说明：WorkBuddy 专家包**不支持** agent frontmatter 的 tools 字段
@@ -81,6 +83,29 @@ budgets:
   max_rework_rounds_per_stage: 2
   max_stage_minutes: 20            # 单阶段挂钟上限（超时 → 上报，不等死）
   max_artifact_bytes: 60000        # 单个成员产物字节上限；超限强制"只传路径+摘要"
+  # v3.3.0：闸4.5 三源核验预算
+  three_source_sample_rate: 0.1    # 抽检 10% cases
+  three_source_pass_threshold: 0.8 # 通过率 ≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）
+
+# ── 快照策略（v3.3.1 治理批新增：痛点①备份膨胀的对症段）────────
+# 缘由（2026-10-14 诊断实测）：snapshot.py 自 Batch 2 就绪但 .snapshots/ 从未初始化，
+#   AI 迭代产物以 _v2_v3 旁路文件堆积（消毒剂使用规范-优化版E_v2_v3.pptx 实证），
+#   课程工作区 14G 中约半数为可再生/可归档内容。
+# 原则：**唯一活跃版 + 原始件双轨**——AI 修改课件原地写回（禁旁路新文件），
+#   写回前自动 snap；原始课件（非 AI 产物）永不覆盖，只读引用。
+snapshot:
+  enabled: true                    # 总开关（false 时 harness 跳过自动 snap）
+  max_mb: 6000                     # 快照库容量上限（LRU 淘汰，milestone 永久保留不计入）
+                                   # v3.4.3 C3（裁决3-B）：500→6000——5.5G 实际水位是 v3.4.2 P2-3
+                                   # 的"基线永久"有意决策（见下注），非意外膨胀；上限对齐设计
+                                   # 以消除体检误报，未删任何快照。未来磁盘受限可按下行注释降级。
+  keep: 3                          # 每课件保留 K 份（里程碑点永久除外）
+  auto_snap_on_writeback: true     # ppt-producer 写回前自动打点（trigger=auto_pre_writeback）
+  milestone_tags_permanent: true   # milestone 类快照不参与 LRU
+  first_snap_targets: "194"        # 启用当日对全部存量课件打首版快照（baseline-v3.3.1）
+  # v3.4.2 P2-3 备注：当前 .snapshots 5.6G 超出 500M 上限，但所有快照均标 baseline-v3.4.2
+  #   milestone tag 永久保留。如下游工作区磁盘受限，可手动编辑此字段 max_mb 调高或
+  #   关闭 milestone_tags_permanent 让 GC 生效——本工作区选择"基线永久"以保首次收编可回滚。
 
 # ── 上下文压缩（隔离：主理人不吃全文）─────────────────────────
 context:
