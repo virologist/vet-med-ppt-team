@@ -6,6 +6,52 @@
 
 ---
 
+## [v3.4.4] - 2026-10-15
+
+### 概述（遗留收口：体检首全绿 + 双仓 push）
+
+- **[13] 联邦同步**：2 包 vendor 跟升到 core 02a69d1f（P2-5 补丁版，401 行），VENDOR.json sha/lines/synced_at 三件套更新；防漂移测试 6/6×2 PASS
+- **[8] 口径修复**：ensure_settings 第 8 项从"目录文件总数 >20"改为"备份模式文件 ≥3"（正则：括号数字后缀/副本/优化版/_v2/.bak），对齐告警名"备份膨胀"；消除"广东职业养禽与禽病防治 27 份/环境控制 21 份/粪便虫卵检查 23 份"等合法教学内容目录的误报；正则自测 12/12 PASS（6 应命中/6 不应命中）
+- **team-lead MD 瘦身**：21.5KB → 13.9KB（目标 ≤14KB），任务包 schema+人设注入协议（约 4.3KB）外置到 `references/spawn-protocol.md`（一字不丢）；闸索引表/编排内核/三级路径/v3.4.2 采用闭环等节密实化
+- **agents v3.4.0 补账**：6 个 agents MD v3.4.0/v3.3.1 演进入库（description 去版本化中文重写、dvm/verifier 五条铁律专版、verifier 三源抽检职责、v3.3.1 旁路版本检查节）——又一处双仓库漂移实证（L13）
+- **release-sync**：v3.4.0-3.4.4 全部 7 个 commit 经开发仓 fast-forward push 到 origin（`c4f7106..77a83bc`），GitHub 仓库远端同步；上轮汇报中的"release-sync.sh 待推"为误判——脚本是安装态 git hook 提示器，真身已通过手工 git push 等价执行
+- **plugin.json**：8 处 3.4.3 → 3.4.4
+- **双仓拓扑确认**：origin/main 权威 = 开发仓链（含全部 v3.x tag）；安装态仓 remote origin 缓存陈旧（v3.2.0），但 v3.2.0 后是分叉不可 push，已 `git fetch` 刷新缓存到 v3.4.4 view
+- **体检终态**：13 项 **全绿**（自 v3.2.0 建立 13 项体检以来首次 13/13 ✓），[8]/[10]/[11]/[13] 四个长期挂账项全清
+
+### 本版不做的事
+
+- 不动病例核验/cases_library（保持 v3.4.2 形态）
+- 不动 deck_registry（保持 135/140 收编）
+- 不重跑 stage 状态机（A6 仍挂起等下次真实课件任务走 5 闸）
+- 不合并 6 个 v3.0.0 时代的 TaskList 僵尸（#16-21），改记 lessons L13 案例保留为版本治理回溯参考
+
+---
+
+## [v3.4.3] - 2026-10-15
+
+### 概述（采用迁移批：机制 94% → 拉采用率）
+
+五维独立诊断的定性是"工程完工 vs 实际采用脱节（94% vs 68%）"，本版**不加新机制**，四个裁决点经用户拍板后执行：稳健核心 10 项 + 模板按频次补登 + 挂账无风险部分；stage 强制采用挂起等下次真实任务。
+
+### Added
+- **`harness.py verify-ref --online / --write-back`**：PubMed esearch 联网核验 + 受控写回（静态门禁→.bak 备份→写回→复检，net_err>0 拒写）——消除上一版"脚本直写绕过预检"的旁路；全链路实测 hit=1/拒绝门禁生效
+- **`ensure_settings.py` 第 13 项联邦 shim 巡检**：各包 shim 声明版本一致性 + vendor sha256 比对（上线当日即抓到跨会话改 core 未同步 vendor 的漂移）
+- **`harness eval` 周期化**：WorkBuddy automation 每周一 08:30 自动跑（首跑归档 outputs/harness-ab/eval_weekly/）
+
+### Changed
+- **trace log 死值源堵死**：`--event` 漏写或传 "event" 一律 exit 2（上一版只清了已生数据，默认值未堵）
+- **联邦 shim 全对齐 P0-1**：research-orchestration-team + triz-invention-team 60 行 R9 → 102 行（vendor 兜底 + 防漂移测试 6/6 PASS），shared-core README 勘误（"45 行"→分档版本表）
+- **template_registry 4 → 26 指纹**：活跃口径按频次补登，96 份活跃 deck 覆盖 35.4%→90.6%；顺带修 theme_fingerprint.batch_report 混入快照副本的口径缺陷（238→96）
+- **挂账 [10]/[11] 转绿**：harness.yaml snapshot.max_mb 对齐"基线永久"决策（500→6000，未删快照）；2 份旁路版本副本移 _trash_ 区（zip 双保险）；ensure_settings 快照上限改读 yaml 去硬编码
+- **lessons.md L12-L15**：虚假完成复利损耗 / 双仓库同步缺口（安装态 git 落后三个版本的教训与双仓同批 commit 纪律）/ 零采用四分类口径 / CHANGELOG 密度红线（单条版本号提及 ≤3 次）
+
+### 验证
+- A1 三场景 + A2 全链路（含拒绝门禁）+ test_vendor_core 6/6×2 包 + test_harness 15/15 全过
+- ensure_settings 13 项：11 ✓（[10]/[11] 新转绿）、[8] 目录整理按裁决另开战线、[13] ⚠ 为并行会话 P2-5 改 core 未同步 vendor 的真实漂移（待其收敛后消化）
+
+---
+
 ## [v3.4.2] - 2026-10-15
 
 ### 概述（专家团全面诊断 P0-P3 全量执行日）

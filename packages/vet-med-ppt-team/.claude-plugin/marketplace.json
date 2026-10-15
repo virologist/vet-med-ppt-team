@@ -1,0 +1,18 @@
+{
+  "name": "vet-med-ppt-team",
+  "owner": {
+    "name": "TZUVet"
+  },
+  "metadata": {
+    "description": "五人Team型专家团，把任意动物医学教学主题做成证据核验、教学对齐、可直接投影的PPT方案与页面内容",
+    "homepage": "https://github.com/virologist/vet-med-ppt-team"
+  },
+  "plugins": [
+    {
+      "name": "vet-med-ppt-team",
+      "version": "2.2.0",
+      "source": "./packages/vet-med-ppt-team",
+      "description": "Five-member veterinary teaching-PPT team: stage-gated pipeline, evidence verification via Ima knowledge bases, pedagogy alignment, projection-ready slide solutions."
+    }
+  ]
+}
