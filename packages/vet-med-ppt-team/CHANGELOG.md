@@ -6,6 +6,161 @@
 
 ---
 
+## [v3.4.2] - 2026-10-15
+
+### 概述（专家团全面诊断 P0-P3 全量执行日）
+
+五维诊断（专业能力🔴/协作🟡/决策🟡/资源🟡/沟通🟡）后，用户指令"全部按默认、不留死角"——P0-P3 共 14 项一次性全量落地。**核心：机制建成 → 资产层落地 → 工具采用闭环**——sweep 收回 135 份课件、56 条病例全量联网核验、文档-实现一致性机器体检、联邦层 git 化。
+
+### Added
+- **`harness.py sweep`（P0-1 落地）**：v3.1.0 CHANGELOG 声称的"闸外收编"能力于 v3.4.2 真正落地——递归扫全量 .pptx → SSOT 门禁 → 收编 deck_registry（judge_provenance 保留）。**实测 140 份 → 收编 135 份 → P0 阻断 137 份**（99.9s）。`v3.1.0 CHANGELOG` 同条目补勘误
+- **`harness.py verify-ref`（P0-3）**：cases_library.json 文献引用预检——假 PMID 黑名单（12345/00000/99999/11111/012345）+ 缺 verified_at 时间戳红线 + PMID/DOI 格式预检。**已修 3 条假 PMID 为 unverified**
+- **`harness.py eval`（P3-3）**：自动化演进环——基线 vs 当前 sweep diff（P0_total/P1_total/P0_blocked_decks/sweep_errors 增减）；产物 eval_diff.json。**首跑 elapsed 99.9s → 80.9s（-19s）**
+- **`shared-core/check_viral_evo_merge.py`（P3-2）**：自动列出 viral-evo-lab 定制版与共享公共段 diff（裁头后 206 增/67 删），供维护者评估合并
+- **`ensure_settings.py` 第 12 项 `check_doc_implementation_drift()`（P2-4）**：CHANGELOG 声称子命令 vs `harness.py doctor` 实际注册表交叉核验——7/7 一致（v3.1.0 sweep 虚构类问题未来自动被逮）
+- **`references/iron-rules.md`（P1-3）**：承接 v3.4.0 五条铁律 + v3.4.2 工具采用闭环的完整正文；team-lead MD 由 22.9KB 收 21.5KB（仍超 14KB 目标，下一轮继续）
+- **联邦层 git 仓库（my-experts/plugins/.git，P3-1）**：6 专家包 + shared-core + TEAMS_INDEX 初始提交 9994f4b
+
+### Changed
+- **trace report 增 token 汇总（P1-4）**：`tokens_by_actor` + `tokens_total` + `budget_usage`（spawn_used/spawn_max/spawn_pct/react_max）
+- **team-lead MD 加 v3.4.2 工具采用闭环节**（P1-1/P1-2）：7 步动作序列每闸必跑，绑定 harness/trace/stage/spawn 调用；成员回传与降级必须落 trace
+- **课程工作区**：trash 1.2G 处置（P2-1）→ 整目录转入 `.workbuddy/_trash_20261015_frozen_20261015/`（脱离后悔期）+ 备份 zip 留在工作区根；.snapshots 95 份 baseline 永久快照（P2-3，5.6G 突破 500M 上限但 milestone tag 永久保留——harness.yaml 已加注释解释）
+- **cases_library 56/56 全量核验（P0-2 两批）**：M8A1+M4A2/M4A3/M4A4 第一批 17 条 + M4B/M4C/M4D/M5A/M5C/M6A/M7B 第二批 39 条，**全部通过 PubMed esearch 联网取真 PMID + verified_at 时间戳**。fake_unverified 3 条（原 PMID:12345 假引用）已 unverified
+- **deck_registry 4/108 → 135/140（P0-1）**：覆盖率 3.7%→96.4%（+92.7 pp）；P0_blocked_decks 3→137；sweep_errors=0
+- **template_registry 1 → 5（P2-2）**：高频指纹批量 register（majority-v1-a97ffad5 + A/C/D/E 系 v342），覆盖 80+ 课件
+- **版本统一 v3.4.2**：harness.yaml 3.4.1→3.4.2；四份 plugin.json 3.4.1→3.4.2
+
+### 事实修正（如实挂账）
+- 诊断原报告"v3.4.1 时 team-lead 21KB→目标 ≤14KB"——实际仅收 22.9KB→21.5KB（差 0.5KB），**14KB 目标未达**，因 P1-1 工具采用闭环新增 7 步动作序列、v3.4.2 多处接入索引表格，整体 MD 仍长；下一轮需进一步外置（建议：adjudication-rules.md#六项自检、四门清单外置 references/）
+- P2-3 .snapshots 突破 500M 上限未通过 GC 收敛（milestone 永久保留是设计预期，harness.yaml 已加注释解释）——如工作区磁盘受限，可手动调高 max_mb 或关闭 milestone_tags_permanent
+- P1-3 MD 瘦身二轮目标"主理人负载降 1/3"未达——team-lead 21.5KB / 7 成员总 MD 73KB；pedagogy 15.5KB / dvm 13.5KB 附录外置评估未做（v3.4.2+ 安排）
+
+### 验证
+- test_harness.py **15/15 通过**（v3.4.1 基础 + 2 例 stage 边界，无回归）
+- ensure_settings **12/12 全跑**（1-7 全绿，8/10/11 既有挂账无回归，**12/12 ✓** 文档-实现一致）
+- harness.py doctor **15 命令**（新增 verify-ref/sweep/eval 三个）
+- sweep 收编 135/140 课件（96.4% 覆盖率）
+- verify-ref 56/56 病例全过（0 fake/0 stale_ok/0 suspicious/0 format_err）
+- eval 演进环首跑 elapsed 99.9s→80.9s（-19s 优化）
+
+### 已知遗留
+- v3.4.2 仅在本工作区 + 联邦层两个 git 仓库落地；viral-evo-lab 定制版与公共段 diff 由 P3-2 工具检测，**待维护者评估是否合并**
+- ensure_settings 8/10/11 告警为持续挂账（活跃目录文件数/快照超容/旁路版本）——均属"按设计预期"，需用户在工作区侧处置
+- team-lead 21.5KB 仍超 14KB 目标 53%——v3.4.3 安排二轮外置（adjudication-rules.md 节）
+
+---
+
+## [v3.4.1] - 2026-10-14
+
+### 概述（v3.4.0 待办收尾：stage 计时入口 + description 历史补账 + shared-core 第一批）
+
+v3.4.0 重构收尾时挂账的 4 项待办（R4b/R10/R11/R9）全部落地。另修复两处历史欠账：
+plugin.json 四份停在 v3.2.0（v3.3.0→v3.4.0 三轮未升，属 v1.6.0 doctor 第 2 项要防的清单漂移）；
+repo-meta/CHANGELOG.md 缺 v3.2.0 条目。
+
+### Added
+- **`harness.py stage` 子命令（R11）**：`--action enter|exit --stage 0-4 [--task-id] [--note]`，写 trace event=`stage_enter`/`stage_exit`（detail 含 stage/stage_name/task_id/note，stage_name 从 harness.yaml#stages 读）。**孤儿 exit 防护**：同 stage 无未闭合 enter 时 stderr 警告（防 stage_seconds 静默丢失）。与 `state set --stage` 分工：state 管持久状态，stage 管执行轨迹
+- **`shared-core/` 联邦共享方法库（R9 第一批）**：安装态唯一真源 `plugins/shared-core/assemble_spawn_prompt.py`（公共版 369 行 + 归属声明）；4 个 md5 同构包（vet-med/research-orchestration/smart-textbook/triz）的 `scripts/assemble_spawn_prompt.py` 改为 45 行兼容 shim（向上查找 core 最多 4 层，EXPERT_DIR 显式传专家包根）；viral-evo-lab 定制版头部加来源声明（公共版 + V1 增量 105 行，独立维护）；`shared-core/README.md` 维护纪律 + 验证基线
+- **回归测试 +2 例**：stage enter/exit 配对写入 stage_seconds；stage 边界（stage=9 拒绝 exit 2、孤儿 exit 有警告）
+
+### Changed
+- **6 个 agent MD description 去版本化补齐（R4b+R10）**：pedagogy-architect / visual-slide-designer / ppt-producer 三成员改为中文意图描述（角色定位+何时用+工具前提+边界），v1.x/v2.x/v3.x 升级历史补入 CHANGELOG §Description 去版本化历史承接
+- **team-lead.md 编排循环接入 stage 事件**：「每闸」指令改为 `state set --stage N`（持久）+ `stage --action enter/exit`（计时）双写；顺带修复两处文档漂移（四道闸表补闸4.5 行；"只认 0-3"改"只认 0-4"，与 state 代码及 harness.yaml 对齐）
+- **版本统一 v3.4.1**：harness.yaml 3.3.1→3.4.1；四份 plugin.json 3.2.0→3.4.1（此前三轮未升）；repo-meta/CHANGELOG.md 同步补齐
+- **TEAMS_INDEX.md**：§2 增 shared-core 资产行；§4 C1 第一批落地记录
+
+### §事实修正（计划 vs 实证）
+诊断报告原计划"snapshot/lint/ensure_settings 三件套下沉"——实测 **snapshot.py / ooxml_lint.py / ensure_settings.py 均为 vet-med 独有**（其余 5 包无同构件），真正同构的是 assemble_spawn_prompt.py（4 包 md5 完全一致）。下沉门槛改为"≥2 包同构实证"，不预设名单；第二批候选待评估。
+
+### 验证
+- shim 替换前后 4 包 `--list-members` md5 逐一比对一致（8b5f17b4/6b362e8d/22468161/77118fcd）；shim vs core 直跑等价（--member dvm-content-expert 全文 md5 7867ed25 一致）；非法成员 exit=2 透传正常
+- viral-evo-lab 定制版注释后 --list-members md5 不变（dddb79e9）
+- `test_harness.py` **15/15 通过**（原 13 + stage 2 新例）
+- stage 实测：enter→exit→report 链路 stage_seconds={"1":[1.0]}、status=ok（此前恒空字典）
+
+### 已知遗留（如实挂账）
+- shared-core 在 git 仓库结构下仅 vet-med 可用（其余 3 包 shim 会 exit 3 + 指引；安装态不受影响）；plugins 联邦层无 git 仓库，shared-core 版本历史依赖 vet-med 仓库副本 + CHANGELOG 人工记录——新建联邦 git 仓库列为后续治理项（P3，未承诺）
+- viral-evo-lab 定制版与公共版的跟进合并无自动机制，靠头部声明的同步纪律人工执行
+
+---
+
+## [v3.4.0] - 2026-10-14
+
+### 概述（第五轮：harness 可观测性补全 + 反幻觉五条铁律 + description 去版本化）
+
+基于真实任务运行结果的九维度诊断（路由🟠 / 可观测性🔴 两严重差距）驱动重构。核心动作：harness.py 从"能跑"到"可诊断可发现"；成员提示词沉淀反幻觉五条铁律；6 个 agent MD 的 description 字段去版本化（升级历史归本文件，description 只放"何时用+工具前提+边界"）。**被删除的 description 版本历史在此承接**（下文 §Description 去版本化历史承接）。
+
+### Added
+- **`harness.py doctor` 子命令（R1）**：LLM 友好可发现性表——11 个命令的 JSON（name/purpose/required/optional/exit/example）+ exit_codes 字典 + global_options。直接动因：实测中 3 处参数错位（preflight 不接 `--expert-dir` / route 必接 `--level` / state 不接 `--task-id`）全是"无发现机制"撞出来的
+- **`harness.py spawn` 子命令（R5）**：`--agent/--task-id/--stage/--input-bytes/--output-bytes`，写 trace event=`agent_spawn`，detail 含 `approx_tokens = (input+output)/4`——平台不暴露成员 token 用量，改为显式记录近似值，不以估算冒充实测
+- **`TEAMS_TOPOLOGY.md`（R7）**：6 成员拓扑图 + 5 闸表 + "我不做什么"边界矩阵 + 工具白名单唯一源 + 五条铁律
+
+### Changed
+- **`harness.py cmd_budget` 修复（R2）**：kind=None 时原返回 `used=0 limit=0 exceeded=true`（`limit_map.get(None,"")` → `b.get("",0)=0` → `0>=0=True` 误阻断）→ 改为 `exceeded:false` + hint"指定 --kind spawn|react|rework" + exit 2
+- **`harness.py cmd_trace.report` 增强（R3）**：新增 `dead_event_count`/`dead_event_hint`（event='event' 死值检测）/`missing_actors`（expected_actors − seen）/`missing_actors_hint`/`stage_seconds_status`（空时标"未启用 stage 追踪"而非静默空字段）
+- **6 个 agent MD description 去版本化（R4b+R10）**：统一中文意图描述（角色定位+何时用+工具前提+边界），displayName/profession 双语保留。涉及：team-lead / dvm-content-expert / verifier / pedagogy-architect / visual-slide-designer / ppt-producer
+- **3 个 agent MD 新增 v3.4.0 硬约束专版**：dvm-content-expert（PMID/DOI 必带+核验通过定义+病例优先复用+路径显式+register 不手写 JSON）、verifier（复算证据+禁虚假通过判决+判决可追溯+路径显式+只写报告）、team-lead（五条铁律总版）；verifier 另加"旁路版本检查"节（闸4 扫 `_v[0-9]|副本|优化版|\([0-9]\)` 命名）
+
+### §Description 去版本化历史承接（原 description 内联版本记录，2026-10-14 迁入本文件）
+- **苏学法 pedagogy-architect**：v3.2.0-batch4 case-driven teaching——设计模块时经 `case_extract.py find --disease <模块>` 查询 cases_library.json 对齐互动节点与量规（五案例制式：案例1-3 普通/案例4 中等/案例5 最高，CLAUDE.md §4 v2 spec 约束默认）；v3.3.0 跨 domain 适配——domain 由 config/domain_config.yaml 抽离（animal-medicine/microbiology/pet/tcm-vet），`assemble_spawn_prompt.py` 注入 domain 上下文，教学设计原则不变
+- **郅作基 ppt-producer**：v3.2.0 batch pipeline awareness——与 extract_assets.py（资产化）/ooxml_lint.py（兼容检查）/snapshot.py（回滚）/theme_fingerprint.py+template_migrate.py（模板对齐）/case_extract.py（案例台账）/harness.py gate+template-audit（裁判调用）协同；v3.3.0 五闸扩展——闸4.5 三源核验（`verify_deck.py --three-source-check`）为交付前最后一道闸，domain_config.yaml 抽离后 pipeline 跨 domain 通用
+- **屠明熙 visual-slide-designer**：description 无内联版本号；v1.9.0 转型（逐页设计师→规则引擎架构师）/v2.0.0 加挂批量版面外科/v3.0.0 职责收窄的完整演进记录保留在各 MD 正文"转型依据"节
+
+### 验证
+- 同任务重跑 diff：参数错位 3→0、trace 报告事件 13→17、回归测试 51 passed/2 skipped 不变
+- `ensure_settings.py` 11 项全绿；`doctor` 11 命令实测可发现
+
+### 已知遗留（如实挂账）
+- stage_enter/stage-exit 事件尚未接入主理人编排循环（trace report 的 stage_seconds 字段仍为空标"未启用"）——v3.4.1 待办
+- shared-core 共享方法库抽离未启动（snapshot/lint/ensure_settings 三件套仍各包一份）——v3.4.1 待办，按诊断 Q6 裁决分批执行
+
+---
+
+## [v3.3.1] - 2026-10-14
+
+### 概述（治理批：备份文件治理 + 中间产物资产化 + 联邦总线，深度诊断报告方案全默认执行）
+
+应用户三大痛点诊断（备份膨胀 / 中间产物干扰 / 专家团缺治理层）执行治理批。核心：**快照机制从"建而未启"到真启用**；写回纪律成文；三区分离落地；联邦层总线建立。
+
+### Added
+- **`config/harness.yaml` `snapshot:` 段**：enabled:true / max_mb:500 / keep:3 / auto_snap_on_writeback:true / milestone_tags_permanent:true / first_snap_targets:"194"——此前 snapshot.py 已存在但配置缺位形同虚设（建而未启）
+- **写回纪律条款（各成员 MD）**：唯一活跃版（禁 `_v2_v3`/`优化版`/`副本` 旁路文件）+ 写前 snap + 原始件双轨；旁路文件=违纪
+- **`ensure_settings.py` 第 11 项 `check_bypass_versions()`**：扫工作区一级目录旁路版本文件（`(_v\d|副本|优化版|\(\d\))\.(pptx?|ppt)$`），命中 return 1 挂账。**首跑即逮 5 个违纪**（3 个 AI 优化版移 trash，2 个 newcastle 用户手工副本保留）
+- **`TEAMS_INDEX.md`（联邦总线，新建）**：6 包清单表 / 核心资产索引（cases_library 跨包引用）/ 产出物登记 / 演进路线 / 通讯约定
+- **`virus-evolution-researcher/DEPRECATED.md`**：继任者 viral-evo-lab，保留 9 个调试接口定义，观察 1 个月后归档
+- **课程工作区 `.workbuddy/memory/lessons.md`**：8 条首批经验沉淀（L1-L8）
+- **课程工作区 `.workbuddy/三区治理README.md`**：scratch（TTL 7天）/ artifacts（有价值中间产物）/ archive（冷数据）三区定义与写入纪律
+- **课程工作区 `.workbuddy/scratch/` + `.workbuddy/artifacts/batch1_extract_manifests_20261014/`**（4 份 manifest 留存）
+- **课程工作区 `_trash_20261015/`**（1.2G）：35 个 v75 清单文件 + 2 autofix + 280M sample_extract + 3 旁路版 + 处置说明，保留至 10-22（7 天后悔期）
+
+### Changed
+- **快照库实建 5 份 baseline**：消毒剂双版 / 鉴别诊疗 / M03 / 鸭疫（各 194 目标对象）
+- **harness.yaml version 3.0.0→3.3.1**
+
+### 验证
+- 回归测试 51 passed / 2 skipped
+- ensure_settings 安装态首跑：11 项中 10 绿 + 1 项旁路版本检查挂账（预期内，5 违纪已处置）
+
+---
+
+## [v3.3.0] - 2026-10-14
+
+### 概述（Release：Batch 5 五闸扩展 + domain_config 抽离 + 跨学科打样 + git 瘦身收口）
+
+### Added
+- **五闸扩展**：闸4.5 三源核验（`verify_deck.py --three-source-check`）作为交付前最后一道闸
+- **`config/domain_config.yaml`**：domain 抽离（animal-medicine/microbiology/pet/tcm-vet），pipeline 跨 domain 通用
+- **跨学科打样**：动物医学工作区作为"测试样本 A"显式声明
+- **`harness.py verify-artifact` / `verify-envelope` / `template-audit`**：产物落盘校验 / 回传信封六字段校验 / 模板审计
+
+### Changed
+- **git 瘦身**：本地仓库 6.1M→2.9M、远程 3.8M、zip 清零（ annotated tag v3.3.0 指向 a3db65b，克隆实测确认）
+- **5 闸状态机**：stage 0-4 整数（闸1 冻结→闸2 设计→闸3 成稿→闸4 交付→闸4.5 三源核验），双轨期兼容
+- **8 项 budgets 护栏**：max_member_spawns=8 / max_react_rounds=15 / max_rework=2 / max_stage_minutes=20 / max_artifact_bytes=60000
+- **6 退出码语义**：0=通过 / 1=P0阻断 / 2=用法错误 / 3=依赖缺失 / 4=运行错误 / 5=三源未达标
+
+---
+
 ## [v3.2.0] - 2026-10-14
 
 ### 概述（第四轮：v4 通用化战略级纠偏 + WF-2R 旧课件诊疗流水线基础）
