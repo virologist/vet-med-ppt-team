@@ -251,14 +251,60 @@ def _shape_font_sizes(shape, slide):
     return sizes, unresolved
 
 
+def _shape_run_pairs(shape, slide):
+    """v3.5.1：run 级 (文本, 字号) 配对；空 run 单列，判定时跳过。
+
+    背景（迭代四原则④「检出≠判定」）：旧判据取 min(形状内所有 run 字号)
+    与正文阈值比较，产生两类系统性误报——
+      ① 空 run（无文本、投影不可见）的残留 sz 参与取 min，凭空造出 P0；
+      ② 同形状内 9pt 图注/来源与 12pt 正文混排时，min=9 把整框判成"正文过小"。
+    本函数把粒度降到 run，判据即可按 run 文本与用途分别取阈值。
+    返回 (pairs, empty_runs)；pairs = [(text, pt_or_None), ...]
+    """
+    pairs = []
+    empty = 0
+    if not shape.has_text_frame:
+        return pairs, empty
+    for para in shape.text_frame.paragraphs:
+        for run in para.runs:
+            txt = (run.text or "").strip()
+            try:
+                pt = _resolve_run_sz(para, run, shape, slide)
+            except Exception:
+                pt = None
+            if not txt:
+                empty += 1
+                continue
+            pairs.append((txt, pt))
+    return pairs, empty
+
+
 def _is_note_candidate(text):
-    """图注/来源判定：短文本 + 含来源关键词 → 按低阈值"""
+    """图注/来源判定：命中来源语义关键词 + 长度不超过图注上限 → 按低阈值。
+
+    v3.5.1（迭代四原则④「检出≠判定」实证修正）：旧判据 `len(text) <= 40`
+    过窄，把 48 字的"（资料截至 …；来源：WHO/WOAH/…）"这类合规来源注
+    误判为"正文字号过小"，单份课件凭空造出 32 条 P0。
+    新判据改为语义优先：必须命中来源/图注关键词，且长度 ≤80（图注上限）。
+    纯正文不含关键词 → 永不降级；含"来源"的超长正文（>80）→ 仍按正文判定。
+    """
     keys = ("来源", "Source", "图注", "PMC", "CC-BY", "参考文献", "数据来", "引自", "http")
-    return (len(text) <= 40) and any(k in text for k in keys)
+    if not any(k in text for k in keys):
+        return False
+    return len(text) <= 80
 
 
 def _shape_colors(shape):
-    """收集该形状用到的颜色（填充 + 字体色）"""
+    """收集该形状**文字**用到的颜色（v3.5.1：不再统计填充色）。
+
+    判据口径修正（迭代四原则④「检出≠判定」实证）：
+    旧实现把 shape.fill 一并计入，而卡片/警示框的浅色底（FDF0F0、FAF7E6）
+    与金色装饰条（B8860B）是**版式设计**，不是学生读取的信息色。
+    结果「主绿 145525 + 正文灰 333333 + 警示红 C00000 + 来源灰 999999」
+    这一合规四色版式被计成 6 色、判为配色混乱。
+    「配色混乱」的语义对象是信息色混乱，故改为只统计 run 文字色。
+    需要单独查装饰色时，用 query/raw 视图人工看，不进机器判据。
+    """
     colors = set()
     try:
         if shape.has_text_frame:
@@ -267,14 +313,6 @@ def _shape_colors(shape):
                     c = run.font.color
                     if c is not None and c.type is not None and c.rgb is not None:
                         colors.add(str(c.rgb))
-    except Exception:
-        pass
-    try:
-        f = shape.fill
-        if f.type is not None and f.type != 5:  # 5 = background/none
-            fc = f.fore_color
-            if fc.type is not None and fc.rgb is not None:
-                colors.add(str(fc.rgb))
     except Exception:
         pass
     return colors
@@ -307,6 +345,8 @@ def _extract_shape(shape, slide):
         "text": "", "has_tf": False,
         "rect": None, "sizes": [], "unresolved_runs": 0,
         "colors": set(), "is_pic": False,
+        # v3.5.1：run 级粒度（None = 未取到，判据回退形状级 min）
+        "run_pairs": None, "empty_runs": 0,
     }
     try:
         if shape.shape_type == 13:  # PICTURE
@@ -335,6 +375,10 @@ def _extract_shape(shape, slide):
             a["err"] = f"font: {e}"
             return a
         try:
+            a["run_pairs"], a["empty_runs"] = _shape_run_pairs(shape, slide)
+        except Exception:
+            a["run_pairs"], a["empty_runs"] = None, 0
+        try:
             a["colors"] = _shape_colors(shape)
         except Exception:
             a["colors"] = set()
@@ -358,7 +402,8 @@ def _extract_sp_xml(elm):
     """XML 兜底解析 p:sp（python-pptx 工厂不认识的包装层里的形状）"""
     a = {"ok": True, "err": None, "text": "", "has_tf": False,
          "rect": None, "sizes": [], "unresolved_runs": 0,
-         "colors": set(), "is_pic": False}
+         "colors": set(), "is_pic": False,
+         "run_pairs": None, "empty_runs": 0}
     try:
         a["has_tf"] = elm.find(qn("p:txBody")) is not None
         texts = [t.text or "" for t in elm.findall(".//" + qn("a:t"))]
@@ -377,6 +422,19 @@ def _extract_sp_xml(elm):
             s = _xml_sz(d)
             if s is not None:
                 a["sizes"].append(s)
+        # v3.5.1：XML 兜底也做 run 级配对（a:r 内含 a:t 与 a:rPr@sz）
+        _rp = []
+        for r in elm.findall(".//" + qn("a:r")):
+            t = r.find(qn("a:t"))
+            txt = (t.text or "").strip() if t is not None else ""
+            pr = r.find(qn("a:rPr"))
+            s = _xml_sz(pr) if pr is not None else None
+            if not txt:
+                a["empty_runs"] += 1
+                continue
+            _rp.append((txt, s))
+        if _rp:
+            a["run_pairs"] = _rp
         if not a["sizes"] and a["text"]:
             a["unresolved_runs"] = 1
         for c in elm.findall(".//" + qn("a:srgbClr")):
@@ -441,6 +499,7 @@ def verify(path, hours=3, strict=False):
         "hidden_slides": 0,
         "hours": hours,
         "small_body": 0, "small_note": 0, "offcanvas": 0,
+        "empty_runs_skipped": 0,  # v3.5.1：空 run 不计缺陷，单独计数备查
         "overlap": 0, "color_chaos": 0, "text_wall": 0,
         "empty_slides": 0, "no_notes": 0, "unknown_font": 0,
         "bleed_decor": 0, "parse_errors": 0, "xml_fallback_slides": 0,
@@ -470,8 +529,40 @@ def verify(path, hours=3, strict=False):
         if any(k in page_text for k in ("思考题", "练习题", "课堂提问", "随堂测", "Q1", "答案")):
             has_quiz = True
 
-        # ---------- 1. 字号 ----------
+        # ---------- 1. 字号（v3.5.1：run 级判定；空 run 跳过，图注按 run 文本取阈值）----------
         for a in text_adapters:
+            pairs = a.get("run_pairs")
+            if pairs:
+                # run 级主路径：空 run 已在 _shape_run_pairs 中剔除并单独计数
+                stats["empty_runs_skipped"] += a.get("empty_runs", 0)
+                unresolved = 0
+                for txt, pt in pairs:
+                    if pt is None:
+                        unresolved += 1
+                        continue
+                    is_note = _is_note_candidate(txt)
+                    limit = THRESHOLD["note_min_pt"] if is_note else THRESHOLD["body_min_pt"]
+                    if pt < limit:
+                        if is_note:
+                            stats["small_note"] += 1
+                        else:
+                            stats["small_body"] += 1
+                        issues.append({
+                            "slide": idx, "type": "字号过小",
+                            "detail": f"{pt}pt < {limit}pt（{'图注/来源' if is_note else '正文'}）",
+                            "snippet": txt[:30],
+                        })
+                if unresolved:
+                    # 按形状记一次 P3「未知」，与旧口径可比（旧口径整框只记一次）
+                    stats["unknown_font"] += 1
+                    if strict:
+                        issues.append({
+                            "slide": idx, "type": "字号过小",
+                            "detail": f"{unresolved} 个 run 字号未解析（strict）",
+                            "snippet": a["text"][:30],
+                        })
+                continue
+            # 兜底：未取到 run 配对（XML 路径异常等）→ 沿用 v2.2.0 形状级 min 判据
             if not a["sizes"]:
                 if a["unresolved_runs"]:
                     stats["unknown_font"] += 1

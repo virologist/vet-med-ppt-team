@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.4.3"
+version: "3.7.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -129,6 +129,21 @@ observability:
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded", "error"]
   report_on_finish: true
+
+# ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
+# 经验来源：一次多轮增补实战中，成品 P0=6 与改造前基线完全相等（自引入 0），但按绝对数口径
+#   会被误判为"施工产出 6 条红线"；反之，用"存量也有"掩盖自引入同样不可接受。
+delta_gate:
+  baseline_required: true          # 改造/增补类任务施工前必记基线；基线缺失 = 报告不合格
+  baseline_fields: ["p0", "p1", "p2", "pages_physical", "pages_visible", "md5"]
+  block_on_new_defects: true       # 自引入 P0/P1 > 0 → 阻断；存量缺陷挂账不阻断
+  report_format: "P0=6（基线 6，自引入 0）"   # 只报绝对数的报告视为不合格，退回复算
+  miss_needs_human_review: true    # 机器 MISS 未经规范化复核不得计入缺陷、不得升 P0
+  # v3.6.0（迭代五/六原则的机器背书段）：
+  insert_spatial_audit: true       # 向既有页插入新元素前必须枚举目标区全部形状区间，重叠率 0% 才准插
+  insert_font_at_creation: true    # 新元素文字规格创建时即达合规（正文≥12pt），禁"先插后调"两步走
+  image_caption_requires_reading: true  # 图像类图注/讲稿必须先逐张判读图像本体；判读不出不得写
+  caption_missing_element_policy: "explicit_todo"  # 图注要素缺项必须显式挂账，禁静默省略
 
 # ── 门禁退出码语义（主理人据此分流，不再一律"打回"）────────────
 gate_exit_codes:

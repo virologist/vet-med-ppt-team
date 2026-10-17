@@ -115,3 +115,25 @@ gates:
   3: {name: "闸4 交付",     active: true,  legacy_compat: true}
   4: {name: "闸4.5 案例三源核验", active: true, legacy_compat: false,
      notes: "v3.3.0 新增；双轨期 0-4 合法，旧 0-3 任务不报错"}
+
+# ── AI 融合教学维（v3.7.0 新增，七维诊断维⑦的配置化） ────────
+# 消费方：pedagogy-architect（蓝图检查 AI 元素）/ verifier（维⑦抽检）
+# 量规唯一源：下游 skill teaching-ppt-studio/references/seven-dimension-rubric.md
+# 定位：建议维（P2），按课型权重浮动，不阻断不强制——AI 教学元素是增强项不是及格线
+ai_literacy:
+  checklist:                      # 对应 rubric 维⑦ 的 I1-I5
+    - id: I1
+      label: "AI 协同示范（案例环节真实应用演示）"
+    - id: I2
+      label: "批判性审查训练（AI 输出对照权威源找错）"
+    - id: I3
+      label: "AI 边界教育（法律责任/实物不可替代/时效局限）"
+    - id: I4
+      label: "学生 AI 任务设计（指令构建+核验要求）"
+    - id: I5
+      label: "讲师 AI 教学法（备注体现）"
+  pass_rule:                      # 达标线：按课型取命中数
+    theory: 2                     # 理论课 ≥2 项
+    practicum: 1                  # 实训课 ≥1 项
+    seminar: 1                    # 研讨课 ≥1 项
+  severity: "P2"                  # 未达标只提示不阻断
