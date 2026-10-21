@@ -145,6 +145,47 @@ delta_gate:
   image_caption_requires_reading: true  # 图像类图注/讲稿必须先逐张判读图像本体；判读不出不得写
   caption_missing_element_policy: "explicit_todo"  # 图注要素缺项必须显式挂账，禁静默省略
 
+# ── 双层 Loop 隔离（v3.8.0 增补 B）───────────────────────────
+# 背景：Loop A（改专家团工程）与 Loop B（处理用户真实课件）此前共用
+# task_state.json，授权边界模糊——易把"确认升级指令"误读为"授权处理课件"。
+# 处置：两个 Loop 各自独立状态文件 + 独立授权域，互不触发。
+loop_a:
+  enabled: true                   # 总开关
+  trigger: "管家节点下达的专家团升级/修复指令"
+  state_file: "<包>/.workbuddy/loopA_state.json"
+  scope:                          # 允许触碰的目录（白名单，越界即越权）
+    - "<包>/scripts"
+    - "<包>/config"
+    - "<包>/references"
+    - "<包>/agents"
+  forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
+    - "<工作区>/**/*.pptx"
+    - "<工作区>/**/*.ppt"
+    - "<工作区>/.workbuddy/artifacts"
+  patch_discipline: "minimal"     # 只围绕已核验真实缺口做最小补丁
+  confirm_before_each_batch: true # 每批修改前必须向管家节点确认
+  regression_required: ["ensure_settings", "test_harness", "test_five_gates"]
+
+loop_b:
+  enabled: true
+  trigger: "管家节点点名某份已有 PPT 要求优化/深化"
+  state_file: "<工作区>/.workbuddy/loopB_state.json"
+  coexist_with: "<工作区>/.workbuddy/task_state.json"   # 并存，不覆盖（五道闸状态机语义不变）
+  single_writer: "team-lead"      # 单写者：成员不得直接写状态文件，回传由主理人汇编落盘
+  original_readonly: true         # 原件只读；工作副本 <name>_wip/ 迭代；最终另交新版
+  round_review:
+    required: true                # 每轮必须停等用户确认（references/round-review-sop.md）
+    silent_is_not_approval: true  # 沉默/超时/成员自评均不构成确认
+    partial_accept_freezes_only_named: true  # 部分接受只冻结被点名条目
+    rework_stays_in_round: true   # 返修仍属当前轮，不进位
+    invalidation: "sha256"        # 内容文件哈希变化 → 该条目批准自动失效，须重审
+  budgets:                        # 全部可调；达上限只暂停报告，禁止宣布通过
+    max_rounds: 8
+    retrieval_budget_per_round: 30
+    no_progress_threshold: 2
+    max_rework_per_item: 2
+  termination: ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+
 # ── 门禁退出码语义（主理人据此分流，不再一律"打回"）────────────
 gate_exit_codes:
   0: "通过"
