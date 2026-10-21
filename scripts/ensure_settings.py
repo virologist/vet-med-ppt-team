@@ -20,9 +20,9 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   2 两侧清单版本号一致                            → 漂移则告警【只读】
   3 清单声明的 agent 文件全部存在                 → 缺失则告警【只读】
   4 权威门禁 verify_deck.py 存在                 → 缺失则告警【只读】
-  5 全脚本完整性（清单内脚本数，v3.8.2 为 17 个）                        → 缺失则告警【只读】★扩
+  5 全脚本完整性（清单内脚本数，v3.9.0 为 18 个）                        → 缺失则告警【只读】★扩
   6 双份与多裁判检测（同名 verify_deck.py 计数） → 告警【只读】★新
-  7 回归测试自跑（test_harness.py）              → 失败则告警【只读】★新
+  7 回归测试自跑（scripts/ 下**全部** test_*.py）  → 失败则告警【只读】★新★扩(v3.9.0)
   ★ v3.2.0-batch2 新增 3 项治理自检：
   8 活跃目录备份膨胀（D12，只数备份/旁路模式文件 ≥3） → 告警【只读】
   9 scratch 超期（D12 备份膨胀）                  → 告警【只读】
@@ -88,6 +88,8 @@ REQUIRED_SCRIPTS = [
     # v3.8.2 新增（补 round-review-sop §2.1 悬空的"图片引用修复"能力）
     "fix_md_image_refs.py",      # Markdown 图片引用修复（markitdown 悬空链接 → _assets 实际路径）
     "test_fix_md_image_refs.py", # 引用修复回归测试（7 例）
+    # v3.9.0 新增（双层 Loop 契约下沉为代码）
+    "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
 N = 15  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合）
@@ -323,23 +325,38 @@ def check_single_judge(expert_dir):
 
 # ── 7. 回归测试自跑 ★新 ─────────────────────────────────────
 def check_regression(expert_dir):
-    t = os.path.join(expert_dir, "scripts", "test_harness.py")
-    if not os.path.exists(t):
-        print(f"[7/{N}] ⚠ 回归测试脚本缺失，跳过")
+    """v3.9.0 扩：此前只跑 test_harness.py，新增套件（如 v3.8.2 的 test_fix_md_image_refs、
+    v3.9.0 的 test_loop_state）失败**体检完全看不见**——第 7 项形同虚设。
+    现改为跑 scripts/ 下全部 test_*.py，逐个报码，任一失败即告警。
+    """
+    import glob as _glob
+    suites = sorted(_glob.glob(os.path.join(expert_dir, "scripts", "test_*.py")))
+    if not suites:
+        print(f"[7/{N}] ⚠ 未找到任何 test_*.py，跳过")
         return 1
-    try:
-        p = subprocess.run([sys.executable, t], capture_output=True, text=True,
-                           timeout=180)
-    except subprocess.TimeoutExpired:
-        print(f"[7/{N}] ⚠ 回归测试超时（>180s），未能判定")
+    failed, tails = [], []
+    for t in suites:
+        name = os.path.basename(t)
+        try:
+            p = subprocess.run([sys.executable, t], capture_output=True, text=True,
+                               timeout=180)
+        except subprocess.TimeoutExpired:
+            failed.append((name, "超时 >180s"))
+            continue
+        last = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
+        # 部分套件（如 test_snapshot）不打印总结行，回退显示退出码，避免输出空槽
+        tail = last[-1] if last else f"rc={p.returncode}"
+        tails.append(f"{name}={tail[:20]}")
+        if p.returncode != 0:
+            failed.append((name, tail))
+    if failed:
+        print(f"[7/{N}] 🔴 回归测试失败：{len(failed)}/{len(suites)} 个套件不通过")
+        for name, tail in failed:
+            print(f"     {name}  → {tail[:120]}")
+        print(f"     → 处置：先修失败套件再发布；单套件调试：python3 scripts/<套件>.py")
         return 1
-    last = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
-    tail = last[-1] if last else ""
-    if p.returncode == 0:
-        print(f"[7/{N}] ✓ 回归测试通过（{tail}）")
-        return 0
-    print(f"[7/{N}] 🔴 回归测试失败（{tail}）")
-    return 1
+    print(f"[7/{N}] ✓ 回归测试通过（{len(suites)}/{len(suites)} 套件：{' '.join(tails)}）")
+    return 0
 
 
 # ── 11. 工作区旁路版本检查（v3.3.1 治理批）──────────────────
@@ -407,7 +424,8 @@ def check_doc_implementation_drift(expert_dir):
     # 已知子命令白名单（v3.4.2 共 14 个），只保留在此白名单里的——更稳的"声称必须是真子命令"
     SUB_WHITELIST = {"doctor", "preflight", "route", "state", "budget", "trace",
                      "spawn", "stage", "gate", "verify-artifact", "verify-envelope",
-                     "verify-ref", "sweep", "template-audit", "eval"}
+                     "verify-ref", "sweep", "template-audit", "eval",
+                     "loop"}   # v3.9.0：双层 Loop 状态机
     claimed = [c for c in claimed if c in SUB_WHITELIST]
     if not claimed:
         print(f"[12/{N}] ✓ CHANGELOG 无 harness.py 子命令声称（无漂移风险）")

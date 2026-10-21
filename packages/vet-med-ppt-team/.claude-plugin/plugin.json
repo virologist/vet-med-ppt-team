@@ -1,6 +1,6 @@
 {
   "name": "vet-med-ppt-team",
-  "version": "3.8.2",
+  "version": "3.9.0",
   "description": "Five-member teaching-PPT engineering team that turns any subject-domain topic into stage-gated, evidence-verified, classroom-ready slide solutions with human-in-the-loop confirmation. The animal-medicine workspace is a test bench, not a product boundary: the workflow is designed to be portable across vocational/tertiary subject domains (animal-medicine today, swinemedicine/pet/aquaculture tomorrow, or any pedagogical subject with adequate evidence base).",
   "author": {
     "name": "TZUVet",

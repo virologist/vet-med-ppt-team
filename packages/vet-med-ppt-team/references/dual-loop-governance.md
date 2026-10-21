@@ -58,6 +58,11 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 | **恢复** | 断线/换会话 | 读状态最小集（task_id / source_ppt{sha256,mtime} / wip_dir / current_round / frozen / pending / budgets / blockers）；**先报"恢复到第 R 轮，已冻结 N 条，待办 M 条"，等用户确认再继续** | 重跑已确认条目；覆盖 `_draft` |
 | **制作** | 全部条目冻结 + §8 制作前置门全过 | 冻结包 → ppt-producer 制作 → verifier 独立验收（打开/渲染/可编辑性三项） | 制作期遇内容问题自行改写（须退回内容轮） |
 
+> **v3.9.0：五条指令已代码化**，状态推进一律走 `scripts/harness.py loop <动作>`
+> （`start/intake/add-item/status/resume/continue/rework/freeze/verify/make-gate/block/terminate/check-path`），
+> **不得靠口头记账**。命令表见 `agents/vet-med-ppt-team-team-lead.md#双 Loop 路由`；
+> 机器背书 `scripts/test_loop_state.py`（33 例）。
+
 ## 5. 七阶段契约（输入 / 输出 / 责任人 / 权限 / 退出状态）
 
 | # | 阶段 | 输入 | 输出 | 责任人 | 权限 | 退出状态 |
@@ -86,8 +91,8 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 |---|---|---|---|
 | 1 | 图片引用修复 | `[T]` **已实测**（v3.8.2） | 由新脚本 `scripts/fix_md_image_refs.py` 提供（**不是**给 `extract_assets.py` 加参数——职责分离：extract 只抽资产，fix 只修引用）。合成样本 3/3 全解析、缺图/孤立资产/三方计数不一致均正确报出；回归 7/7 通过 |
 | 2 | `ooxml_lint` 可编辑性与几何判定 | `[T]` 部分实测 | **GEO-003 已实现**（v3.8.2，WARN 级，合成样本 75% 重叠正确报出、无重叠不误报）；**API-001 保持人工项——结构性不可实现**（写入时行为，文件态无痕迹）；GEO-001/GEO-002（已规避）/TXT-001/TXT-002/CTX-001 仍为人工项 |
-| 3 | 两环隔离强制力 | `[R]` 配置声明 | `harness.py` 无 `forbidden_paths` 写前校验，**非代码级强制** |
-| 4 | Loop B 端到端 | `[未实测]` | 尚未在真实课件上跑完"转换→诊断→多轮→冻结→制作→验收"全链 |
+| 3 | 两环隔离强制力 | `[T]` **部分实测**（v3.9.0） | `harness.py loop check-path` 已实现 `loop_a.forbidden_paths` 与 `loop_a.scope` 的**写前越界校验**（A 碰课件目录/B 碰包目录或原件 → exit 1），`test_loop_state.py` 4 例背书。**但非沙箱级**：拦不住成员绕开脚本直接写文件（平台无 hook），也不判定内容对错——不得宣称"已由代码完全强制" |
+| 4 | Loop B 端到端 | `[未实测]` | **状态机层面已实测**（v3.9.0，`test_loop_state.py` 33 例覆盖启动/登记/停等/部分冻结/sha256 失效/返修/预算触顶/制作门/终止/越界）；**真实课件全链仍未实测**——尚未在真课件上跑完"转换→诊断→多轮→冻结→制作→验收" |
 | 5 | markitdown 转换 | `[T]` 已实测 | 0.1.7，见 `references/markitdown_0.1.7_实测报告.md` |
 | 6 | 渲染链路 | `[T]` 已实测 | soffice 26.8.1.1 → PDF → PNG；`pdftoppm` 依赖 poppler，缺则须换 `sips` |
 | 7 | 双源备注核验 | `[T]` 已实测 | v3.2.0 四样本中 2/4 口径不一致 → 双源核验为硬约束 |
@@ -110,10 +115,21 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 | 8 | 渲染失败 | soffice 不可用 | 视觉结论标"未经渲染核实"，按能力阻塞上报 |
 | 9 | 新建 PPT 回归 | `ensure_settings` + `test_five_gates.py` | 15/15 绿 + 五闸测试通过，Loop B 改动**未破坏**新建能力 |
 
-**已实测记录（2026-10-22）**：场景 5（缺图）与场景 9（新建回归）已跑通——
-`test_fix_md_image_refs.py` 7/7（含缺图、孤立资产、原始 md 不被覆盖、`--out==--md` 拦截），
-全部 8 个回归套件通过、`ensure_settings` 15/15。
-**仍未实测**：场景 1/2/3/4/6/7/8 需在真实课件上跑一轮才成立（缺九项任务信息，见 §8 第 9 项）。
+**已实测记录（2026-10-22，v3.9.0 更新）**：
+
+| 场景 | 载体 | 结果 |
+|---|---|---|
+| 1 用户拒绝/返修 | `test_loop_state.py` | ✅ 返修不进位；超 `max_rework_per_item` 挂阻塞并 exit 1 |
+| 2 部分批准 | `test_loop_state.py` | ✅ 5 条点名 2 条 → `frozen=2 / pending=3`，`round` 不变 |
+| 3 人工改稿 | `test_loop_state.py` | ✅ 改 `_draft.md` → `verify` 报 `sha256_drift`，条目转 `invalidated`，exit 1 |
+| 4 断线恢复 | `test_loop_state.py` | ✅ `resume` 报"恢复到第 R 轮，已冻结 N 条，待办 M 条"，置 `awaiting_user_confirm=true` 不续跑 |
+| 5 缺图 | `test_fix_md_image_refs.py` | ✅ 7/7（含缺图、孤立资产、原始 md 不被覆盖、`--out==--md` 拦截） |
+| 6 制作前置门 | `test_loop_state.py` | ✅ 有未冻结/失效条目/阻塞 → 阻断并列出原因；全齐才 exit 0 |
+| 7 模板失败 | **仍未实测** | 需用户先给模板路径（指定模板场景）才成立；沿用原模板路径已由 §2 转换层覆盖 |
+| 8 渲染失败 | **仍未实测** | 需构造 soffice 不可用环境；当前环境 soffice 26.8.1.1 可用，未做故障注入 |
+| 9 新建 PPT 回归 | `ensure_settings` + 全套件 | ✅ 15/15 绿 + 9 个测试套件全过 |
+
+**仍未实测**：场景 7（模板失败）与 8（渲染失败）需故障注入或真实素材；**真实课件端到端全链**仍需九项任务信息（见 §8 第 9 项）。
 
 ## 10. 与既有规则的优先级
 

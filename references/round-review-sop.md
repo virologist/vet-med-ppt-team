@@ -178,6 +178,23 @@ pdftoppm -png -r 120 <wip>/_render/<name>.pdf <wip>/_render/page   # 或 sips �
 `<工作区>/.workbuddy/loopB_state.json` —— 与 `task_state.json` **并存，不覆盖**（后者是五道闸的既有状态机，本 SOP 不改其语义）。
 写入采用**单写者**（主理人）——成员不得直接写该文件，回传由主理人汇编后落盘。
 
+**v3.9.0 起由 `scripts/harness.py loop` 读写该文件**（主理人是唯一调用者，契合单写者约定）：
+
+| 本 SOP 条款 | 对应命令 | 机器背书 |
+|---|---|---|
+| 启动/原件指纹存档 | `loop start --deck <原PPTX>` | sha256+size+mtime 存档，`status/verify` 可复检 |
+| §1 九项接单 | `loop intake --file <九项.json>` | A 类 5 项缺一即 `confirmed=false` + exit 1 |
+| §3.1 条目八字段 | `loop add-item --item --page --file` | item_id/page_id/file/sha256 落盘 |
+| §4 七种裁决 | `loop continue --decision \| loop freeze --decision` | 缺 `--decision` 即 exit 2（沉默不推进） |
+| §4 部分接受 | `loop freeze --items I-001,I-002 --decision partial_accept` | 只冻点名条目，`round` 不变 |
+| §4 返修 | `loop rework --item I-001` | 不进位；超上限挂阻塞 |
+| §6 冻结失效 | `loop verify` | sha256 漂移 → `invalidated` + exit 1 |
+| §7 五类终止 | `loop terminate --reason <五类>` | 自造状态 exit 2；预算触顶自动置「达到预算但未完成」 |
+| §8 制作前置门 | `loop make-gate` | 四项全过才 exit 0 |
+| §9 断线恢复 | `loop resume` | 只报不推进，置等待确认 |
+
+回归：`python3 scripts/test_loop_state.py`（33 例）。
+
 ### 10.1 通道纪律（v3.8.0 增补 N6）
 
 - **只有主理人可向用户提问与接收确认**；成员遇到缺失信息时把问题写进 `issues`，由主理人转达，**不得直接联系用户**

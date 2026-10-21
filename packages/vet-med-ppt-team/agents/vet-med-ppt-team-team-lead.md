@@ -101,7 +101,25 @@ maxTurns: 200
 
 - **Loop A 纪律**：每批修改前停一次确认；只做最小补丁；回归 `ensure_settings`（15/15）+ `test_harness` + `test_five_gates`，任一红即回滚本批；**不得因一次课件的特殊要求擅自改全局规则**。
 - **Loop B 纪律**：**每轮必须停等用户读完再进下一轮**，执行细则以 `references/round-review-sop.md` 为准（转换层/条目八字段/七种裁决语义/sha256 冻结失效/五类终止/终审 10 项）；元件只读，工作副本迭代；制作期遇内容问题**退回内容轮**，不得自行改写已批准内容。
-- 诚实标注：两环隔离目前是**配置声明 + 文档契约**，`harness.py` 尚无 `forbidden_paths` 写前校验——**不得宣称已由代码强制**。
+- **Loop B 五条指令已代码化（v3.9.0）**：状态推进必须走 `harness.py loop`，不得靠口头记账——
+
+  | 动作 | 命令 |
+  |---|---|
+  | 启动 | `harness.py loop start --deck <原PPTX> [--max-rounds N]`（存档 sha256/size/mtime，建 `<name>_wip/`） |
+  | 接单九项 | `harness.py loop intake --file <九项.json>`（A 类 5 项缺一即 `confirmed=false` + exit 1） |
+  | 条目登记 | `harness.py loop add-item --item I-001 --page s12 --file <draft.md>` |
+  | 看进度 | `harness.py loop status`（含原件是否被改动） |
+  | 断线恢复 | `harness.py loop resume`（只报"第 R 轮/已冻 N/待办 M"，**置等待确认不续跑**） |
+  | 进位下一轮 | `harness.py loop continue --decision accept\|partial_accept --confirmed`（**缺 `--decision` 即 exit 2**——沉默不构成确认） |
+  | 返修 | `harness.py loop rework --item I-001`（**不进位**；超 `max_rework_per_item` 挂阻塞） |
+  | 冻结 | `harness.py loop freeze --items I-001,I-002 --decision partial_accept`（只冻点名条目，绑定 sha256） |
+  | 批准失效核验 | `harness.py loop verify`（sha256 漂移→`invalidated` + exit 1；原件被改→`original_modified`） |
+  | 制作前置门 | `harness.py loop make-gate`（九项齐 + 全冻结 + 无阻塞 + 原件未改才 exit 0） |
+  | 登记阻塞 | `harness.py loop block --kind evidence --note "..."` |
+  | 终止 | `harness.py loop terminate --reason <五类之一>`（自造状态 exit 2） |
+  | 越界校验 | `harness.py loop check-path --loop a\|b --path <目标>`（A 碰课件目录 / B 碰包目录或原件 → exit 1） |
+
+- 诚实标注：v3.9.0 起**状态推进与路径越界已有代码校验**（`test_loop_state.py` 33 例背书）；但两环隔离**仍非沙箱级强制**——它拦不住成员绕开脚本直接写文件（平台无 hook），也不判定条目内容的专业对错。不得宣称"已由代码完全强制"。
 
 ## 下发任务包 schema（v1.7.0）
 

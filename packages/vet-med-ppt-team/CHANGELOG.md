@@ -6,6 +6,54 @@
 
 ---
 
+## [v3.9.0] - 2026-10-22
+
+### 概述（双层 Loop 契约下沉批：五条指令与越界校验从 Markdown 变成代码）
+
+来源：2026-10-22 需求逐项核对时发现——v3.8.x 把 `loop_a/loop_b` 写进了
+`config/harness.yaml`、把五条指令与终止五类写进了 `references/dual-loop-governance.md`，
+但 **`scripts/harness.py` 从未含 loop 子命令**（grep 全文件确认零命中）。
+即"逐轮停等""部分接受只冻点名条目""sha256 漂移即失效""沉默不推进""预算触顶不宣布通过"
+全是靠自觉遵守的 Markdown 纪律——同一份治理文档 §8 第 3 项自己就写着"非代码级强制"。
+配置注释 ≠ 可执行契约。本版把其中**可确定性判定**的部分下沉为代码。
+
+### Added
+- **`scripts/harness.py loop`（新子命令，13 个动作）**：
+  `start`（存档原件 sha256/size/mtime + 建 `<name>_wip/`）· `intake`（九项 A 类缺一即
+  `confirmed=false` + exit 1）· `add-item`（条目八字段落盘）· `status`（含原件是否被改动）·
+  `resume`（**只报"第 R 轮/已冻 N/待办 M"并置等待确认，不续跑**）· `continue`
+  （**缺 `--decision` 即 exit 2**——沉默不构成确认）· `rework`（**不进位**，超
+  `max_rework_per_item` 挂阻塞）· `freeze`（只冻点名条目，绑定 file+sha256+round+decided_at）·
+  `verify`（sha256 漂移→`invalidated`；原件被改→`original_modified`）· `make-gate`
+  （制作前置门四项全过才 exit 0）· `block` · `terminate`（五类穷举，自造状态 exit 2）·
+  `check-path`（两环目录越界校验）
+- **`loop check-path` 实现 `loop_a.forbidden_paths` 与 `loop_a.scope` 写前校验**：
+  Loop A 触碰用户课件目录 / 超出包内白名单 → exit 1；Loop B 触碰专家包目录或原件 → exit 1。
+  此前治理文档 §8 第 3 项自认"非代码级强制"，本版起有代码背书
+- **`scripts/test_loop_state.py`（新回归套件，33 例）**：锁死停等、部分冻结、sha256 失效、
+  返修不进位、预算触顶、制作门、终止穷举、原件只读、两环越界
+- **`references/loop-master-prompt.md`（新文档）**：原始设计任务交付物 #1——可粘贴到
+  WorkBuddy 的专家团升级总控提示词（含判环/探针/九项/转换/诊断/检索/停等/冻结/制作/终止全链）
+- `--max-rounds`：任务级轮次上限覆盖（dual-loop-governance 要求"提出为可确认参数"）
+
+### Changed
+- **`ensure_settings.py` 第 7 项扩为跑 `scripts/` 下全部 `test_*.py`**：此前只跑
+  `test_harness.py`，v3.8.2 新增的 `test_fix_md_image_refs.py` 挂了体检完全看不见——
+  第 7 项形同虚设。现逐个报码，任一失败即告警（9 套件实测约 44s）
+- `ensure_settings.py` 脚本清单 17→18（+`test_loop_state.py`）；`SUB_WHITELIST` 加 `loop`
+- `agents/vet-med-ppt-team-team-lead.md`：双 Loop 路由小节补 13 条 `harness.py loop` 命令表
+- `references/dual-loop-governance.md`：§8 第 3/4 项改标 `[T]` 部分实测；§9 实测清单
+  从"2/9 已跑"更新为"7/9 已跑"，并标注剩余两项（模板失败/渲染失败）需故障注入
+- `references/round-review-sop.md`：§10 补 SOP 条款 ↔ `harness.py loop` 命令对照表
+
+### 诚实边界（不虚报）
+- `loop` 子命令**不是沙箱**：它拦不住成员绕开脚本直接写文件（平台无 hook），
+  也不判定条目内容的专业对错（仍归成员与主理人）。仍**不得宣称"两环隔离已由代码完全强制"**
+- 真实课件端到端全链**仍未实测**——状态机层面已 33 例背书，但"转换→诊断→多轮→冻结→
+  制作→验收"在真课件上跑通仍需九项任务信息（受众/课时/模板/范围/验收标准）
+
+---
+
 ## [v3.8.2] - 2026-10-22
 
 ### 概述（补齐悬空能力批：图片引用修复 + GEO-003 落地 + 接单九项清单）

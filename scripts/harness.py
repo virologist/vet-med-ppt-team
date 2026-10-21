@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.8.2
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.9.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -60,6 +60,20 @@ v3.7.0（2026-10-17 诊断颗粒度升级批）：
     doctor 常量被漏掉；且 .claude-plugin/plugin.json 也漏在 3.4.4——四处版本号各说各话）。
   机器背书：ensure_settings 第 14 项 check_version_consistency（版本号一致性巡检）。
 
+v3.9.0（2026-10-22 双层 Loop 契约下沉批）：
+  + loop 子命令——v3.8.x 把 loop_a/loop_b 写进 config、把五条指令与终止五类写进
+    references/dual-loop-governance.md，但本文件从未含 loop 子命令，"逐轮停等""部分
+    接受只冻点名条目""sha256 漂移即失效""沉默不推进"全是 Markdown 纪律。本次把可判定
+    部分下沉为代码：start/intake/add-item/status/resume/continue/rework/freeze/
+    verify/make-gate/block/terminate/check-path 共 13 个动作。
+  + check-path 实现 loop_a.forbidden_paths 与 loop_a.scope 的写前越界校验
+    （此前 dual-loop-governance §8 第 3 项自认"非代码级强制"）。
+  + 机器背书：scripts/test_loop_state.py（33 例）与 ensure_settings 第 7 项
+    （v3.9.0 起跑全部 test_*.py，此前只跑 test_harness.py，新增套件挂了体检看不见）。
+  ⚠ 诚实边界：本段不判定条目内容的专业对错，也拦不住成员的实际写文件动作（平台无
+    hook）——它校验的是"路径是否越界"与"状态推进是否合规"，不是沙箱，不得对外宣称
+    "两环隔离已由代码强制"。
+
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
 不做任何语义判断（识别、匹配、权衡仍归 LLM 与主理人）。
@@ -75,13 +89,16 @@ v3.7.0（2026-10-17 诊断颗粒度升级批）：
     python3 scripts/harness.py stage     --action enter|exit --stage 0-4 [--task-id <id>] [--note <备注>] [--workspace <路径>]
     python3 scripts/harness.py gate --deck <课件.pptx> [--hours 2] [--level P0|P1|all] [--workspace <路径>]
     python3 scripts/harness.py template-audit --root <课件根目录> [--json <出>] [--require-registered] [--workspace <路径>]
+    python3 scripts/harness.py loop start|intake|add-item|status|resume|continue|rework|freeze|verify|make-gate|block|terminate|check-path [--loop a|b] [--workspace <路径>]
 
 退出码：0=正常  1=存在需处置项（降级/预算超/状态非法）  2=用法错误  3=依赖缺失
 """
 
 import argparse
+import hashlib    # v3.9.0：Loop B 冻结/失效判定与原件只读核验的 sha256 证据
 import json
 import os
+import re         # v3.9.0：两环目录越界校验的通配匹配
 import subprocess
 import sys
 import tempfile
@@ -876,6 +893,509 @@ def cmd_template_audit(args):
     return 1 if (unregistered and args.require_registered) else 0
 
 
+# ─────────────────── 双层 Loop 状态机（v3.9.0：文档契约 → 代码约束） ───────────────────
+# 背景（2026-10-22 核对实证）：v3.8.0/3.8.1 把 loop_a/loop_b 写进了 config/harness.yaml，
+#   五条指令与终止五类写进了 references/dual-loop-governance.md，但 harness.py **从未含
+#   loop 子命令**——"逐轮停等""部分接受只冻点名条目""sha256 漂移即失效""沉默不推进"
+#   全是靠主理人自觉遵守的 Markdown 纪律，同一份治理文档 §8 第 3 项自认"非代码级强制"。
+# 本段把其中**可确定性判定**的部分下沉为代码：状态读写、决策语义、预算触顶、冻结失效、
+#   原件只读核验、制作前置门、两环目录越界校验。
+# 诚实边界：本段**不判定**条目的专业内容对错（仍归成员与主理人），也不拦截成员的实际
+#   写文件动作（平台层无 hook）——它校验"路径是否越界"与"状态推进是否合规"，不是沙箱。
+
+LOOP_TERMINATIONS = ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+LOOP_INTAKE_A = ["audience", "periods", "template", "scope", "acceptance"]  # A 类五项：缺一即停
+
+
+def _sha256_file(path):
+    """文件 sha256——冻结/失效判定与原件只读核验的唯一证据源（禁凭印象说话）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _loop_state_path(w, loop):
+    p = os.path.join(w, ".workbuddy")
+    os.makedirs(p, exist_ok=True)
+    return os.path.join(p, f"loop{loop.upper()}_state.json")
+
+
+def _read_loop_state(w, loop):
+    """读 Loop 状态；不存在返回 None（与 task_state.json 并存，不复用其路径）。"""
+    sp = _loop_state_path(w, loop)
+    if not os.path.exists(sp):
+        return None
+    try:
+        with open(sp, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠ loop{loop.upper()}_state.json 解析失败（{e}），按空状态处理", file=sys.stderr)
+        return None
+
+
+def _write_loop_state(w, loop, st):
+    with open(_loop_state_path(w, loop), "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
+
+
+def _loop_hist(st, action, detail):
+    """追加一条不可删的流水——'每轮用户批准可追溯'（验收清单第 5 项）靠它落地。"""
+    st.setdefault("history", []).append(
+        {"ts": now_iso(), "action": action, "detail": detail})
+
+
+def _loop_counts(st):
+    items = st.get("items", {})
+    frozen = [k for k, v in items.items() if v.get("status") == "frozen"]
+    invalid = [k for k, v in items.items() if v.get("status") == "invalidated"]
+    pending = [k for k, v in items.items() if v.get("status") not in ("frozen", "invalidated")]
+    return {"frozen": frozen, "invalidated": invalid, "pending": pending}
+
+
+def _resolve_placeholders(p, w):
+    """把 harness.yaml 里的 <包> / <工作区> 占位符解析成真实绝对路径。"""
+    return p.replace("<包>", PKG).replace("<工作区>", w)
+
+
+def _glob_match(path, pattern):
+    """通配匹配（fnmatch 不认 ** 的递归语义，此处自行转正则）。
+
+    规则：`**/` → 任意层级目录；`**` → 任意字符；`*` → 单层非分隔符；`?` → 单字符。
+    """
+    out, i = "", 0
+    pat = pattern.replace("\\", "/")
+    while i < len(pat):
+        if pat[i:i + 3] == "**/":
+            out += "(?:.*/)?"     # 也匹配零层：<工作区>/**/*.pptx 命中工作区根下的 pptx
+            i += 3
+            continue
+        if pat[i:i + 2] == "**":
+            out += ".*"
+            i += 2
+            continue
+        if pat[i] == "*":
+            out += "[^/]*"
+        elif pat[i] == "?":
+            out += "[^/]"
+        else:
+            out += re.escape(pat[i])
+        i += 1
+    return re.match("^" + out + "$", path.replace("\\", "/")) is not None
+
+
+def _parse_kv_list(s):
+    """解析 'I-001,I-002' 或 'I-001=a.md,I-002=b.md' 形式的命令行参数。"""
+    out = []
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out.append((k.strip(), v.strip()))
+        else:
+            out.append((part, ""))
+    return out
+
+
+def cmd_loop(args):
+    """双层 Loop 状态机（v3.9.0）：把 dual-loop-governance.md 的可判定条款下沉为代码。
+
+    覆盖的硬约束（对应 round-review-sop.md 条款）：
+      · 沉默/超时不构成确认 → continue 必须显式带 --decision，缺省即 exit 2
+      · 部分接受只冻点名条目 → freeze 只改 --items 列出的项，其余保持 pending
+      · 返修仍属当前轮 → rework 不改 current_round，只累加 rework_count
+      · sha256 漂移即批准失效 → verify 重算哈希，不一致标记 invalidated 并 exit 1
+      · 预算触顶只暂停不宣布通过 → continue 超 max_rounds 写「达到预算但未完成」并 exit 1
+      · 原件只读 → verify/make-gate 比对启动时的 sha256+size+mtime
+      · 两环目录隔离 → check-path 校验写入目标是否越界
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    loop = (args.loop or "b").lower()
+    lb = cfg.get("loop_b", {}) or {}
+    la = cfg.get("loop_a", {}) or {}
+    budgets = dict(lb.get("budgets", {}) or {})
+
+    # ── check-path：写前越界校验（Loop A 禁区 = 用户课件目录；Loop B 禁区 = 包目录与原件）
+    if args.action == "check-path":
+        target = os.path.abspath(args.path)
+        if loop == "a":
+            forb = [_resolve_placeholders(p, w) for p in (la.get("forbidden_paths") or [])]
+            hits = [p for p in forb if _glob_match(target, p)]
+            if hits:
+                print(f"⛔ Loop A 越界：{target}\n   命中禁区 {hits}——"
+                      f"Loop A 只许改专家团自身，不得触碰用户课件目录。", file=sys.stderr)
+                return 1
+            scope = [_resolve_placeholders(p, w) for p in (la.get("scope") or [])]
+            # scope 写的是目录（<包>/scripts），须按"目录内"判定而非精确相等
+            def _in_scope(t, ps):
+                return any(t == p or t.startswith(p.rstrip("/") + "/") for p in ps)
+            if scope and not _in_scope(target, scope):
+                print(f"⛔ Loop A 越权：{target} 不在白名单 scope 内（{scope}）。", file=sys.stderr)
+                return 1
+            print(json.dumps({"ok": True, "loop": "A", "path": target}, ensure_ascii=False))
+            return 0
+        # Loop B
+        if target.startswith(PKG):
+            print(f"⛔ Loop B 越界：{target} 属于专家包目录——"
+                  f"单课件诉求不得改全局规则（须在 Loop A 单独立项）。", file=sys.stderr)
+            return 1
+        st = _read_loop_state(w, "b")
+        src = (st or {}).get("source_ppt", {}).get("path")
+        if src and os.path.abspath(src) == target:
+            print(f"⛔ Loop B 越界：{target} 是原件，只读；改动必须落在工作副本 "
+                  f"{(st or {}).get('wip_dir')}。", file=sys.stderr)
+            return 1
+        print(json.dumps({"ok": True, "loop": "B", "path": target}, ensure_ascii=False))
+        return 0
+
+    # ── start：启动（建状态、存档原件指纹、建工作副本目录）
+    if args.action == "start":
+        if not args.deck:
+            print("用法错误：start 必须带 --deck <原 PPTX>", file=sys.stderr)
+            return 2
+        deck = os.path.abspath(args.deck)
+        if not os.path.isfile(deck):
+            print(f"依赖缺失：原课件不存在 {deck}", file=sys.stderr)
+            return 3
+        if not deck.lower().endswith((".pptx", ".ppt")):
+            print(f"用法错误：--deck 必须是 .pptx/.ppt，收到 {deck}", file=sys.stderr)
+            return 2
+        st = _read_loop_state(w, "b")
+        if st and not st.get("termination") and not args.force:
+            print(f"⛔ 已存在未结束的 Loop B 任务（第 {st.get('current_round')} 轮）。"
+                  f"用 `loop resume` 恢复，或加 --force 重建（会丢失冻结记录）。", file=sys.stderr)
+            return 1
+        base = os.path.splitext(os.path.basename(deck))[0]
+        wip = os.path.abspath(args.wip) if args.wip else os.path.join(os.path.dirname(deck), f"{base}_wip")
+        stt = os.stat(deck)
+        # 预算可确认参数：轮次上限允许任务级覆盖（dual-loop-governance 要求"提出为可确认参数"）
+        eff_budgets = dict(budgets)
+        if args.max_rounds:
+            eff_budgets["max_rounds"] = args.max_rounds
+        st = {
+            "loop": "B", "task_id": args.task_id or f"b{int(time.time())}",
+            "created_at": now_iso(),
+            "source_ppt": {"path": deck, "sha256": _sha256_file(deck),
+                           "size": stt.st_size, "mtime": datetime.fromtimestamp(
+                               stt.st_mtime).astimezone().replace(microsecond=0).isoformat()},
+            "wip_dir": wip,
+            "intake": {k: None for k in LOOP_INTAKE_A} | {"confirmed": False},
+            "current_round": 1, "items": {}, "budgets": eff_budgets,
+            "blockers": [], "termination": None,
+            "awaiting_user_confirm": True,   # 启动即待确认：未对齐九项不得开工
+            "last_decision": None, "history": [],
+        }
+        os.makedirs(wip, exist_ok=True)
+        _loop_hist(st, "start", {"deck": deck, "wip": wip})
+        _write_loop_state(w, "b", st)
+        _trace(w, cfg, "loop_start", "team-lead", {"task_id": st["task_id"], "deck": deck, "wip": wip})
+        print(json.dumps(st, ensure_ascii=False, indent=2))
+        return 0
+
+    st = _read_loop_state(w, "b")
+    if st is None:
+        print("依赖缺失：loopB_state.json 不存在，先跑 `loop start --deck <原PPTX>`", file=sys.stderr)
+        return 3
+    if st.get("termination") and args.action not in ("status", "resume", "terminate"):
+        print(f"⛔ 任务已终止（{st['termination']}），不得再执行 {args.action}。", file=sys.stderr)
+        return 1
+
+    # ── intake：九项登记（A 类五项齐 + 非空才算 confirmed）
+    if args.action == "intake":
+        if not args.file:
+            print("用法错误：intake 必须带 --file <九项JSON>", file=sys.stderr)
+            return 2
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"用法错误：--file 解析失败（{e}）", file=sys.stderr)
+            return 2
+        intake = st.setdefault("intake", {})
+        for k, v in data.items():
+            intake[k] = v
+        missing = [k for k in LOOP_INTAKE_A if not intake.get(k)]
+        intake["confirmed"] = not missing
+        _loop_hist(st, "intake", {"filled": sorted(data.keys()), "missing": missing})
+        _write_loop_state(w, "b", st)
+        out = {"confirmed": intake["confirmed"], "missing_A": missing}
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if not missing else 1
+
+    # ── add-item：条目登记（八字段中的可判定部分落盘）
+    if args.action == "add-item":
+        if not args.item:
+            print("用法错误：add-item 必须带 --item <item_id>", file=sys.stderr)
+            return 2
+        items = st.setdefault("items", {})
+        if args.item in items and not args.force:
+            print(f"⛔ 条目 {args.item} 已存在（状态 {items[args.item].get('status')}）。"
+                  f"加 --force 覆盖。", file=sys.stderr)
+            return 1
+        fp = os.path.abspath(args.file) if args.file else ""
+        items[args.item] = {
+            "item_id": args.item, "page_id": args.page or "", "file": fp,
+            "sha256": _sha256_file(fp) if fp and os.path.isfile(fp) else None,
+            "status": "pending", "round": st.get("current_round", 1),
+            "decision": None, "decided_at": None, "rework_count": 0,
+            "severity": args.severity or "", "owner": args.owner or "",
+        }
+        _loop_hist(st, "add-item", {"item": args.item, "page": args.page, "file": fp})
+        _write_loop_state(w, "b", st)
+        print(json.dumps(items[args.item], ensure_ascii=False, indent=2))
+        return 0
+
+    # ── status：摘要（含原件是否被改动）
+    if args.action == "status":
+        c = _loop_counts(st)
+        src = st.get("source_ppt", {})
+        orig_ok = None
+        if os.path.isfile(src.get("path", "")):
+            orig_ok = (_sha256_file(src["path"]) == src.get("sha256"))
+        print(json.dumps({
+            "task_id": st.get("task_id"), "current_round": st.get("current_round"),
+            "awaiting_user_confirm": st.get("awaiting_user_confirm"),
+            "last_decision": st.get("last_decision"),
+            "frozen": len(c["frozen"]), "pending": len(c["pending"]),
+            "invalidated": len(c["invalidated"]),
+            "blockers": st.get("blockers", []), "termination": st.get("termination"),
+            "original_unchanged": orig_ok,
+            "intake_confirmed": st.get("intake", {}).get("confirmed", False),
+        }, ensure_ascii=False, indent=2))
+        return 0 if orig_ok is not False else 1
+
+    # ── resume：断线恢复（只报，不推进；必须等用户确认）
+    if args.action == "resume":
+        c = _loop_counts(st)
+        st["awaiting_user_confirm"] = True      # 恢复后一律先等确认，禁止自动续跑
+        _loop_hist(st, "resume", {"round": st.get("current_round"),
+                                  "frozen": len(c["frozen"]), "pending": len(c["pending"])})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({
+            "message": (f"恢复到第 {st.get('current_round')} 轮，已冻结 {len(c['frozen'])} 条，"
+                        f"待办 {len(c['pending'])} 条；已置 awaiting_user_confirm=true，"
+                        f"等您确认后再继续。"),
+            "current_round": st.get("current_round"),
+            "awaiting_user_confirm": True,
+            "frozen_items": c["frozen"], "pending_items": c["pending"],
+            "blockers": st.get("blockers", []),
+            "wip_dir": st.get("wip_dir"),
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── continue：进位（沉默不构成确认 → 必须显式 --decision）
+    if args.action == "continue":
+        if not args.decision:
+            print("⛔ 拒绝进位：continue 必须显式带 --decision accept|partial_accept。"
+                  "沉默、超时、成员自评均不构成用户确认（round-review-sop.md#4）。", file=sys.stderr)
+            return 2
+        if args.decision not in ("accept", "partial_accept"):
+            print(f"⛔ {args.decision} 不进位：返修用 `loop rework`，暂停/终止用 `loop terminate`。",
+                  file=sys.stderr)
+            return 1
+        c = _loop_counts(st)
+        if args.decision == "partial_accept" and not c["pending"]:
+            print("⚠ 声明 partial_accept 但无 pending 条目——按 accept 处理（进位）。",
+                  file=sys.stderr)
+        if st.get("awaiting_user_confirm") and not args.confirmed:
+            print("⛔ 状态为等待用户确认；确认后加 --confirmed 再进位。", file=sys.stderr)
+            return 1
+        beff = dict(budgets)
+        beff.update(st.get("budgets") or {})   # 任务级覆盖优先（用户在启动时确认的参数）
+        maxr = int(beff.get("max_rounds", 8))
+        nxt = int(st.get("current_round", 1)) + 1
+        if nxt > maxr:
+            st["termination"] = "达到预算但未完成"
+            _loop_hist(st, "budget_exhausted", {"max_rounds": maxr, "attempted": nxt})
+            _write_loop_state(w, "b", st)
+            _trace(w, cfg, "budget_exceeded", "team-lead",
+                   {"loop": "B", "kind": "rounds", "attempted": nxt, "limit": maxr})
+            print(f"⛔ 轮次预算触顶（{maxr} 轮）：置终止态「达到预算但未完成」，"
+                  f"**暂停并报告，不宣布通过**。如需继续须用户上调 max_rounds 并确认。",
+                  file=sys.stderr)
+            return 1
+        st["current_round"] = nxt
+        st["awaiting_user_confirm"] = False
+        st["last_decision"] = args.decision
+        _loop_hist(st, "continue", {"from": nxt - 1, "to": nxt, "decision": args.decision})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"current_round": nxt, "decision": args.decision,
+                          "note": f"每轮最多处理 {budgets.get('max_items_per_round', 5)} 条"
+                                  f"（loop_b.budgets.max_items_per_round）"},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    # ── rework：返修（仍属当前轮，不进位；超单条目上限即挂阻塞）
+    if args.action == "rework":
+        if not args.item:
+            print("用法错误：rework 必须带 --item <item_id>", file=sys.stderr)
+            return 2
+        items = st.setdefault("items", {})
+        it = items.get(args.item)
+        if not it:
+            print(f"用法错误：条目 {args.item} 未登记（先 `loop add-item`）", file=sys.stderr)
+            return 2
+        rnd_before = st.get("current_round")
+        it["rework_count"] = int(it.get("rework_count", 0)) + 1
+        it["status"] = "pending"
+        beff = dict(budgets)
+        beff.update(st.get("budgets") or {})
+        mx = int(beff.get("max_rework_per_item", 2))
+        _loop_hist(st, "rework", {"item": args.item, "count": it["rework_count"],
+                                  "round": rnd_before, "note": args.note or ""})
+        if it["rework_count"] > mx:
+            st.setdefault("blockers", []).append(
+                {"kind": "rework_exhausted", "item": args.item,
+                 "detail": f"单条目返修 {it['rework_count']} 次 > 上限 {mx}；"
+                           f"方向层面问题应走「换方向」：该条目作废、新条目入 pending",
+                 "ts": now_iso()})
+            _write_loop_state(w, "b", st)
+            print(f"⛔ 条目 {args.item} 返修 {it['rework_count']} 次超上限 {mx}，已挂阻塞；"
+                  f"轮次保持 {rnd_before}（返修不进位）。", file=sys.stderr)
+            return 1
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"item": args.item, "rework_count": it["rework_count"],
+                          "current_round": rnd_before, "round_unchanged": True},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    # ── freeze：冻结（部分接受只冻点名条目；绑定 file + sha256 + round + decided_at）
+    if args.action == "freeze":
+        if not args.items:
+            print("用法错误：freeze 必须带 --items I-001,I-002", file=sys.stderr)
+            return 2
+        if not args.decision:
+            print("用法错误：freeze 必须带 --decision accept|partial_accept", file=sys.stderr)
+            return 2
+        items = st.setdefault("items", {})
+        pairs = _parse_kv_list(args.items)
+        rnd = st.get("current_round", 1)
+        frozen, skipped = [], []
+        for iid, fpath in pairs:
+            it = items.get(iid)
+            if not it:
+                skipped.append({"item": iid, "reason": "未登记"})
+                continue
+            if fpath:
+                fp = os.path.abspath(fpath)
+                if not os.path.isfile(fp):
+                    skipped.append({"item": iid, "reason": f"文件不存在 {fp}"})
+                    continue
+                it["file"] = fp
+                it["sha256"] = _sha256_file(fp)
+            it.update({"status": "frozen", "round": rnd, "decision": args.decision,
+                       "decided_at": now_iso()})
+            frozen.append(iid)
+        st["last_decision"] = args.decision
+        _loop_hist(st, "freeze", {"frozen": frozen, "skipped": skipped,
+                                  "decision": args.decision, "round": rnd})
+        _write_loop_state(w, "b", st)
+        c = _loop_counts(st)
+        print(json.dumps({"frozen_now": frozen, "skipped": skipped,
+                          "frozen_total": len(c["frozen"]), "pending_total": len(c["pending"]),
+                          "note": "部分接受：未点名条目保持 pending，不消耗轮次配额"},
+                         ensure_ascii=False, indent=2))
+        return 0 if not skipped else 1
+
+    # ── verify：批准失效核验 + 原件未改动（验收清单第 1、5 项的机器背书）
+    if args.action == "verify":
+        problems = []
+        src = st.get("source_ppt", {})
+        if os.path.isfile(src.get("path", "")):
+            cur = _sha256_file(src["path"])
+            if cur != src.get("sha256"):
+                problems.append({"kind": "original_modified", "path": src["path"],
+                                 "detail": "原件 sha256 与启动时不一致——原件必须只读，立即停止并上报"})
+        else:
+            problems.append({"kind": "original_missing", "path": src.get("path"),
+                             "detail": "原件不见了，立即停止并上报"})
+        for iid, it in st.get("items", {}).items():
+            if it.get("status") != "frozen":
+                continue
+            fp = it.get("file")
+            if not fp or not os.path.isfile(fp):
+                it["status"] = "invalidated"
+                problems.append({"kind": "frozen_file_missing", "item": iid, "file": fp,
+                                 "detail": "冻结内容文件缺失，批准失效"})
+                continue
+            if _sha256_file(fp) != it.get("sha256"):
+                it["status"] = "invalidated"
+                problems.append({"kind": "sha256_drift", "item": iid, "file": fp,
+                                 "detail": "内容文件已改，该条目批准自动失效，必须重审"})
+        if problems:
+            _loop_hist(st, "verify_failed", {"problems": problems})
+            _write_loop_state(w, "b", st)
+            print(json.dumps({"ok": False, "problems": problems}, ensure_ascii=False, indent=2))
+            return 1
+        _loop_hist(st, "verify_ok", {"frozen": len(_loop_counts(st)["frozen"])})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"ok": True, "original_unchanged": True,
+                          "frozen": len(_loop_counts(st)["frozen"])}, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── make-gate：制作前置门（round-review-sop.md#8 三条 + 九项 A 类齐备）
+    if args.action == "make-gate":
+        c = _loop_counts(st)
+        reasons = []
+        intake = st.get("intake", {})
+        if not intake.get("confirmed"):
+            miss = [k for k in LOOP_INTAKE_A if not intake.get(k)]
+            reasons.append(f"九项 A 类未齐（缺 {miss}）——不得用仓库默认值冒充")
+        if c["pending"]:
+            reasons.append(f"仍有 {len(c['pending'])} 条未冻结：{c['pending'][:10]}")
+        if c["invalidated"]:
+            reasons.append(f"{len(c['invalidated'])} 条批准已失效（sha256 漂移），须重审")
+        if st.get("blockers"):
+            reasons.append(f"存在 {len(st['blockers'])} 条未清阻塞")
+        src = st.get("source_ppt", {})
+        if os.path.isfile(src.get("path", "")) and _sha256_file(src["path"]) != src.get("sha256"):
+            reasons.append("原件已被改动（只读纪律被破坏）")
+        if reasons:
+            _loop_hist(st, "make_gate_blocked", {"reasons": reasons})
+            _write_loop_state(w, "b", st)
+            print(json.dumps({"ok": False, "reasons": reasons}, ensure_ascii=False, indent=2))
+            return 1
+        _loop_hist(st, "make_gate_passed", {"frozen": len(c["frozen"])})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"ok": True, "frozen": len(c["frozen"]),
+                          "note": "制作期遇内容问题须退回内容轮，不得擅自改写已批准内容"},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    # ── block：登记能力/证据阻塞（不降级冒充，必须带核验方法）
+    if args.action == "block":
+        st.setdefault("blockers", []).append(
+            {"kind": args.kind or "unspecified", "detail": args.note or "", "ts": now_iso()})
+        _loop_hist(st, "block", {"kind": args.kind, "note": args.note})
+        _write_loop_state(w, "b", st)
+        print(json.dumps(st["blockers"], ensure_ascii=False, indent=2))
+        return 1   # 有阻塞即非正常态
+
+    # ── terminate：五类终止（穷举，不得自造）
+    if args.action == "terminate":
+        if args.reason not in LOOP_TERMINATIONS:
+            print(f"用法错误：--reason 必须是五类之一 {LOOP_TERMINATIONS}", file=sys.stderr)
+            return 2
+        if args.reason == "成功完成" and not args.confirmed:
+            c = _loop_counts(st)
+            if c["pending"]:
+                print(f"⛔ 仍有 {len(c['pending'])} 条未冻结，不得报「成功完成」。", file=sys.stderr)
+                return 1
+        st["termination"] = args.reason
+        st["awaiting_user_confirm"] = (args.reason == "等待用户")
+        _loop_hist(st, "terminate", {"reason": args.reason, "note": args.note or ""})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"termination": args.reason, "ts": now_iso(),
+                          "state_kept": _loop_state_path(w, "b")}, ensure_ascii=False, indent=2))
+        return 0
+
+    return 2
+
+
 # ─────────────────────────── main ───────────────────────────
 def cmd_doctor(args):
     """v3.4.0 R1：LLM 友好"可发现性表"——一次返回所有子命令的 usage/examples/exit_codes。
@@ -899,8 +1419,9 @@ def cmd_doctor(args):
         ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
+        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason", "0/1/2/3", "harness.py loop start --deck x.pptx"),
     ]
-    out = {"version": "v3.8.2", "executable": __file__,
+    out = {"version": "v3.9.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -1340,6 +1861,34 @@ def main():
                    help="存在未登记指纹时 exit 1（批量迁移前闸门）")
     _ws(p)
     p.set_defaults(func=cmd_template_audit)
+
+    # v3.9.0：双层 Loop 状态机——把 dual-loop-governance.md 的可判定条款下沉为代码
+    p = sub.add_parser("loop", help="v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界校验）")
+    p.add_argument("action", choices=["start", "intake", "add-item", "status", "resume",
+                                      "continue", "rework", "freeze", "verify",
+                                      "make-gate", "block", "terminate", "check-path"])
+    p.add_argument("--loop", choices=["a", "b"], default="b", help="A=专家团工程进化 / B=旧课件逐轮优化")
+    p.add_argument("--deck", help="start：原 PPTX 绝对路径（只读，存档 sha256/size/mtime）")
+    p.add_argument("--wip", help="start：工作副本目录（默认 <课件名>_wip/）")
+    p.add_argument("--task-id", dest="task_id", default="", help="start：任务 ID")
+    p.add_argument("--max-rounds", dest="max_rounds", type=int, default=0,
+                   help="start：任务级轮次上限（覆盖 harness.yaml#loop_b.budgets.max_rounds，须经用户确认）")
+    p.add_argument("--file", help="intake：九项 JSON 路径 / add-item：条目内容文件路径")
+    p.add_argument("--items", help="freeze：条目 ID 列表，形如 I-001,I-002 或 I-001=a.md,I-002=b.md")
+    p.add_argument("--item", help="rework：条目 ID")
+    p.add_argument("--page", help="add-item：稳定页面 ID（如 s12）")
+    p.add_argument("--severity", default="", help="add-item：P0/P1/P2")
+    p.add_argument("--owner", default="", help="add-item：dvm/pedagogy/visual")
+    p.add_argument("--decision", choices=["accept", "partial_accept", "rework", "pause"],
+                   help="continue/freeze：用户裁决（不传即拒绝进位——沉默不构成确认）")
+    p.add_argument("--confirmed", action="store_true", help="continue/terminate：已获用户确认")
+    p.add_argument("--reason", help="terminate：五类终止之一")
+    p.add_argument("--kind", default="", help="block：阻塞类型（capability/evidence/...）")
+    p.add_argument("--note", default="", help="人读备注")
+    p.add_argument("--path", help="check-path：待写入的目标路径（越界校验）")
+    p.add_argument("--force", action="store_true", help="start/add-item：允许覆盖既有记录")
+    _ws(p)
+    p.set_defaults(func=cmd_loop)
 
     a = ap.parse_args()
     sys.exit(a.func(a))
