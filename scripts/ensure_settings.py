@@ -31,6 +31,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   12 文档-实现一致性（CHANGELOG 子命令 vs doctor）→ 告警【只读】★新
   13 联邦 shim 同步（各包声明 + vendor 哈希）     → 告警【只读】★新
   14 版本号四处一致（codebuddy/claude/yaml/py）  → 不一致则告警【只读】★新
+  15 agent frontmatter 闭合（双平台解析兼容）   → 未闭合则告警【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -86,7 +87,7 @@ REQUIRED_SCRIPTS = [
     "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
-N = 14  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性巡检）
+N = 15  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -574,6 +575,54 @@ def check_version_consistency(expert_dir):
     return 0
 
 
+def check_agent_frontmatter(expert_dir):
+    """v3.8.0：agent frontmatter 闭合巡检（2026-10-21 双平台核验发现的真实缺陷）。
+
+    背景：verifier.md 与 vet-med-ppt-team-team-lead.md 的 frontmatter 只有开头
+    一个 `---`、**无闭合符**。WorkBuddy 平台解析器宽容（体检"6 个 agent 齐全"
+    照常通过），但 Claude Code 官方规范明确规定：frontmatter 未正确闭合时
+    文件会被当作普通文档处理——即 name/description/maxTurns 全部失效，
+    极端情况下直接跳过该 agent（含主理人）。双平台行为不一致的隐性缺陷。
+
+    判据：文件首行为 `---` **且** 存在第二个 `---` 终止行；否则不合规。
+    """
+    import re as _re
+    agents_dir = os.path.join(expert_dir, "agents")
+    if not os.path.isdir(agents_dir):
+        print(f"[15/{N}] – 无 agents/ 目录，跳过")
+        return 0
+    bad = []
+    checked = 0
+    for name in sorted(os.listdir(agents_dir)):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(agents_dir, name)
+        try:
+            lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
+        except OSError:
+            continue
+        checked += 1
+        seps = [i for i, l in enumerate(lines) if l.strip() == "---"]
+        if not lines or lines[0].strip() != "---":
+            bad.append((name, "首行不是 ---"))
+        elif len(seps) < 2:
+            bad.append((name, "frontmatter 未闭合（只有一个 ---）"))
+        else:
+            fm = "\n".join(lines[1:seps[1]])
+            m = _re.search(r"^name:\s*(.+)$", fm, _re.M)
+            if not m:
+                bad.append((name, "frontmatter 内无 name 字段"))
+    if bad:
+        print(f"[15/{N}] ⚠ agent frontmatter 不合规：{len(bad)}/{checked} 个文件")
+        for n, why in bad:
+            print(f"     {n:34s} {why}")
+        print(f"     → 处置：在 frontmatter 末尾补一行 `---`；未闭合会导致 Claude Code"
+              f"侧按无 frontmatter 处理（name/description/maxTurns 全部失效）")
+        return 1
+    print(f"[15/{N}] ✓ agent frontmatter 全部合规（{checked} 个文件均闭合且含 name）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -623,6 +672,8 @@ def main():
     rc |= check_federation_sync(path)
     # v3.8.0 P-2：版本号四处一致性巡检（无论 quick/no-governance 均跑；补 [12] 盲区）
     rc |= check_version_consistency(path)
+    # v3.8.0：agent frontmatter 闭合巡检（无论 quick/no-governance 均跑）
+    rc |= check_agent_frontmatter(path)
 
     print()
     if rc == 0:

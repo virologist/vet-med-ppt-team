@@ -90,7 +90,7 @@ vet-med-ppt-team/
 ## 贡献与反馈
 
 这是个人专属教学工具，外部贡献暂不开放。如发现 bug 或有改进建议：
-- 在本地仓库 `/Users/biodog/Library/CloudStorage/OneDrive-Personal/GPT/Claude/vet-med-ppt-team/` 修改
+- 在本地仓库 `Claude/vet-med-ppt-team/` 修改
 - 通过 `git commit` 记录变更
 - 通过 `git push` 同步到 GitHub
 - 大版本迭代后重新打包 zip 分发

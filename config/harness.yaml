@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.7.0"
+version: "3.8.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -181,6 +181,7 @@ loop_b:
     invalidation: "sha256"        # 内容文件哈希变化 → 该条目批准自动失效，须重审
   budgets:                        # 全部可调；达上限只暂停报告，禁止宣布通过
     max_rounds: 8
+    max_items_per_round: 5        # v3.8.0 N3：每轮条目上限（小批是让用户真正读完的关键）
     retrieval_budget_per_round: 30
     no_progress_threshold: 2
     max_rework_per_item: 2

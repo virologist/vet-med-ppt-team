@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.4.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.7.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -36,6 +36,29 @@ v3.4.3（2026-10-15 采用迁移批，裁决=稳健核心10项）：
   + A2 verify-ref 增 --online（PubMed esearch 联网核验）+ --write-back（受控写回：
     门禁→.bak 备份→写回→复检）——消除 v3.4.2 P0-2 "脚本直写绕过 verify-ref" 旁路
   + E6 doctor 首跑归档；A3 eval 周期化（外部 automation 承接，不在本文件）
+
+v3.5.0（2026-10-17 实战经验治理批）：
+  + 迭代四原则抽象（骨架冻结/方向裁决/增量门禁/检出≠判定）——规则落在
+    references/adjudication-rules.md 与 config/harness.yaml#delta_gate，本文件未改逻辑
+  + 页数三口径（物理/可见/导出）落在 sop-stages.md#闸1；重复指令对账协议同处
+
+v3.6.0（2026-10-17 迭代实战治理批）：
+  + 迭代四原则扩为六原则，新增"插入物避让"（v6 流程条 +8、v7 图注 +5 处自引入重叠）
+    与"素材判读红线"（v7 识图发现 5 张低清新闻图 + 1 张无预设病变）
+  + harness.yaml#delta_gate 扩 insert_spatial_audit / insert_font_at_creation /
+    image_caption_requires_reading / caption_missing_element_policy
+  + OOXML 病例 13–14（GEO-003 空间冲突 / API-001 属性名凭记忆猜测）——登记未实现
+
+v3.7.0（2026-10-17 诊断颗粒度升级批）：
+  + 七维精准诊断双路由（量规唯一源=下游 skill teaching-ppt-studio/
+    references/seven-dimension-rubric.md，本团只引路径不复制——防双源漂移）
+  + 三级修复路由（大修/中修/细节修，按侵入性）与既有 A/B/C 三轨（按手段）正交
+  + config/domain_config.yaml#ai_literacy 落维⑦ AI 融合与数智素养
+  ⚠ 本批未改本文件任何逻辑；v3.5–v3.7 的变更全部落在 references/ 与 config/。
+  ⚠ 本版同时修 P-1 版本对齐：docstring 与 doctor 自报版本从 v3.4.3 补齐到 v3.7.0
+    （实证：v3.5–v3.7 三版推进时只改了 config/ 与 references/，本文件的版本段与
+    doctor 常量被漏掉；且 .claude-plugin/plugin.json 也漏在 3.4.4——四处版本号各说各话）。
+  机器背书：ensure_settings 第 14 项 check_version_consistency（版本号一致性巡检）。
 
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
@@ -877,7 +900,7 @@ def cmd_doctor(args):
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
     ]
-    out = {"version": "v3.4.3", "executable": __file__,
+    out = {"version": "v3.7.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",

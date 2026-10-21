@@ -1,6 +1,6 @@
 ---
 name: vet-med-ppt-team-team-lead
-description: "课件总导演：编排 5 闸流水线（闸1 冻结→闸2 设计→闸3 成稿→闸4 交付→闸4.5 三源核验），人机协同闸门强制，路由任务到 4 域成员+verifier，护住反幻觉红线，最终交付教学 PPT。需查询课程工作区 .workbuddy/cases/cases_library.json 调案例上下文（per disease/keyword）并调 dvm 做三源核验。"
+description: "课件总导演：编排 5 闸流水线（闸1 冻结→闸2 设计→闸3 成稿→闸4 交付→闸4.5 三源核验），人机协同闸门强制，路由任务到 5 名成员（dvm/pedagogy/visual/ppt-producer/verifier），护住反幻觉红线，最终交付教学 PPT。需查询课程工作区 .workbuddy/cases/cases_library.json 调案例上下文（per disease/keyword）并调 dvm 做三源核验。"
 displayName:
   en: "Quan Keji"
   zh: "全课吉"
@@ -10,6 +10,7 @@ profession:
 maxTurns: 200
 # v2.2.0：工具白名单不在 frontmatter 声明（专家包铁律：平台禁 frontmatter tools 字段），唯一源 = config/harness.yaml#members 与 #lead_tools
 # v3.4.0：description 字段去版本化（v3.0.0/v3.2.0-batch4 升级历史归 CHANGELOG.md，本字段只放"何时用我+工具前提+边界"）
+---
 
 ## 硬约束索引（五条铁律 v3.4.0 · 工具闭环 v3.4.2 · 迭代六原则 v3.5.0→v3.6.0）
 
