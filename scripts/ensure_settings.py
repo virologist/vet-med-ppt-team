@@ -27,6 +27,10 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   8 活跃目录备份膨胀（D12，只数备份/旁路模式文件 ≥3） → 告警【只读】
   9 scratch 超期（D12 备份膨胀）                  → 告警【只读】
   10 快照库超容（D12 备份膨胀）                   → 告警【只读】
+  11 工作区旁路版本文件（写回纪律）               → 告警【只读】
+  12 文档-实现一致性（CHANGELOG 子命令 vs doctor）→ 告警【只读】★新
+  13 联邦 shim 同步（各包声明 + vendor 哈希）     → 告警【只读】★新
+  14 版本号四处一致（codebuddy/claude/yaml/py）  → 不一致则告警【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -82,7 +86,7 @@ REQUIRED_SCRIPTS = [
     "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
 ]
 
-N = 13  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检）
+N = 14  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1 治理批：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性巡检）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -505,6 +509,71 @@ def check_federation_sync(expert_dir):
     return 0
 
 
+def check_version_consistency(expert_dir):
+    """v3.8.0 P-2：版本号四处一致性巡检（补 [12] 的覆盖盲区）。
+
+    背景（2026-10-21 Loop A 基线核对实证）：v3.5.0/v3.6.0/v3.7.0 三版推进
+    只改了 config/ 与 references/，漏掉三处：
+      ① .claude-plugin/plugin.json 停在 3.4.4（只改了 .codebuddy 侧）
+      ② scripts/harness.py 的 doctor 自报常量停在 v3.4.3
+      ③ harness.py 文件头 docstring 停在 v3.4.0
+    而 [12] 只校验"CHANGELOG 声称的子命令是否都在 doctor 表中"，
+    不覆盖版本号——四处各说各话，没有任何一项体检能发现。
+
+    判据：四处版本号必须互等（harness.py 常量带 "v" 前缀，比较时归一）。
+    权威序：.codebuddy-plugin/plugin.json 为主，其余三处须与之一致。
+    """
+    import re as _re
+    rows, main_ver = [], None
+
+    def _norm(v):
+        return (v or "").lstrip("v").strip()
+
+    # ① 主清单（权威）
+    mpath = os.path.join(expert_dir, ".codebuddy-plugin", "plugin.json")
+    if not os.path.isfile(mpath):
+        print(f"[14/{N}] – 缺主清单，跳过")
+        return 0
+    main_ver = _norm(str(_load(mpath).get("version", "")))
+    rows.append((".codebuddy-plugin/plugin.json", main_ver or "<空>"))
+
+    # ② ClaudeCode 侧清单
+    cpath = os.path.join(expert_dir, ".claude-plugin", "plugin.json")
+    if os.path.isfile(cpath):
+        cv = _norm(str(_load(cpath).get("version", "")))
+        rows.append((".claude-plugin/plugin.json", cv or "<空>"))
+
+    #③ harness.yaml（全文扫描：version 行在长注释块之后，不能只读文件头）
+    ypath = os.path.join(expert_dir, "config", "harness.yaml")
+    if os.path.isfile(ypath):
+        ytxt = open(ypath, encoding="utf-8", errors="replace").read()
+        m = _re.search(r'^version:\s*"?v?([0-9.]+)"?\s*$', ytxt, _re.M)
+        rows.append(("config/harness.yaml", _norm(m.group(1)) if m else "<无 version 段>"))
+
+    # ④ harness.py doctor 自报常量
+    hpath = os.path.join(expert_dir, "scripts", "harness.py")
+    if os.path.isfile(hpath):
+        htxt = open(hpath, encoding="utf-8", errors="replace").read()
+        m = _re.search(r'"version":\s*"(v[0-9.]+)"', htxt)
+        rows.append(("scripts/harness.py doctor 常量", _norm(m.group(1)) if m else "<无 version 常量>"))
+
+    if not main_ver:
+        print(f"[14/{N}] ⚠ 主清单无 version 字段，无法做一致性巡检")
+        return 1
+    bad = [(src, v) for src, v in rows if v != main_ver]
+    if bad:
+        print(f"[14/{N}] ⚠ 版本号不一致（主清单={main_ver}）：{len(bad)}/{len(rows)} 处偏离")
+        for src, v in bad:
+            print(f"     {src:34s} {v}≠ {main_ver}")
+        print(f"     → 处置：以 .codebuddy-plugin/plugin.json 为权威，同步其余各处"
+              f"（.claude-plugin/plugin.json / config/harness.yaml / scripts/harness.py 常量+文件头）")
+        return 1
+    print(f"[14/{N}] ✓ 版本号四处一致：{main_ver}")
+    for src, v in rows:
+        print(f"     {src:34s} {v}")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -552,6 +621,8 @@ def main():
     rc |= check_doc_implementation_drift(path)
     # v3.4.3 B3：联邦 shim 巡检（无论 quick/no-governance 均跑）
     rc |= check_federation_sync(path)
+    # v3.8.0 P-2：版本号四处一致性巡检（无论 quick/no-governance 均跑；补 [12] 盲区）
+    rc |= check_version_consistency(path)
 
     print()
     if rc == 0:
