@@ -6,6 +6,45 @@
 
 ---
 
+## [v3.8.2] - 2026-10-22
+
+### 概述（补齐悬空能力批：图片引用修复 + GEO-003 落地 + 接单九项清单）
+
+来源：v3.8.1 的未验证项清单把三件事标为"协议要求但仓库没有"——
+① SOP §2.1 要的"图片引用修复"无脚本；② GEO-003/API-001 长期"仅登记未实现"；
+③ 真跑旧 PPT 所需的九项任务信息无处收集。本版逐项处置，**不再让协议悬空**。
+
+### Added
+- **`scripts/fix_md_image_refs.py`（新脚本）+ `test_fix_md_image_refs.py`（7 例回归）**：
+  markitdown 悬空图片链接 → `_assets/` 实际路径。配对依据 **2026-10-22 实测**
+  （markitdown 0.1.7 对 PPTX 输出 `<!-- Slide number: N -->` + `![原文件名](PictureN.jpg)`，
+  target 指向不存在的文件）：页号+页内序号为主，磁盘文件存在时升级为 sha256 证据。
+  未匹配项显式列 `missing_refs` + 行内 `REF-MISSING` 标记（原文本保留，**不留空链接/占位图**）；
+  manifest 有而 md 未引用 → `orphan_assets`；可选 `--deck` 做三方计数核验。
+  退出码 1 = 存在未决项（须人工处置），`--out == --md` 直接 exit 2（守原始转换结果只读留存）
+- **`ooxml_lint.py` 新增 GeoChecker（GEO-003 落地）**：逐页取 `a:xfrm` 矩形（GROUP 按 chOff/chExt
+  换算，顺带规避 GEO-002 误报），两两求交，重叠率 ≥ `--geo-threshold`（默认 15%）报 **WARN**。
+  **只报 WARN 不报 ERROR**——教学课件存在有意叠放（文字压图），机器分不清设计与事故，
+  判 ERROR 会一律阻断合法设计
+- **`references/task-intake-checklist.md`（新文档）**：接单九项（受众/课时/模板/范围/验收标准
+  为 A 类缺一即停；用途/交付/素材许可/禁止事项为 B 类制作前置门前补齐）+ 一次问完的追问话术
+  + `loopB_state.json#intake` 落盘 schema；制作前置门追加硬检查：A 类 5 项必须 `confirmed`
+
+### Changed
+- `round-review-sop.md` §2.1 补脚本命令与实测依据；§3.3 把 GEO-003 标为已实现、API-001 标为保持人工项
+- `ppt-producer.md` 实现状态标注同步（含新脚本跑法）
+- `ooxml-compat.md` 检查码表：GEO-003 → 已实现；API-001 → 标注"结构性不可实现"并说明原因
+- `dual-loop-governance.md` 未验证项表（第 1/2/9 项）与实测记录同步
+
+### 本版不做的事（据实标注）
+- **不给 `extract_assets.py` 加引用修复参数**——职责分离：extract 只抽资产，fix 只修引用
+- **不实现 API-001 的 lint**：它是写入时行为，成品 PPTX 里没有"当初是否猜属性名"的痕迹，
+  结构性不可检；防线仍在写入纪律（批量原子语义 + 首次属性名先查）
+- GEO-001 / TXT-001 / TXT-002 / CTX-001 仍为人工项（需看渲染图或属语义判断）
+- 不替用户填九项任务信息——**不得用仓库默认值冒充用户事实**
+
+---
+
 ## [v3.8.1] - 2026-10-22
 
 ### 概述（双层 Loop 治理补完批）

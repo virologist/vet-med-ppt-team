@@ -20,7 +20,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   2 两侧清单版本号一致                            → 漂移则告警【只读】
   3 清单声明的 agent 文件全部存在                 → 缺失则告警【只读】
   4 权威门禁 verify_deck.py 存在                 → 缺失则告警【只读】
-  5 全脚本完整性（9 个脚本，v3.2.0 +extract_assets/ooxml_lint/snapshot）  → 缺失则告警【只读】★扩
+  5 全脚本完整性（清单内脚本数，v3.8.2 为 17 个）                        → 缺失则告警【只读】★扩
   6 双份与多裁判检测（同名 verify_deck.py 计数） → 告警【只读】★新
   7 回归测试自跑（test_harness.py）              → 失败则告警【只读】★新
   ★ v3.2.0-batch2 新增 3 项治理自检：
@@ -85,6 +85,9 @@ REQUIRED_SCRIPTS = [
     "test_case_extract.py",      # 病例库回归测试（Batch 4）
     # v3.2.0-batch5 新增
     "test_five_gates.py",        # 5 闸扩展回归测试（Batch 5）
+    # v3.8.2 新增（补 round-review-sop §2.1 悬空的"图片引用修复"能力）
+    "fix_md_image_refs.py",      # Markdown 图片引用修复（markitdown 悬空链接 → _assets 实际路径）
+    "test_fix_md_image_refs.py", # 引用修复回归测试（7 例）
 ]
 
 N = 15  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合）

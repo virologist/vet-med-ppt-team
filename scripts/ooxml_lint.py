@@ -8,13 +8,16 @@ ooxml_lint.py — PPTX OOXML 兼容性检查器（v3.2.0-batch2）
 >       悬空 rId / Content-Types 漏登记 / ID 冲突 / 非法字符 / 列表与 parts 不一致）
 >       机器化兜底，ERROR 阻断 + WARN 明示。
 
-六组检查（v3 §3.4 难题④）：
+七组检查（v3 §3.4 难题④）：
   PKG  zip 重复名 / __MACOSX / Content_Types 完整性 / 0 字节
   REL  r:id 可达性 / 重复 rId / 孤立 part
   CT   Content-Types 覆盖度
   ID   sldId / cNvPr / sldLayoutId / sldMasterId 唯一性
   XML  well-formed / 非法字符 / xml:space
   SYN  sldIdLst ↔ slide parts ↔ presentation.xml.rels 三方一致
+  GEO  插入物与既有形状空间冲突（GEO-003，v3.8.2 实现；阈值 --geo-threshold，默认 15%）
+       —— 仅 WARN：教学课件存在有意叠放（文字压图），机器分不清设计与事故，
+          判 ERROR 会一律阻断合法设计（假阳性），故报 WARN 交人工结合渲染图裁定。
 
 退出码（与 harness.py 统一）：
   0 全部 ERROR=0
@@ -90,11 +93,15 @@ class Issue:
 # ============== 主控 ==============
 class LintRunner:
     def __init__(self, pptx_path: str, baseline_path: Optional[str] = None,
-                 level: str = "all", strict: bool = False):
+                 level: str = "all", strict: bool = False,
+                 geo_threshold: float = 0.15, geo_disabled: bool = False):
         self.pptx_path = Path(pptx_path).resolve()
         self.baseline_path = Path(baseline_path).resolve() if baseline_path else None
         self.level = level  # ERROR / WARN / all
         self.strict = strict  # strict 模式：baseline 坏也当 ERROR
+        # v3.8.2：GEO-003 参数（重叠面积 / 较小形状面积 的阈值；--no-geo 可整体关闭）
+        self.geo_threshold = geo_threshold
+        self.geo_disabled = geo_disabled
         self.issues: list[Issue] = []
         self._names: list[str] = []  # zip 内所有 name（去重检测用）
         self._parts_data: dict[str, bytes] = {}  # name -> raw bytes
@@ -172,7 +179,7 @@ class LintRunner:
 
     # ---------- 调度 ----------
     def _run_all_checks(self):
-        for checker in (PkgChecker, RelChecker, CtChecker, IdChecker, XmlChecker, SynChecker):
+        for checker in (PkgChecker, RelChecker, CtChecker, IdChecker, XmlChecker, SynChecker, GeoChecker):
             try:
                 checker(self).check()
             except Exception as e:
@@ -553,6 +560,175 @@ class XmlChecker:
                         break  # 一页只报一次
 
 
+# ============== GEO 检查 ==============
+class GeoChecker:
+    """GEO-003 插入物与既有形状空间冲突（v3.8.2 实现，v3.6.0 登记 → 本版落地）。
+
+    方法（纯文件态、确定性，无需打开 PowerPoint）：
+      逐页解析 p:spTree 下的 p:sp / p:pic / p:graphicFrame / p:cxnSp / p:grpSp，
+      取 a:xfrm 的 off/ext 得到 EMU 矩形；p:grpSp 用 chOff/chExt 换算子形状到绝对坐标
+      （避免 GEO-002 的 GROUP 越界误报）。两两求交，重叠面积 / 较小者面积 ≥ 阈值即报。
+
+    为什么是 WARN 不是 ERROR：
+      教学课件中存在**有意为之**的叠放（文字压图、标注压示意图），
+      机器无法区分"设计"与"事故"——判 ERROR 会把合法设计一律阻断（假阳性），
+      故按 WARN 报出并给出坐标与重叠率，由人工结合渲染图裁定（守反自评失真铁律）。
+
+    为什么只实现 GEO-003：
+      GEO-001（图片单维尺寸失控）是版式/设计判断，依赖页面视觉而非坐标；
+      GEO-002（GROUP 越界误报）是坐标系换算问题，已在本 checker 中规避；
+      API-001（写入属性名凭记忆猜测）是**写入时行为**而非文件态缺陷，
+      任何 lint 都无法从成品文件反推"当初是不是猜的属性名"——保持人工项，不虚报。
+    """
+
+    MAX_SHAPES_PER_SLIDE = 300   # 单页形状上限，超出部分跳过并告警（防 O(n²) 爆掉）
+
+    def __init__(self, runner: LintRunner):
+        self.r = runner
+
+    # ---------- 入口 ----------
+    def check(self):
+        if getattr(self.r, "geo_disabled", False):
+            return
+        for name in sorted(self.r._names):
+            if not name.startswith("ppt/slides/slide") or not name.endswith(".xml"):
+                continue
+            data = self.r.get_part(name)
+            if not data:
+                continue
+            try:
+                root = etree.fromstring(data)
+            except etree.XMLSyntaxError:
+                continue
+            tree = root.find(f"{{{NS['p']}}}cSld/{{{NS['p']}}}spTree")
+            if tree is None:
+                continue
+            rects: list[dict] = []
+            self._walk(tree, rects, None, 0)
+            if len(rects) > self.MAX_SHAPES_PER_SLIDE:
+                self.r.add(
+                    "GEO-003", "WARN", f"{name}",
+                    f"单页形状 {len(rects)} 超上限 {self.MAX_SHAPES_PER_SLIDE}，仅检查前 {self.MAX_SHAPES_PER_SLIDE} 个",
+                    "拆分页面或减少形状后重跑")
+                rects = rects[: self.MAX_SHAPES_PER_SLIDE]
+            self._pairwise(name, rects)
+
+    # ---------- 递归收集矩形（含 GROUP 坐标换算）----------
+    def _walk(self, parent, rects, xfrm_of_group, depth: int):
+        if depth > 4:
+            return
+        for el in parent:
+            tag = etree.QName(el).localname if not isinstance(el.tag, str) or not el.tag.startswith("{") \
+                else el.tag.split("}")[-1]
+            if tag in ("sp", "pic", "cxnSp", "graphicFrame"):
+                box = self._box_of(el)
+                if box:
+                    rects.append(self._apply_group(box, xfrm_of_group, el))
+            elif tag == "grpSp":
+                # GROUP 自身也参与重叠检查（其外接框）
+                box = self._box_of(el)
+                mapped = self._apply_group(box, xfrm_of_group, el) if box else None
+                if mapped:
+                    rects.append(mapped)
+                # 子形状按其父组的 chOff/chExt 换算
+                self._walk(el, rects, self._group_transform(el, xfrm_of_group) or xfrm_of_group, depth + 1)
+
+    # ---------- 坐标读取 ----------
+    @staticmethod
+    def _box_of(el):
+        """取形状自身 off/ext（EMU）；无 xfrm 或非数字则 None。"""
+        xfrm = None
+        for path in ("p:spPr/a:xfrm", "p:grpSpPr/a:xfrm", "p:xfrm"):
+            node = el.find(path.replace("p:", f"{{{NS['p']}}}").replace("a:", f"{{{NS['a']}}}"))
+            if node is not None:
+                xfrm = node
+                break
+        if xfrm is None:
+            return None
+        off = xfrm.find(f"{{{NS['a']}}}off")
+        ext = xfrm.find(f"{{{NS['a']}}}ext")
+        if off is None or ext is None:
+            return None
+        try:
+            return {
+                "x": int(off.get("x", 0)), "y": int(off.get("y", 0)),
+                "cx": int(ext.get("cx", 0)), "cy": int(ext.get("cy", 0)),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _group_transform(grp_el, parent_xfrm):
+        """GROUP 的子坐标 → 绝对坐标换算参数：子坐标经 chOff/chExt 归一后按 ext 缩放。"""
+        xfrm = None
+        for path in (f"{{{NS['p']}}}grpSpPr/{{{NS['a']}}}xfrm", f"{{{NS['p']}}}xfrm"):
+            node = grp_el.find(path)
+            if node is not None:
+                xfrm = node
+                break
+        if xfrm is None:
+            return parent_xfrm
+        off = xfrm.find(f"{{{NS['a']}}}off")
+        ext = xfrm.find(f"{{{NS['a']}}}ext")
+        ch_off = xfrm.find(f"{{{NS['a']}}}chOff")
+        ch_ext = xfrm.find(f"{{{NS['a']}}}chExt")
+        if off is None or ext is None:
+            return parent_xfrm
+        try:
+            ox, oy = int(off.get("x", 0)), int(off.get("y", 0))
+            cx, cy = int(ext.get("cx", 0)), int(ext.get("cy", 0))
+            chx, chy = (int(ch_off.get("x", 0)), int(ch_off.get("y", 0))) if ch_off is not None else (ox, oy)
+            chcx, chcy = (int(ch_ext.get("cx", 0)), int(ch_ext.get("cy", 0))) if ch_ext is not None else (cx, cy)
+        except (TypeError, ValueError):
+            return parent_xfrm
+        sx = (cx / chcx) if chcx else 1.0
+        sy = (cy / chcy) if chcy else 1.0
+        return {"ox": ox, "oy": oy, "chx": chx, "chy": chy, "sx": sx, "sy": sy}
+
+    @staticmethod
+    def _apply_group(box, grp, el):
+        """把形状的局部坐标映射为页面绝对坐标（EMU）。"""
+        x, y, cx, cy = box["x"], box["y"], box["cx"], box["cy"]
+        if grp:
+            x = grp["ox"] + (x - grp["chx"]) * grp["sx"]
+            y = grp["oy"] + (y - grp["chy"]) * grp["sy"]
+            cx = cx * grp["sx"]
+            cy = cy * grp["sy"]
+        cnv = el.find(f".//{{{NS['p']}}}cNvPr")
+        return {
+            "name": (cnv.get("name") if cnv is not None else "") or etree.QName(el).localname,
+            "x": x, "y": y, "w": cx, "h": cy,
+        }
+
+    # ---------- 两两求交 ----------
+    def _pairwise(self, slide_name: str, rects: list[dict]):
+        thr = getattr(self.r, "geo_threshold", 0.15)
+        n = len(rects)
+        for i in range(n):
+            a = rects[i]
+            if a["w"] <= 0 or a["h"] <= 0:
+                continue
+            for j in range(i + 1, n):
+                b = rects[j]
+                if b["w"] <= 0 or b["h"] <= 0:
+                    continue
+                ix = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+                iy = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
+                if ix <= 0 or iy <= 0:
+                    continue
+                area_small = min(a["w"] * a["h"], b["w"] * b["h"])
+                if area_small <= 0:
+                    continue
+                ratio = (ix * iy) / area_small
+                if ratio >= thr:
+                    self.r.add(
+                        "GEO-003", "WARN", slide_name,
+                        f"「{a['name']}」与「{b['name']}」重叠 {ratio:.0%}（阈值 {thr:.0%}）",
+                        "对照渲染图确认是否为有意叠放；无意重叠按迭代六原则⑤插入物避让整改"
+                        "（短注→备注→缩框→挂账）",
+                    )
+
+
 # ============== SYN 检查 ==============
 class SynChecker:
     """sldIdLst ↔ slide parts ↔ presentation.xml.rels 三方一致"""
@@ -638,6 +814,10 @@ def main():
     ap.add_argument("--strict", action="store_true",
                     help="强模式：baseline 坏也当 ERROR")
     ap.add_argument("--json", action="store_true", help="输出 JSON 到 stdout")
+    # v3.8.2：GEO-003 参数
+    ap.add_argument("--geo-threshold", type=float, default=0.15,
+                    help="GEO-003 重叠率阈值（重叠面积/较小形状面积，默认 0.15）")
+    ap.add_argument("--no-geo", action="store_true", help="关闭 GEO 组检查")
     args = ap.parse_args()
 
     runner = LintRunner(
@@ -645,6 +825,8 @@ def main():
         baseline_path=args.baseline,
         level=args.level,
         strict=args.strict,
+        geo_threshold=args.geo_threshold,
+        geo_disabled=args.no_geo,
     )
     rc = runner.run()
 

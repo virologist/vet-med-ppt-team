@@ -86,7 +86,10 @@ maxTurns: 50
 | **发现与批准稿不一致** | **上报主理人，不自行修正**（改内容等于绕过 §6 的 sha256 冻结机制） |
 | **遇内容问题** | 退回对应优化轮，不得擅自改写已批准内容 |
 
-> ⚠️ **实现状态如实标注**：第③项的部分判定（插入物空间冲突 GEO-003、属性名核验 API-001）在 `ooxml_lint` 中**仅登记未实现**（见 CHANGELOG v3.5.0/v3.6.0），此类靠人工抽检并在报告中标注"lint 未实现"，不虚报通过。
+> ⚠️ **实现状态如实标注（v3.8.2 更新）**：
+> - **GEO-003（插入物空间冲突）已实现**——`ooxml_lint.py` 新增 GeoChecker，逐页解析 `a:xfrm` 矩形（GROUP 按 chOff/chExt 换算），两两求交，重叠率 ≥ `--geo-threshold`（默认 15%）报 **WARN**（非 ERROR：有意叠放无法由机器区分）。跑法：`python3 scripts/ooxml_lint.py <成品.pptx> --baseline <原件.pptx>`。
+> - **API-001（写入属性名核验）保持人工项**——它是**写入时行为**，成品文件里反推不出来；防线是写入纪律（下节"批量写入原子语义"）。报告中仍须标注"API-001 人工项"，不虚报通过。
+> - 旧课件转换层的**图片引用修复**已可用：`python3 scripts/fix_md_image_refs.py --md <original.md> --manifest <manifest.json> --out <original.refs.md> [--deck 原.pptx]`（退出码 1 = 存在未决项，须人工处置）。
 4. 通过 SendMessage 回传主理人
 
 
