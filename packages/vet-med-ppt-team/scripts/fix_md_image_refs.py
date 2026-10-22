@@ -183,16 +183,15 @@ def count_deck_images_by_page(deck_path: Path) -> dict:
 
     def walk(shapes, page: int):
         for sh in shapes:
+            # v3.10.1 修：必须**先判 GROUP 再判 blip**。
+            # has_blip 用 _element.iter() 会把组合内子图片的 blip 算到组合头上
+            # （首次真实课件运行现形：slide1 三个图都在组合内，组合被整体计 1 且不递归，
+            #  deck=1 vs md/manifest=3 误报计数不一致）。合成 fixture 顶层散图，测不出此 bug。
             try:
-                if sh.shape_type is not None and getattr(sh, "shapes", None) is not None and has_blip(sh) is False:
-                    # GROUP：递归
-                    try:
-                        from pptx.enum.shapes import MSO_SHAPE_TYPE
-                        if sh.shape_type == MSO_SHAPE_TYPE.GROUP:
-                            walk(sh.shapes, page)
-                            continue
-                    except Exception:
-                        pass
+                from pptx.enum.shapes import MSO_SHAPE_TYPE
+                if sh.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    walk(sh.shapes, page)   # 递归子形状；组合自身不计数
+                    continue
             except Exception:
                 pass
             if has_blip(sh):

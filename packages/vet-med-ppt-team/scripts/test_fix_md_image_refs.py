@@ -31,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCRIPT = Path(__file__).resolve().parent / "fix_md_image_refs.py"
 PY = sys.executable
 
+try:                       # T8（GROUP 嵌套计数）依赖 python-pptx 造 deck
+    from pptx import Presentation  # noqa: F401
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+
 # 与 markitdown 0.1.7 对 PPTX 的实测输出格式一致（见脚本头部实测基线）
 MD_FIXTURE = """<!-- Slide number: 1 -->
 
@@ -161,6 +167,54 @@ class TestEvidence(_Base):
         first = report["matched"][0]
         self.assertEqual(first["asset_id"], "a-001")
         self.assertEqual(first["evidence"], "sha256")
+
+
+@unittest.skipUnless(PPTX_AVAILABLE, "python-pptx 未装，跳过 T8")
+class TestNestedGroupCount(_Base):
+    """T8（v3.10.1）：图片全在 GROUP 内时三方计数必须一致。
+
+    真因记录：has_blip 用 `_element.iter()` 会把组合内子图片的 blip 算到组合头上，
+    旧 walk() 又以 `has_blip(sh) is False` 作为递归前提 → 组合整体计 1 且不递归，
+    deck=1 vs md/manifest=3 误报"计数不一致"。合成 fixture（顶层散图）测不出；
+    **首次真实课件运行现形**（模板 slide1 三图全在组合内）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 造一页 PPTX：三张图全部装进一个 GROUP（复刻真实模板 slide1 结构）
+        from io import BytesIO
+        from pptx import Presentation
+        from pptx.util import Inches
+        try:
+            from PIL import Image
+            buf = BytesIO()
+            Image.new("RGB", (60, 40), (200, 30, 30)).save(buf, format="PNG")
+            png_bytes = buf.getvalue()
+        except ImportError:           # PIL 缺失时退化为最小合法 PNG（1×1 黑点）
+            png_bytes = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00"
+                         b"\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\n"
+                         b"IDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00"
+                         b"\x00\x00IEND\xaeB`\x82")
+        tmp_png = self.tmp / "seed.png"
+        tmp_png.write_bytes(png_bytes)
+        prs = Presentation()
+        # 页分布对齐 manifest：第 1 页 1 图（顶层），第 2 页 2 图（全部入组）
+        s1 = prs.slides.add_slide(prs.slide_layouts[6])
+        s1.shapes.add_picture(str(tmp_png), Inches(1), Inches(1), Inches(1), Inches(1))
+        s2 = prs.slides.add_slide(prs.slide_layouts[6])
+        grp = s2.shapes.add_group_shape()
+        for i in range(2):
+            grp.shapes.add_picture(str(tmp_png), Inches(1 + i), Inches(1), Inches(1), Inches(1))
+        self.deck = self.tmp / "deck.pptx"
+        prs.save(str(self.deck))
+
+    def test_t8_group_nested_images_count(self):
+        rc, report, log = self._run(extra=["--deck", str(self.deck)])
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(report["counts"]["count_mismatches"], 0,
+                         "组合内图片必须递归计数，三方应一致")
+        mismatches = report.get("count_mismatches", [])
+        self.assertEqual(mismatches, [])
 
 
 if __name__ == "__main__":

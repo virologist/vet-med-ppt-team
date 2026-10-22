@@ -6,6 +6,42 @@
 
 ---
 
+## [v3.10.1] - 2026-10-22
+
+### 概述（首次真实课件运行修 bug 批：GROUP 嵌套图片计数）
+
+Loop B 首次在真实课件上跑转换层（33 页 / 37 资产），`fix_md_image_refs.py` 三方计数立即现形一个
+合成样本测不出的 bug。端到端实跑的价值当场兑现。
+
+### 修的内容
+
+**`fix_md_image_refs.py` `count_deck_images_by_page()`**：图片全在 GROUP 内时 deck 计数=1、
+md/manifest=3，误报"计数不一致"（exit 1）。
+
+- **真因（两层）**：① `has_blip()` 用 `_element.iter()` 扫描整个形状子树——组合形状必然"含"
+  其子图片的 blip；② 旧 `walk()` 的递归条件写反（`has_blip(sh) is False` 才递归），导致组合
+  被整体计 1 且不再下钻。
+- **修法**：先判 `MSO_SHAPE_TYPE.GROUP` 递归（组合自身不计数），散图再判 blip。
+- **为什么合成样本没测出**：v3.8.2 fixture 全是顶层散图。真实模板 slide1 三图全在组合内。
+- **回归锁**：`test_fix_md_image_refs.py` 新增 **T8**（`TestNestedGroupCount`，造一页两页
+  PPTX：第 1 页顶层散图、第 2 页两图入组，页分布对齐 manifest；PIL 缺失时回退最小合法 PNG）。
+  套件 7 → 8 例，全过。
+
+### 验证
+
+- 既有 7 例回归 OK；真实课件复测：**37/37/37 三方一致，exit 0**。
+- `ensure_settings` 15/15（9/9 套件）。
+
+### 关联
+
+- Loop B 端到端首跑同时完成：start → intake（A 类 5 项 confirmed）→ markitdown 374 行 →
+  extract_assets 37 资产 → 引用修复 37/37 → soffice 渲染 33/33 页 PNG → verify_deck 全量
+  （P0：课时不达标/缺目录/缺题页；P1：P22 框交叠、33 页缺备注）→ 5 条诊断条目登记 →
+  Round 1 轮报落盘、状态机停等用户裁决（方向 A/B，见 `*_wip/round1_report.md`）。
+- 版本四处同步 **3.10.1**。
+
+---
+
 ## [v3.10.0] - 2026-10-22
 
 ### 概述（接单默认落地批：用户九项信息落盘 + 默认模板实测 + GEO-003 基线豁免）
