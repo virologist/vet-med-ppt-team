@@ -599,6 +599,16 @@ class XmlChecker:
 class GeoChecker:
     """GEO-003 插入物与既有形状空间冲突（v3.8.2 实现，v3.6.0 登记 → 本版落地）。
 
+    ⚠️ **与 verify_deck.py「元素重叠」的分工（v3.12.0 显式声明）**：
+    两处都算重叠，但**判据不同，结论不同源，不应合并**——
+      · 本 Checker：**任意形状**两两、解析 lxml `a:xfrm`、GROUP 按 chOff/chExt 换算、
+        支持 `--geo-baseline` 模板继承豁免；语义是「几何冲突」，
+        教学课件里**大量是有意叠放**（文字压图、标注压示意图），故只报 WARN 交人工裁定。
+      · verify_deck：**仅文本框**两两、走 python-pptx 对象模型、不做 GROUP 换算、无基线；
+        语义是「文字遮文字 = 学生看不见 = 零价值」，故判 P1 要求交付前清零。
+    因此 `harness.py gate` 一次给出两个重叠数字属**预期**，二者不同不是 bug，
+    谁也不该把一个"修正"成另一个的值。
+
     方法（纯文件态、确定性，无需打开 PowerPoint）：
       逐页解析 p:spTree 下的 p:sp / p:pic / p:graphicFrame / p:cxnSp / p:grpSp，
       取 a:xfrm 的 off/ext 得到 EMU 矩形；p:grpSp 用 chOff/chExt 换算子形状到绝对坐标

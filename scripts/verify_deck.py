@@ -116,6 +116,38 @@ def _load_threshold():
 
 THRESHOLD = _load_threshold()
 
+# v3.12.0：闸4.5 三源核验阈值改为读配置（此前三处硬编码 0.8/0.1）。
+# 根因：harness.yaml#budgets 与 domain_config.yaml#three_source_check 都配了同值，
+# 但代码从不读——"唯一数据源"纪律形同虚设，任一方单独调参会静默失效。
+# 本函数只负责取数，**不改变任何判定逻辑与默认数值**（仍为 sample=0.1 / pass=0.8）。
+_DOMAIN_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "config", "domain_config.yaml")
+
+
+def _load_three_source_thresholds():
+    """读 domain_config.yaml#three_source_check 的抽检率与通过率。
+
+    失败策略与 _load_threshold 一致但更宽松：这里缺值**不阻断**整轮门禁
+    （三源核验只是闸4.5 的一个子项），退回内置值并**显式告警**——
+    静默回退才是这里要防的（否则改配置的人看不出没生效）。
+    """
+    fallback = {"sample_rate": 0.1, "pass_threshold": 0.8}
+    try:
+        import yaml
+        with open(_DOMAIN_CFG_PATH, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        tsc = cfg.get("three_source_check") or {}
+        sample_rate = float(tsc.get("sample_rate", fallback["sample_rate"]))
+        pass_threshold = float(tsc.get("pass_threshold", fallback["pass_threshold"]))
+        return {"sample_rate": sample_rate, "pass_threshold": pass_threshold}
+    except Exception as e:
+        print(f"⚠ domain_config.yaml#three_source_check 读取失败（{e}），"
+              f"退回内置 0.1/0.8——改配置不会生效", file=sys.stderr)
+        return fallback
+
+
+THREE_SOURCE = _load_three_source_thresholds()
+
 # v3.0.0：机器草稿标记（与 inject_notes.py 注入的标记一致）。
 # 裁决④：机器草稿**计入** P2 覆盖率，但必须单独统计占比并在交付物明示。
 _MACHINE_NOTE_MARK = "AI草稿"
@@ -319,6 +351,22 @@ def _shape_colors(shape):
 
 
 def _rect(shape):
+    """取形状外接矩形（EMU 四元组）；取不到返回 None。
+
+    ⚠️ **与 ooxml_lint.py GeoChecker 的分工（v3.12.0 显式声明，避免误读为重复实现）**：
+    两处都算"重叠"，但**判据不同、结论不同源，不该合并也不该互相校验**：
+
+    | | 本函数（verify_deck 元素重叠） | GeoChecker（ooxml_lint GEO-003） |
+    |---|---|---|
+    | 对象 | 仅**文本框**两两 | **任意形状**两两（含图片/组合/图形） |
+    | 语义 | 「文字压文字 = 学生看不见 = 零价值」 | 「任意几何冲突，含有意底纹叠放」 |
+    | GROUP | 不做坐标换算（组合外接框直接用） | 按 chOff/chExt 换算子形状绝对坐标 |
+    | 基线豁免 | 无 | 有（`--geo-baseline`，模板固有叠放判 inherited） |
+    | 级别 | P1（交付前必须清零） | WARN（需人工结合渲染图裁定） |
+
+    故同一份课件两个数字不同是**正常的**，不是 bug；谁也不该"修正"成另一个的值。
+    本函数的几何能力弱于 GeoChecker，但语义更严格（只盯文字），两者互补。
+    """
     try:
         return (shape.left, shape.top, shape.width, shape.height)
     except Exception:
@@ -773,7 +821,8 @@ def three_source_check(workspace: str, deck: str) -> dict:
     cases_p = Path(workspace) / ".workbuddy" / "cases" / "cases_library.json"
     if not cases_p.exists():
         return {"verdict": "no_library", "error": f"未找到 {cases_p}",
-                "pass_rate": 0.0, "threshold": 0.8, "total": 0, "sampled": 0}
+                "pass_rate": 0.0, "threshold": THREE_SOURCE["pass_threshold"],
+                "total": 0, "sampled": 0}
 
     with open(cases_p, encoding="utf-8") as f:
         lib = json.load(f)
@@ -784,8 +833,8 @@ def three_source_check(workspace: str, deck: str) -> dict:
     deck_cases = [c for c in cases if Path(c.get("deck_path", "")).name == deck_name]
     unverified = [c for c in deck_cases if c.get("unverified", True)]
 
-    # 3. 抽 10%（domain_config.yaml 默认 sample_rate=0.1）
-    sample_n = max(1, int(len(unverified) * 0.1))
+    # 3. 抽检（v3.12.0：读 domain_config.yaml#three_source_check.sample_rate）
+    sample_n = max(1, int(len(unverified) * THREE_SOURCE["sample_rate"]))
     sampled = random.sample(unverified, min(sample_n, len(unverified)))
 
     # 4. 验 sources：每个样本检查 sources 列表是否至少 1 条 ok=true
@@ -796,7 +845,8 @@ def three_source_check(workspace: str, deck: str) -> dict:
             verified += 1
 
     pass_rate = verified / max(len(sampled), 1)
-    threshold = 0.8
+    # v3.12.0：读配置而非硬编码（判定逻辑不变：pass_rate >= threshold 即 pass）
+    threshold = THREE_SOURCE["pass_threshold"]
     return {
         "deck": deck_name,
         "total_in_deck": len(deck_cases),
@@ -828,8 +878,8 @@ def main():
     # v3.3.0：闸4.5 案例三源核验模式
     ap.add_argument("--three-source-check", action="store_true",
                     help="闸4.5：读 <workspace>/.workbuddy/cases/cases_library.json，"
-                         "抽 10% unverified=true 案例检查 sources 字段，输出核验通过率；"
-                         "≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）")
+                         "按 domain_config.yaml#three_source_check.sample_rate 抽检 unverified 案例的 sources 字段，"
+                         "按同节 pass_threshold 判定是否达标（默认 0.1 / 0.8）")
     ap.add_argument("--workspace", default="",
                     help="--three-source-check 必填：课程工作区根（含 .workbuddy/cases/）")
     a = ap.parse_args()

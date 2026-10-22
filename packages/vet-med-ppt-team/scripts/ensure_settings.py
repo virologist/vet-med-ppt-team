@@ -33,7 +33,8 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   14 版本号四处一致（codebuddy/claude/yaml/py）  → 不一致则告警【只读】★新
   15 agent frontmatter 闭合（双平台解析兼容）   → 未闭合则告警【只读】★新
   16 受众分层单一数据源（v3.11.0）             → 层数/深度档/时间结构/唯一默认/旧层名残留【只读】★新
-  17 悬空脚本引用（v3.12.0）                       → MD 引用了 scripts/ 里没有的 .py【只读】★新
+  17 悬空脚本引用（v3.12.0）                       → MD 引用了 scripts/ 里没有的 .py【只读】★new
+  18 死配置巡检（v3.12.0）                            → config/ 里的键在 scripts/ 中无读取者【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -94,7 +95,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 17  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
+N = 18  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -800,6 +801,172 @@ def check_dangling_script_ref(expert_dir):
     return 0
 
 
+def check_dead_config_keys(expert_dir):
+    """v3.12.0：死配置巡检（第 18 项）——「配了但没人读」的配置键。
+
+    背景（真实缺陷，且已连续三轮复发同型问题）：
+      · v3.12.0 `harness.yaml#budgets` 9 项中 6 项只在 `_FALLBACK` 出现、代码从不读，
+        而 `sop-stages.md` 等文档仍当生效约束引用 → "看起来有护栏、实际不设防"
+      · v3.12.0 `verify_deck.py` 三源阈值 0.8/0.1 三处硬编码，
+        而 `harness.yaml` 与 `domain_config.yaml` 都配了同值 → 改配置不改行为
+      · v3.11.0 受众层、v3.12.0 回传信封，均为"多处各自定义"导致漂移
+
+    根因相同：**配置写了、文档引用了，但没有任何代码读取者**。
+    本项一次性把 config/ 下所有叶子键与 scripts/ 全量文本做交叉比对——
+    某个键若在 scripts/ 里找不到任何提及，即判为死配置。
+
+    误报豁免：① 键名在代码里以点号路径或下划线变体出现（做归一化后再查）
+              ② 显式登记的 known_textual（由文档层解释性引用、无需代码消费）
+    判据不追求"绝对无提及"，而追求"**必须有人解释它为什么不被代码读**"。
+    """
+    cfg_dir = os.path.join(expert_dir, "config")
+    scripts_dir = os.path.join(expert_dir, "scripts")
+    if not os.path.isdir(cfg_dir) or not os.path.isdir(scripts_dir):
+        print(f"[18/{N}] – 无 config/ 或 scripts/ 目录，跳过")
+        return 0
+
+    try:
+        import yaml
+    except ImportError:
+        print(f"[18/{N}] – 无 yaml 模块，跳过")
+        return 0
+
+    # 代码全文（scripts/*.py，含注释与文档字符串——有文档说明也算"有人管"）
+    code_text = ""
+    for f in sorted(os.listdir(scripts_dir)):
+        if f.endswith(".py"):
+            try:
+                code_text += open(os.path.join(scripts_dir, f),
+                                  encoding="utf-8", errors="replace").read()
+            except OSError:
+                pass
+
+    def norm(s):
+        """归一化：去掉非字母数字与下划线，便于 'three-source' / 'three_source' 同查。"""
+        return "".join(ch for ch in str(s).lower() if ch.isalnum() or ch == "_")
+
+    code_norm = norm(code_text)
+
+    # ── 人读型字段白名单（当前无代码读取者，但本就不该由代码消费）────────
+    # 判据设计的关键教训：首版把"无代码读取者"一律判死配置，首跑 80 项里
+    # 绝大多数是 `writes_allowed`（成员写权限声明）、`duty`（职责描述）这类
+    # **给人看/给主理人判断**的字段——它们本就不该有代码读取者。
+    # 故改为：人读型显式登记（登记=承认"这个没人读是对的"），
+    # 只有既非人读、又不被代码消费的配置键才算死配置。
+    known_textual = {
+        # 元数据/说明
+        "description", "version", "name", "note", "comment", "duty",
+        # 域标签与命名规范（展示元数据）
+        "label_zh", "label_en",
+        "default_disease_module_prefix", "case_id_prefix",
+        # 成员能力声明：供主理人 spawn 前判断，不由脚本消费
+        "writes_allowed",
+        # 降级通道的说明文本与披露要求：主理人按条款执行，无脚本判定
+        "general-purpose+persona", "script_pipeline", "require_disclosure",
+        "degrade_modes",
+        # 闸的兼容标记：历史遗留，仅作说明
+        "legacy_compat",
+    }
+
+    # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────
+    path_prefixes = (
+        ".disease_modules.",     # 课程目录内容，按域整体读取
+        ".gates.",               # 五闸人读判据（机器判据在 verify_deck）
+        ".ai_literacy.",         # AI 素养判据（主理人消费）
+        ".snapshot.",            # 快照策略（snapshot.py 按部分键消费）
+        ".fallback.",            # 降级通道说明（主理人按条款执行）
+        ".members.",             # 成员能力/权限声明（供 spawn 前判断）
+        ".domains.",             # 域标签与命名规范（展示元数据）
+    )
+
+    dead, alive, textual = [], 0, 0
+
+    def walk(node, path, fname):
+        """递归收集叶子键。
+
+        判据用**整条路径**而非末段键名——因为代码里常见的读取形式是
+        `cfg["domains"]["animal-medicine"]["label_zh"]`，末段 `label_zh`
+        在别的分支下也可能出现，只查末段会误报；反过来，只查整条路径会漏报
+        「代码读了同名字段但走的是另一条分支」，故**两段都查，任一命中即算有读取者**。
+        """
+        nonlocal alive, textual
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{path}.{k}" if path else str(k), fname)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    walk(item, path, fname)
+                else:
+                    walk(item, path, fname)
+        else:
+            full = str(path)
+            leaf = full.split(".")[-1]
+            # 去掉数组下标（YAML 里不会有，这里防御性处理）
+            leaf = leaf.split("[")[0]
+            n_full, n_leaf = norm(full), norm(leaf)
+            # 路径段命中：`.members.a.b` → 检查 `.a.b`、`.a`、`.members`
+            segs = full.split(".")
+            seg_hit = any("." + ".".join(segs[i:]) in path_prefixes
+                          for i in range(len(segs)))
+            if n_full and n_full in code_norm:
+                alive += 1
+            elif seg_hit or leaf.lower() in known_textual:
+                textual += 1          # 人读型：登记在案，无代码读取者是合理的
+            elif n_leaf and n_leaf in code_norm:
+                alive += 1
+            else:
+                dead.append((fname, full, node))
+
+    cfg_files = [f for f in sorted(os.listdir(cfg_dir))
+                 if f.endswith((".yaml", ".yml"))]
+    for cf in cfg_files:
+        fp = os.path.join(cfg_dir, cf)
+        try:
+            data = yaml.safe_load(open(fp, encoding="utf-8"))
+        except Exception as e:
+            print(f"[18/{N}] ⚠ {cf} 解析失败：{e}")
+            return 1
+        walk(data, "", cf)
+
+    # ── 最终设计决策（v3.12.0，含一次失败的教训）──────────────────
+    # 首版把"无代码读取者"一律判死配置 → 首跑 80 项；放宽到路径段白名单仍 100 项。
+    # 根本问题：**「谁该被代码读」无法自动判定**——`tools_whitelist`（成员工具权限）、
+    # `pass_rule`（AI 素养判据）、`snapshot.*`（快照策略）都是有意义的配置，
+    # 但它们本就该由**主理人/流程**消费而非脚本。继续调白名单只会变成
+    # 「为了让检查变绿而往白名单里塞」的活——那是自欺。
+    #
+    # 故正式降级为 **INFO 提示，不阻断、不计入 rc**：
+    #   • 价值：把「配了但确认无人读」这件事**显式列出来**，供人工复核；
+    #   • 代价：不阻断。这是有意的取舍——**假阳性必须为零，否则体检会被绕过**。
+    # 真正会阻断的判死配置已由更精确的专项检查覆盖：
+    #   第 16 项（受众分层唯一源）、第 17 项（悬空脚本引用）、budget list（死配置可视化）。
+    #
+    # ⚠️ **已知局限（反例实测，如实标注）**：本检查是**纯文本包含匹配**，无法判断
+    # 「代码里提到这个键名」与「代码真的读了这个值」的区别。反例：把 verify_deck 里
+    # `cfg.get("three_source_check")` 改成 `{}`（真读行为已破坏）后，本项统计**不变**——
+    # 因为该键名在其它脚本/注释/docstring 中仍出现，仍被判定为"有读取者"。
+    # 故本项**只能发现"完全无人提及"的键**，发现不了"提到但没用"的键。
+    # 要覆盖后者，需静态数据流分析（远超本项定位），或用 `verify_three_source_config.py`
+    # 这类**逐键断言运行时值 == 配置值**的专项验证（本次已配套提供）。
+
+    if dead:
+        print(f"[18/{N}] ℹ 提示：{len(dead)} 个配置键在 scripts/ 中无读取者"
+              f"（代码读取 {alive} 项 · 人读型登记 {textual} 项）")
+        for fname, path, val in dead[:12]:
+            print(f"     · {fname}#{path} = {val!r}")
+        if len(dead) > 12:
+            print(f"     · … 还有 {len(dead) - 12} 项")
+        print("     → 本项为**提示不阻断**（人工复核用）：多数是主理人/流程消费的人读型配置，"
+              "如成员工具权限、快照策略、AI 素养判据。")
+        print("     → 若确认某个键**本该被脚本消费**却无人读（如本次修掉的 three_source 阈值），"
+              "按「① 删掉 ② 实现读取 ③ 登记白名单」三选一处置。")
+    else:
+        print(f"[18/{N}] ✓ 无死配置（{len(cfg_files)} 个 config 文件："
+              f"代码读取 {alive} 项 · 人读型登记 {textual} 项）")
+    return 0   # 恒不阻断
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -855,6 +1022,8 @@ def main():
     rc |= check_audience_profile(path)
     # v3.12.0：悬空脚本引用巡检（防拿包外脚本当包内论据）
     rc |= check_dangling_script_ref(path)
+    # v3.12.0：死配置巡检（防「配了没人读」）
+    rc |= check_dead_config_keys(path)
 
     print()
     if rc == 0:
