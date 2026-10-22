@@ -803,6 +803,59 @@ def check_dangling_script_ref(expert_dir):
     return 0
 
 
+def _collect_ast_reads(scripts_dir):
+    """用 AST 收集 scripts/ 中**真实读取**的配置键（v3.15.0 · FEAT-001）。
+
+    为什么不用文本搜索：纯文本搜索会把**注释与 docstring 里提到键名**也算成"有读取者"，
+    导致"提到但没用"的键被判为活的——实测第 18 项的失效案例正是如此：
+    把 `cfg.get("three_source_check")` 改成 `{}`（读取已破坏），
+    因该键名在别处仍出现，文本搜索判定不变，缺陷被完全掩盖。
+
+    收集三种形态：
+      ① `x.get("key")`          —— 字典 .get 取值
+      ② `x["key"]`              —— 下标取值
+      ③ **字典字面量的字符串键** —— 如 `cmd_budget` 里
+         `threshold_map = {"stage_minutes": ("max_stage_minutes", ...)}`
+         这类键**是真被消费的**（`b.get(key)` 按 key 名查），
+         但不出现在任何 `.get("…")` 字面量里，只按 .get 判会漏（实测 `max_stage_minutes` 即如此）。
+
+    返回 {key: [位置…]}。
+    """
+    import ast
+    reads = {}
+
+    def add(k, where):
+        if isinstance(k, str) and k:
+            reads.setdefault(k, []).append(where)
+
+    for fn in sorted(os.listdir(scripts_dir)):
+        if not fn.endswith(".py"):
+            continue
+        fp = os.path.join(scripts_dir, fn)
+        try:
+            tree = ast.parse(open(fp, encoding="utf-8", errors="replace").read())
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            # ① .get("key")
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get" and node.args):
+                a0 = node.args[0]
+                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    add(a0.value, f"{fn}:{node.lineno}.get")
+            # ② ["key"]
+            if isinstance(node, ast.Subscript):
+                sl = node.slice
+                if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                    add(sl.value, f"{fn}:{node.lineno}[]")
+            # ③ dict 字面量的字符串键（阈值映射表 / 白名单等）
+            if isinstance(node, ast.Dict):
+                for k in node.keys:
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        add(k.value, f"{fn}:{node.lineno}{{dict}}")
+    return reads
+
+
 def check_dead_config_keys(expert_dir):
     """v3.12.0：死配置巡检（第 18 项）——「配了但没人读」的配置键。
 
@@ -833,21 +886,19 @@ def check_dead_config_keys(expert_dir):
         print(f"[18/{N}] – 无 yaml 模块，跳过")
         return 0
 
-    # 代码全文（scripts/*.py，含注释与文档字符串——有文档说明也算"有人管"）
-    code_text = ""
-    for f in sorted(os.listdir(scripts_dir)):
-        if f.endswith(".py"):
-            try:
-                code_text += open(os.path.join(scripts_dir, f),
-                                  encoding="utf-8", errors="replace").read()
-            except OSError:
-                pass
+    # v3.15.0（FEAT-001）：改用 AST 真实读取点，替换原先的纯文本搜索。
+    # 文本搜索会把注释/docstring 里提到键名算成"有读取者"，掩盖"提到但没用"的缺陷
+    #（实测失效案例：cfg.get("three_source_check") 被改成 {} 后统计仍不变）。
+    ast_reads = _collect_ast_reads(scripts_dir)
 
     def norm(s):
-        """归一化：去掉非字母数字与下划线，便于 'three-source' / 'three_source' 同查。"""
+        """归一化：去掉非字母数字与下划线，便于 'three-source'/'three_source' 同查。"""
         return "".join(ch for ch in str(s).lower() if ch.isalnum() or ch == "_")
 
-    code_norm = norm(code_text)
+    # AST 键也归一化后建索引（.get 与 [] 两种形态已合并）
+    norm_reads = {}
+    for k, locs in ast_reads.items():
+        norm_reads.setdefault(norm(k), []).extend(locs)
 
     # ── 人读型字段白名单（当前无代码读取者，但本就不该由代码消费）────────
     # 判据设计的关键教训：首版把"无代码读取者"一律判死配置，首跑 80 项里
@@ -872,13 +923,13 @@ def check_dead_config_keys(expert_dir):
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────
     path_prefixes = (
-        ".disease_modules.",     # 课程目录内容，按域整体读取
-        ".gates.",               # 五闸人读判据（机器判据在 verify_deck）
-        ".ai_literacy.",         # AI 素养判据（主理人消费）
-        ".snapshot.",            # 快照策略（snapshot.py 按部分键消费）
-        ".fallback.",            # 降级通道说明（主理人按条款执行）
-        ".members.",             # 成员能力/权限声明（供 spawn 前判断）
-        ".domains.",             # 域标签与命名规范（展示元数据）
+        ".disease_modules",     # 课程目录内容（case_extract.py 按域整体读取疾病名）
+        ".gates",               # 五闸人读判据（机器判据在 verify_deck）
+        ".ai_literacy",         # AI 素养判据（主理人消费）
+        ".snapshot",            # 快照策略（snapshot.py 按部分键消费）
+        ".fallback",            # 降级通道说明（主理人按条款执行）
+        ".members",             # 成员能力/权限声明（供 spawn 前判断）
+        ".domains",             # 域标签与命名规范（展示元数据）
     )
 
     dead, alive, textual = [], 0, 0
@@ -907,16 +958,15 @@ def check_dead_config_keys(expert_dir):
             # 去掉数组下标（YAML 里不会有，这里防御性处理）
             leaf = leaf.split("[")[0]
             n_full, n_leaf = norm(full), norm(leaf)
-            # 路径段命中：`.members.a.b` → 检查 `.a.b`、`.a`、`.members`
-            segs = full.split(".")
-            seg_hit = any("." + ".".join(segs[i:]) in path_prefixes
-                          for i in range(len(segs)))
-            if n_full and n_full in code_norm:
+            # 路径段命中：逐段检查 `domains.active` → `.domains.active`、`.domains`、`.active`
+            # （v3.13.0 曾写成只拼 segs[i:]，漏掉 i=0 的单段前缀 `.domains`，导致白名单整条失效）
+            seg_hit = any("." + ".".join(full.split(".")[:i + 1]) in path_prefixes
+                          for i in range(len(full.split("."))))
+            # AST 判据：整条路径或末段键名任一命中真实读取点即算"有人消费"
+            if (n_full and n_full in norm_reads) or (n_leaf and n_leaf in norm_reads):
                 alive += 1
             elif seg_hit or leaf.lower() in known_textual:
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
-            elif n_leaf and n_leaf in code_norm:
-                alive += 1
             else:
                 dead.append((fname, full, node))
 
@@ -944,13 +994,25 @@ def check_dead_config_keys(expert_dir):
     # 真正会阻断的判死配置已由更精确的专项检查覆盖：
     #   第 16 项（受众分层唯一源）、第 17 项（悬空脚本引用）、budget list（死配置可视化）。
     #
-    # ⚠️ **已知局限（反例实测，如实标注）**：本检查是**纯文本包含匹配**，无法判断
-    # 「代码里提到这个键名」与「代码真的读了这个值」的区别。反例：把 verify_deck 里
-    # `cfg.get("three_source_check")` 改成 `{}`（真读行为已破坏）后，本项统计**不变**——
-    # 因为该键名在其它脚本/注释/docstring 中仍出现，仍被判定为"有读取者"。
-    # 故本项**只能发现"完全无人提及"的键**，发现不了"提到但没用"的键。
-    # 要覆盖后者，需静态数据流分析（远超本项定位），或用 `verify_three_source_config.py`
-    # 这类**逐键断言运行时值 == 配置值**的专项验证（本次已配套提供）。
+# ⚠️ **已知局限（v3.15.0 已改善）**：v3.13.0 首版用纯文本包含匹配，无法区分
+# 「代码提到这个键名」与「代码真的读了这个值」。反例实测：把 verify_deck 里
+# `cfg.get("three_source_check")` 改成 `{}`（读取行为已破坏）后，统计**不变**——
+# 因为该键名在其它脚本/注释/docstring 中仍出现，仍被判为"有读取者"。
+#
+# **v3.15.0（FEAT-001）已改为 AST 真实读取点判据**（`_collect_ast_reads`）：
+# 解析 `.get("k")` / `["k"]` / 字典字面量字符串键，排除注释与 docstring。
+# 探针实测：yaml 150 个叶子键中，纯文本判据认为"有读取者"但**AST 无真实读取点**的
+# 有 109 个（73%）——即原判据的假阳性规模。修正后人读型登记 34→84、提示 139→89。
+#
+# ⚠️ **AST 判据的实测局限（反例验证，如实标注）**：
+# 把 `cfg.get("three_source_check")` 改成 `{}`（读取链被删）后——
+#   ✓ `three_source_check` 确实从 AST 读取集消失（判据能发现"整条链被删"）
+#   ✗ **但** `sample_rate` / `pass_threshold` 仍在——因为它们同时出现在
+#     `_load_three_source_thresholds` 的 **fallback 字典**（:134/:142）
+#     与对 `THREE_SOURCE` 的取值（:824/:837/:849）里，**不依赖外层 cfg 也能活着**。
+# 结论：AST 判据能发现"读取链被删"，**发现不了"读了 fallback 而没读配置"**。
+# 后者必须靠**运行时断言**（配置值 == 运行时值）覆盖，即
+# `verify_three_source_config.py` 这类逐键断言脚本——静态判据原理上做不到。
 
     if dead:
         print(f"[18/{N}] ℹ 提示：{len(dead)} 个配置键在 scripts/ 中无读取者"

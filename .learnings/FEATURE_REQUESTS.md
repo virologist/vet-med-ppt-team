@@ -37,4 +37,17 @@ medium
 - Frequency: first_time
 - Related Features: check_dead_config_keys（第 18 项）
 
+### Resolution（v3.15.0 部分落实）
+- **Static 部分已做**：新增 `_collect_ast_reads()`，第 18 项判据由纯文本搜索改为
+  AST 真实读取点（`.get("k")` / `["k"]` / 字典字面量键），排除注释与 docstring。
+  实测效果：yaml 150 个叶子键中，原文本判据认为"有读取者"但 AST 无读取点的有 **109 个（73%）**；
+  修正后人读型登记 34→84、提示 139→89。
+- **但反例验证证明静态判据有原理性天花板**：删掉 `cfg.get("three_source_check")` 后，
+  `three_source_check` 正确消失，然而 `sample_rate` / `pass_threshold` **仍被判为活跃**——
+  因为它们同时存在于 fallback 字典与对 `THREE_SOURCE` 的取值中，不依赖外层 cfg。
+  即静态判据能发现"读取链被删"，**发现不了"读了 fallback 而没读配置"**。
+- **结论（已写入代码注释）**：这一类必须靠**运行时断言**（配置值 == 运行时值）覆盖，
+  即 `verify_three_source_config.py` 的做法。静态判据原理上做不到，不应继续投入。
+- **Status**: partial（静态部分已做，"运行时断言通用化"未做——需逐键脚本，暂以专项脚本覆盖）
+
 ---
