@@ -1,0 +1,114 @@
+# result-envelope.yaml — 成员回传信封单一数据源（v3.12.0 · 治本件）
+#
+# 定位：回传信封的**唯一定义源**。harness.py 的校验器与所有 agent MD 的回传规范
+#       必须引用本文件，任何一方不得自行定义字段（v3.11.0 起沿用同一治本思路）。
+#
+# 背景（真实缺陷，非假设）：v3.11.0 及之前，包内存在**三套互斥的 schema 定义**：
+#   ① references/spawn-protocol.md:19 自称「唯一权威源、执行以本文件为准」，
+#      要求 {from, stage, artifact, warnings, evidence_used, next_recommendation}
+#   ② scripts/harness.py:771 ENVELOPE_REQUIRED 校验
+#      {agent_id, task_id, phase, status, confidence, deliverable_summary}
+#   ③ 5 个 agent MD 各自的 10 字段版本（含 evidence/issues/next_agent_hint/metrics）
+#   ④ agents/ppt-producer.md §75 与 §117 自相矛盾（同一文件两套）
+# 后果：按 ① 产出的**合规**信封会被 ② 判「缺字段 → 退回补充」；按 ②③ 产出则被 ① 判「回传失败」。
+#
+# 消费方：scripts/harness.py（校验 + schema 自检）、references/spawn-protocol.md、
+#         agents/*.md 的回传格式章节
+
+schema_version: 1
+version: "3.12.0"
+
+# ── 必填字段（harness.py 的 verify-envelope 按此校验；改这里即改校验器）────
+required:
+  - agent_id
+  - task_id
+  - phase
+  - status
+  - confidence
+  - deliverable_summary
+
+# ── 选填但强烈建议（缺失不判失败，但 V 层审阅时会扣"可追溯性"分）────────
+optional:
+  - evidence
+  - issues
+  - next_agent_hint
+  - metrics
+
+status_enum: [success, partial, failed, blocked]
+
+# ── 字段语义与判据（消除各 MD 自行解释的空间）────────────────────────
+fields:
+  agent_id:
+    type: string
+    required: true
+    rule: "成员 Agent ID（agents/<id>.md 的文件名，不含 .md）"
+  task_id:
+    type: string
+    required: true
+    rule: "与任务包 task_id 逐字符一致；不一致判回传失败"
+  phase:
+    type: string
+    required: true
+    rule: "阶段标识（沿用 sop-stages.md 的阶段编号/名称）"
+  status:
+    type: enum
+    required: true
+    rule: "只能用 status_enum 四值之一"
+    criteria:
+      success: "完整满足任务包 objective，且 issues 为空"
+      partial: "部分满足，或存在 issues（非空）"
+      failed: "无法满足且可重试"
+      blocked: "前置条件不足或能力不可用，不得靠重试解决"
+  confidence:
+    type: string
+    required: true
+    rule: "自评置信度，须带依据（计数/文件路径/命令输出），禁「高/中/低」裸标签"
+  deliverable_summary:
+    type: string
+    required: true
+    rule: "产出摘要，须含可验证计数（落盘路径 + 原始 P0/P1/P2 计数），禁「已优化/归零/100%」表述"
+  evidence:
+    type: array
+    required: false
+    rule: "支撑结论的证据条目：来源（DOI/PMID/URL/文件路径）+ 核验方式"
+  issues:
+    type: array
+    required: false
+    rule: "阻塞或缺口。Loop B 下成员上抛缺失信息的**唯一通道**，不得直接联系用户"
+  next_agent_hint:
+    type: string
+    required: false
+    rule: "给下游成员或主理人的建议，交接内容一律经主理人中转"
+  metrics:
+    type: object
+    required: false
+    keys: [duration_ms, retry_count]
+    rule: "耗时与重试次数，供预算判定"
+
+# ── 历史字段别名（v3.11.0 前的旧 schema，保留映射以便回溯既有 trace）────
+# 旧 → 新。**不得**在新产出中使用旧名；读到旧名时 harness 自动归一。
+legacy_aliases:
+  from: agent_id
+  stage: phase
+  artifact: deliverable_summary
+  warnings: issues
+  evidence_used: evidence
+  next_recommendation: next_agent_hint
+
+# ── 校验器行为（harness.py 实现须与此一致）─────────────────────────────
+validation:
+  # 旧字段名出现即判失败（防止 spawn-protocol.md 那套复活）
+  reject_legacy_keys: true
+  # status 不在枚举内 → 判 partial 退回
+  strict_status_enum: true
+  # 归一化后仍缺 required 字段 → 判 partial 退回
+  normalize_before_check: true
+
+# ── 反向漂移守卫（供 ensure_settings 第 17 项扫描）─────────────────────
+drift_guard:
+  forbidden_in_references_and_agents:
+    # spawn-protocol.md:19 的旧 schema 字面量——已被本文件取代
+    - '"from", "stage", "artifact", "warnings", "evidence_used", "next_recommendation"'
+  required_files_referencing_schema:
+    - "references/spawn-protocol.md"
+    - "scripts/harness.py"

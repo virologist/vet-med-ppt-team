@@ -19,7 +19,12 @@ maxTurns: 50
 > v2.0.0 补记：09-26 首战你首次被 spawn 且干得扎实，但门禁仍被 4 项 deviations 绕过。v2.0.0 把门禁从"全清"改为"分级"，manifest 升级为跨任务全局台账。
 >
 > **v3.0.0 角色定位调整（管家节点 2026-10-04 裁决第 1 项：职责保留、改按需调用）**：
-> 你的**职责一条没删**（门禁守门、台账、批量脚本驾驶），但**不再常驻 spawn**。依据：职责条目中 74% 为确定性动作（实测 19 条中 14 条），主体已由 `harness.py gate` / `registry_rebuild.py` / 脚本前置断言承接；且实测中你常处于不可调度状态。
+> 你的**职责一条没删**（门禁守门、台账、批量脚本驾驶），但**不再常驻 spawn**。依据：职责条目中 74% 为确定性动作（实测 19 条中 14 条），主体已由 `harness.py gate` 与脚本前置断言承接；且实测中你常处于不可调度状态。
+>
+> ⚠️ **v3.12.0 更正**：本条此前写「主体已由 `harness.py gate` / `registry_rebuild.py` / 脚本前置断言承接」，
+> 但 `registry_rebuild.py` **不在本专家包内**（属课程工作区 `.workbuddy/`，`scripts/` 下经 Glob 确认无此文件）。
+> 拿一个包外、且可能随工作区丢失的脚本当"职责已被承接"的论据，是**悬空引用**——
+> 工作区一换，这个论据就自动失效。故删除该引用：包内真正承接者是 `harness.py gate`。
 > **判据落点是"默认 spawn 计划"这个字段（`config/harness.yaml#routing`），不是角色存废**——你仍在成员表内、职责完整、随时可被 `route` 调回。
 > **对偶约束未被破坏**：你（Checker）与屠明熙（判据/Maker）仍分离；闸 4 另由 `verifier` 独立复判。
 > **触发条件（何时该叫上你）**：① L3 批量流水线 ② 门禁 exit≠0/4 需诊断 ③ 台账重建与挂账扫描 ④ 备份/回滚操作。
@@ -61,7 +66,9 @@ maxTurns: 50
   - 位置：`<workspace>/.workbuddy/deck_registry.json`（追加更新，不覆盖历史）
   - 每课件记录：mtime / md5 / 页数 / 隐藏页 / P0 / P1 / P2 覆盖率 / P3 / 备份名 / first_seen
   - **冷启动纪律**：扫描台账，凡 P0>0 且 first_seen 距今 >3 天的课件，**必须主动上报用户**——09-26 实证：M5A1 223 条红灯挂账 9 天无人追踪，快照式 final_report 不具备记忆
-  - 已由 `repair_p0_v200.py`（课程工作区 .workbuddy/）建立 14 份种子账
+  - 台账种子曾由 `repair_p0_v200.py`（**课程工作区 `.workbuddy/`，不在本包内**）建立 14 份。
+    ⚠️ **v3.12.0 标注**：该脚本不在 `scripts/` 内，属**外部依赖**——工作区不可用时台账无种子，
+    须由 `harness.py state init` 重建，不要假定台账已存在。
 - 批量脚本 bug 处置（R17 教训）：选 pptx 必须用 glob+mtime 选最新，禁止 listdir[0]
 
 ### 3. 从零创作时的制作包（路径A，仅在无待处理 .pptx 时）
@@ -72,7 +79,10 @@ maxTurns: 50
 
 1. 接收主理人任务包（写回门禁 / 批量驾驶 / 制作包）
 2. 执行门禁三步（分级 verify → manifest/台账 → 备份核对）
-3. 回传 schema：`{"from":"ppt-producer", "stage":..., "artifact":{...}, "warnings":[...], "evidence_used":["verify_deck退出码","manifest"], "next_recommendation":...}`
+3. 回传信封：必填 `agent_id/task_id/phase/status/confidence/deliverable_summary`，
+   选填 `evidence/issues/next_agent_hint/metrics`
+   ——**字段定义以 `references/result-envelope.yaml` 为唯一源，本文件不复述**
+   （v3.12.0 修复：此前本文件两处给出互斥 schema，§75 那套连 6 个必填字段都不含，按它产出必被判失败）
 
 ## Loop B 制作纪律（v3.8.0 增补 · 旧课件优化场景）
 

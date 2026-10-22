@@ -163,29 +163,27 @@ maxTurns: 50
 - 学生可见文本一层信息，细节移入讲授提示或讲义
 
 
-## 接口契约（Interface Contract · 2026-09-30 补齐）
+## 接口契约（Interface Contract · 2026-09-30 补齐 · v3.12.0 改为单一数据源引用）
 
-> 🔴 **result_envelope硬约束**：产出必须以6项必填字段（agent_id/task_id/phase/status/confidence/deliverable_summary）构成的JSON块开头，置于产出正文**最前**。缺字段/JSON不可解析 = 主理人VERIFY阶段直接判 `partial` 并触发补充重试。
+> 🔴 **result_envelope 硬约束**：产出必须以**必填六字段**
+> （`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`）
+> 构成的 JSON 块开头，置于产出正文**最前**。
+> 缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
 
-**角色分类**：ANALYZER
+**角色分类**：DESIGNER
 
-### 上行信封（回传必填）
-```json
-{
-  "agent_id": "pedagogy-architect",
-  "task_id": "<由编排者下发>",
-  "phase": "<阶段或WF编号>",
-  "status": "success|partial|failed|blocked",
-  "confidence": <0-100自评>,
-  "deliverable_summary": "<一句话摘要>",
-  "evidence": [{"type": "skill_ref|prior_artifact|source", "ref": "...", "used_for": "..."}],
-  "issues": ["<自评发现的问题>"],
-  "next_agent_hint": "<建议下游>",
-  "metrics": {"duration_ms": <耗时>, "retry_count": <重试次数>}
-}
-```
+### 上行信封（回传必填 · 字段定义见 `references/result-envelope.yaml`，此处不复述）
 
-**status自评准则**：完整满足→success；部分满足且issues非空→partial；无法满足需重试→failed；前置条件不足→blocked。
+必填：`agent_id`=`pedagogy-architect` / `task_id` / `phase` / `status` / `confidence` / `deliverable_summary`
+选填：`evidence` / `issues` / `next_agent_hint` / `metrics`
+
+**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；
+无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+
+> **v3.12.0 变更**：本节此前逐字复制一份完整 JSON 到每个 agent MD
+> （4 份 × 11 行 ≈ 64 行、44 个字段实例），任一字段增删需改 4 处。
+> 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
+> 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`

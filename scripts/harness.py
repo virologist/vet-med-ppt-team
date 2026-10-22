@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.11.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.12.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -317,11 +317,43 @@ def cmd_state(args):
 
 # ─────────────────────────── budget ───────────────────────────
 def cmd_budget(args):
-    """任务级预算计数：spawn / react / rework 三类，超限即阻断（纪律变计数）。"""
+    """任务级预算计数：超限即阻断（纪律变计数）。
+
+    v3.12.0：补齐 6 项此前「配了但从不读取」的死配置。
+    根因：limit_map 只映射 spawn/react/rework 三项，而 harness.yaml#budgets 里
+    还有 6 项（max_spawn_attempts_per_member / max_react_rounds_per_gap /
+    max_stage_minutes / max_artifact_bytes / three_source_sample_rate /
+    three_source_pass_threshold）只在 _FALLBACK 兜底字典里出现，代码从不读——
+    配置写了、文档也引用了（如 sop-stages.md 引用 max_stage_minutes），
+    但**没有任何执行者**，等于"看起来有护栏、实际不设防"。
+
+    修法分两类，不混为一谈：
+      ① 计数型（可由 harness 自己判断用没用超）→ 补进 limit_map，可 --kind check/spend
+      ② 阈值型（含义属于其它脚本的判定规则，harness 不该替它执行）
+        → 注册到 THRESHOLD_BUDGETS，供 `budget --kind xxx` 查询"当前配置值是什么"，
+          并在输出里标明"阈值型：由 <哪个脚本> 执行，harness 只查不做"。
+    两类都不再"静默失效"：要么能查，要么明确说明谁执行。
+    """
     cfg, _ = load_cfg()
     b = cfg.get("budgets", {})
     limit_map = {"spawn": "max_member_spawns", "react": "max_react_rounds_total",
                  "rework": "max_rework_rounds_per_stage"}
+    # v3.12.0：阈值型预算——harness 不代执行，只做「配置查得到 + 标明执行者」
+    threshold_map = {
+        "attempts": ("max_spawn_attempts_per_member",
+                     "spawn-protocol.md#工具/通道不可用回退（主理人判定，不自动计数）"),
+        "react_gap": ("max_react_rounds_per_gap",
+                      "dvm-content-expert.md#联网检索循环（成员自评，harness 不代判）"),
+        "stage_minutes": ("max_stage_minutes",
+                          "sop-stages.md#超时降级（trace 侧可比对，非阻断）"),
+        "artifact_bytes": ("max_artifact_bytes",
+                           "harness-engine.md#产物压缩策略（成员侧自律）"),
+        "three_source_sample": ("three_source_sample_rate",
+                                "verify_deck.py#闸4.5 三源核验抽检率"),
+        "three_source_pass": ("three_source_pass_threshold",
+                              "verify_deck.py#闸4.5 通过率"),
+    }
+    all_kinds = set(limit_map) | set(threshold_map)
     w = wkspace(args)
     st = read_state(w)
     bud = st.setdefault("budget", {})
@@ -335,17 +367,56 @@ def cmd_budget(args):
     if args.action == "check":
         # v3.4.0 R2 修：kind 缺省时不再返回"used=0 limit=0 exceeded=true"的矛盾状态
         if not args.kind:
-            print(json.dumps({"kind": None, "used": 0, "limit": 0, "exceeded": False,
-                              "remaining": 0, "hint": "指定 --kind spawn|react|rework"},
-                             ensure_ascii=False))
+            print(json.dumps({
+                "kind": None, "used": 0, "limit": 0, "exceeded": False, "remaining": 0,
+                "counter_kinds": sorted(limit_map),
+                "threshold_kinds": sorted(threshold_map),
+                "hint": "指定 --kind <见 counter_kinds|threshold_kinds>；"
+                        "不带 --list 可列全部配置值",
+            }, ensure_ascii=False))
             return 2  # 用法错误，提示重跑
+        # 阈值型：查得到值，但不做 spent/exceeded 判定（执行者是别的脚本）
+        if args.kind in threshold_map:
+            key, owner = threshold_map[args.kind]
+            val = b.get(key)
+            print(json.dumps({
+                "kind": args.kind, "type": "threshold", "config_key": key,
+                "value": val, "executed_by": owner,
+                "note": "阈值型预算：harness 只查配置，不计数不阻断——"
+                        "由执行者判定。配成 0/null 即该护栏实际不存在，勿当已有",
+            }, ensure_ascii=False))
+            if val in (None, 0):
+                return 1      # 没配值 = 护栏缺失，如实暴露而非静默通过
+            return 0
         used = bud.get(args.kind, 0)
         lim = int(b.get(limit_map.get(args.kind, ""), 0))
         print(json.dumps({"kind": args.kind, "used": used, "limit": lim,
-                          "exceeded": used >= lim, "remaining": max(lim - used, 0)}, ensure_ascii=False))
+                          "exceeded": used >= lim, "remaining": max(lim - used, 0)},
+                         ensure_ascii=False))
         return 0 if used < lim else 1
 
+    if args.action == "list":
+        out = {"counter": {}, "threshold": {}}
+        for k, key in sorted(limit_map.items()):
+            out["counter"][k] = {"config_key": key, "limit": b.get(key),
+                                 "used": bud.get(k, 0)}
+        for k, (key, owner) in sorted(threshold_map.items()):
+            out["threshold"][k] = {"config_key": key, "value": b.get(key),
+                                   "executed_by": owner}
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        missing = [v["config_key"] for v in list(out["counter"].values())
+                   + list(out["threshold"].values()) if v.get("limit") is None
+                   and v.get("value") is None]
+        if missing:
+            print(f"⚠ {len(missing)} 项预算未配置：{missing}", file=sys.stderr)
+            return 1
+        return 0
+
     if args.action == "spend":
+        if args.kind not in limit_map:
+            print(f"用法错误：--kind {args.kind!r} 不是计数型预算；"
+                  f"计数型为 {sorted(limit_map)}（阈值型不可 spend）", file=sys.stderr)
+            return 2
         lim = int(b.get(limit_map.get(args.kind, ""), 0))
         used = bud.get(args.kind, 0)
         if used + args.n > lim:
@@ -768,9 +839,75 @@ def cmd_verify_ref(args):
 
 
 # ─────────────────── 回传信封机器校验（B2）───────────────────
-ENVELOPE_REQUIRED = ["agent_id", "task_id", "phase", "status", "confidence",
-                     "deliverable_summary"]
-ENVELOPE_STATUS = {"success", "partial", "failed", "blocked"}
+# v3.12.0：字段定义改为**读 references/result-envelope.yaml**（单一数据源）。
+# 缘由：v3.11.0 及之前包内有三套互斥 schema（spawn-protocol.md 自称唯一权威源要求
+# {from,stage,artifact,warnings,evidence_used,next_recommendation}，本文件校验
+# {agent_id,task_id,phase,status,confidence,deliverable_summary}，agent MD 又一套），
+# 按前者产出的**合规**信封会被本校验器判缺字段——自相矛盾，根因是"多处各自定义"。
+# 现在：yaml 定义 → 本校验器读取 → agent MD 引用，三者同源。
+_ENVELOPE_SCHEMA_CACHE = None
+
+
+def load_envelope_schema(pkg_dir=None):
+    """加载 references/result-envelope.yaml；失败回退内置常量（受控逃生舱）。
+
+    不用内置常量当默认路径——那正是本缺陷的成因（代码里另立一套定义）。
+    """
+    global _ENVELOPE_SCHEMA_CACHE
+    if _ENVELOPE_SCHEMA_CACHE is not None:
+        return _ENVELOPE_SCHEMA_CACHE
+    base = pkg_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base, "references", "result-envelope.yaml")
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            sc = yaml.safe_load(f)
+        if not isinstance(sc, dict) or not sc.get("required"):
+            raise ValueError("schema 缺 required 字段")
+        _ENVELOPE_SCHEMA_CACHE = sc
+        return sc
+    except Exception as e:
+        print(f"⚠ 回传信封 schema 读取失败（{e}），回退内置常量", file=sys.stderr)
+        _ENVELOPE_SCHEMA_CACHE = {
+            "required": ["agent_id", "task_id", "phase", "status",
+                         "confidence", "deliverable_summary"],
+            "status_enum": ["success", "partial", "failed", "blocked"],
+            "legacy_aliases": {"from": "agent_id", "stage": "phase",
+                               "artifact": "deliverable_summary",
+                               "warnings": "issues",
+                               "evidence_used": "evidence",
+                               "next_recommendation": "next_agent_hint"},
+            "validation": {"reject_legacy_keys": True, "strict_status_enum": True,
+                           "normalize_before_check": True},
+        }
+        return _ENVELOPE_SCHEMA_CACHE
+
+
+def _envelope_required():
+    return load_envelope_schema()["required"]
+
+
+def _envelope_status_set():
+    return set(load_envelope_schema()["status_enum"])
+
+
+def _normalize_envelope(env, schema=None):
+    """把旧字段名归一化为新名（from→agent_id 等）。
+
+    为什么要归一而不是直接判失败：既有 trace 里存着旧 schema 的信封，
+    硬判失败会让历史回溯全线变红。归一后在报告里标注 normalized_keys，
+    做到"能读旧、能写新、旧名不再被新产出使用"。
+    """
+    sc = schema or load_envelope_schema()
+    aliases = sc.get("legacy_aliases") or {}
+    if not aliases:
+        return env, []
+    renamed = {}
+    for old, new in aliases.items():
+        if old in env and new not in env:
+            env[new] = env.pop(old)
+            renamed[old] = new
+    return env, renamed
 
 
 def _extract_envelope(text):
@@ -788,6 +925,7 @@ def cmd_verify_envelope(args):
 
     缘由（2026-10-04）：result_envelope 由 commit 7013f87 引入，但只写在 MD 里，
     成员"自觉遵守"——实测自报失真 4/4 个版本复发，说明约定必须有执行者。
+    v3.12.0：字段改读 references/result-envelope.yaml，消除多套 schema 互斥。
     """
     p = os.path.abspath(args.path)
     res = {"path": p, "exists": os.path.exists(p)}
@@ -808,20 +946,38 @@ def cmd_verify_envelope(args):
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 1
 
-    missing = [k for k in ENVELOPE_REQUIRED if k not in env or env.get(k) in (None, "")]
+    sc = load_envelope_schema()
+    vcfg = sc.get("validation") or {}
+    # 旧字段名检测（在归一之前，先看清对方给了什么）
+    aliases = sc.get("legacy_aliases") or {}
+    legacy_hit = [k for k in env if k in aliases]
+    if vcfg.get("normalize_before_check", True):
+        env, renamed = _normalize_envelope(env, sc)
+        if renamed:
+            res["normalized_keys"] = renamed
+    if vcfg.get("reject_legacy_keys", True) and legacy_hit and not res.get("normalized_keys"):
+        res["verdict"] = (f"❌ 使用旧版字段名：{legacy_hit}；现行字段见 "
+                          f"references/result-envelope.yaml，请改用新名")
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+
+    required = sc["required"]
+    missing = [k for k in required if k not in env or env.get(k) in (None, "")]
     res["envelope"] = env
     res["missing"] = missing
     if missing:
-        res["verdict"] = f"❌ 信封缺字段：{missing}（判 partial，退回补充）"
+        res["verdict"] = (f"❌ 信封缺字段：{missing}（判 partial，退回补充；"
+                          f"字段定义见 references/result-envelope.yaml）")
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 1
     st = str(env.get("status", "")).lower()
-    if st not in ENVELOPE_STATUS:
-        res["verdict"] = f"❌ status 取值非法：{st!r}（应为 {'/'.join(sorted(ENVELOPE_STATUS))}）"
+    allowed = _envelope_status_set()
+    if st not in allowed:
+        res["verdict"] = f"❌ status 取值非法：{st!r}（应为 {'/'.join(sorted(allowed))}）"
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 1
-    # 产物路径真实性交叉核验（若有 artifact 字段）
-    art = env.get("artifact") or env.get("deliverable") or ""
+    # 产物路径真实性交叉核验（若有 artifact/deliverable 字段）
+    art = env.get("deliverable") or env.get("artifact_path") or ""
     if isinstance(art, str) and art.startswith("/") and not os.path.exists(art):
         res["verdict"] = f"⚠ 信封声明的产物不存在：{art}（疑自评失真，先落盘再放行）"
         res["verdict_ok"] = True          # 字段齐备，但需人工处理
@@ -922,6 +1078,59 @@ def _loop_state_path(w, loop):
     return os.path.join(p, f"loop{loop.upper()}_state.json")
 
 
+def _state_lock_path(w, loop):
+    return _loop_state_path(w, loop) + ".lock"
+
+
+class _StateLock:
+    """Loop 状态文件的跨进程文件锁（v3.12.0）。
+
+    为什么需要：`_write_loop_state` 全包 20 处调用，且都是「读 JSON → 改内存 → 写回」的
+    读-改-写模式。两个 harness 进程并发跑（如主理人一边 freeze 一边 verify）会：
+      ① 后写者覆盖先写者 → 丢条目（lost update）
+      ② 裸 open(w) 截断后崩溃 → 文件半截，JSON 解析失败 → 状态被当空状态处理（更糟：静默重置）
+    两者都不会产生「schema 字段对不上」那种症状，故与信封互斥是两回事——
+    信封互斥的根因是"多处各自定义 schema"（见 references/result-envelope.yaml），
+    本锁解决的是并发写的丢更新与半写问题。
+
+    实现：fcntl.flock 排他锁，跨进程有效（Windows 无 fcntl 时退化为进程内互斥并告警）。
+    用法：with _StateLock(w, loop): st = _read_loop_state(...); ... ; _write_loop_state(...)
+    """
+
+    def __init__(self, w, loop, timeout=5.0):
+        self.path = _state_lock_path(w, loop)
+        self.timeout = timeout
+        self._fh = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self._fh = open(self.path, "a+")
+        try:
+            import fcntl
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            # Windows / 无 fcntl：退化为进程内锁（只防线程，不防跨进程），显式告警
+            print("⚠ 无 fcntl，Loop 状态锁退化为进程内（跨进程并发写仍需串行调度）",
+                  file=sys.stderr)
+        except OSError as e:
+            print(f"⚠ 取 Loop 状态锁失败：{e}（继续，可能有并发写风险）", file=sys.stderr)
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                import fcntl
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+        return False   # 不吞异常
+
+
 def _read_loop_state(w, loop):
     """读 Loop 状态；不存在返回 None（与 task_state.json 并存，不复用其路径）。"""
     sp = _loop_state_path(w, loop)
@@ -936,8 +1145,29 @@ def _read_loop_state(w, loop):
 
 
 def _write_loop_state(w, loop, st):
-    with open(_loop_state_path(w, loop), "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
+    """原子写：先写同目录临时文件 → fsync → os.replace 覆盖。
+
+    为什么必须原子（v3.12.0）：原实现裸 open(path,"w") 会先截断文件。若此刻进程被杀 /
+    磁盘满 / 并发读到中间态，磁盘上留下半截 JSON；`_read_loop_state` 解析失败会
+    「按空状态处理」——等于静默把整个 Loop 状态重置，比丢几条更严重。
+    os.replace 在同一文件系统内是原子的，读者要么看到旧版要么看到新版，不存在半截态。
+    """
+    path = _loop_state_path(w, loop)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".loopstate.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())      # 落盘缓冲，避免 replace 后仍丢数据
+        os.replace(tmp, path)        # 同目录 → 原子替换
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
 
 
 def _loop_hist(st, action, detail):
@@ -1104,6 +1334,29 @@ def cmd_loop(args):
         print(f"⛔ 任务已终止（{st['termination']}），不得再执行 {args.action}。", file=sys.stderr)
         return 1
 
+    # ── v3.12.0：状态事务加锁 ────────────────────────────────────────
+    # 上面这次 _read_loop_state 与下面 10+ 分支里的 _write_loop_state 构成一个
+    # 「读-改-写」事务。两个 harness 进程并发跑（主理人一边 freeze 一边 verify、
+    # 或自动化脚本并发调 add-item）会丢更新（后写者用旧快照覆盖先写者的改动）。
+    # 这里把锁提到「读完状态」之前，持有到函数结束，保证事务内不被他人插入。
+    # 只读动作（status/resume/terminate）也加锁——它们不写，但可能读到写了一半的状态；
+    # 原子写已保证不会读到半截 JSON，加锁额外保证读到的是"某个已提交版本"而非中间态。
+    _lock = _StateLock(w, "b")
+    _lock.__enter__()
+    try:
+        st = _read_loop_state(w, "b")   # 持锁后重读，确保用的是最新快照
+        return _loop_dispatch(args, cfg, w, loop, st, budgets)
+    finally:
+        _lock.__exit__()
+
+
+def _loop_dispatch(args, cfg, w, loop, st, budgets):
+    """loop 状态机各动作分派（v3.12.0 从 cmd_loop 抽出，以便整体包在锁内）。
+
+    注意：函数体原样承接 cmd_loop 的后续分支，调用方已持锁并已读完最新状态。
+    """
+    lb = cfg.get("loop_b", {}) or {}
+    la = cfg.get("loop_a", {}) or {}
     # ── intake：九项登记（A 类五项齐 + 非空才算 confirmed）
     if args.action == "intake":
         if not args.file:
@@ -1421,7 +1674,7 @@ def cmd_doctor(args):
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
         ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason", "0/1/2/3", "harness.py loop start --deck x.pptx"),
     ]
-    out = {"version": "v3.11.0", "executable": __file__,
+    out = {"version": "v3.12.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -1759,8 +2012,12 @@ def main():
     p.set_defaults(func=cmd_state)
 
     p = sub.add_parser("budget", help="任务级预算计数")
-    p.add_argument("action", choices=["check", "spend", "reset"])
-    p.add_argument("--kind", choices=["spawn", "react", "rework"])
+    # v3.12.0：新增 list 动作（列出全部预算及其执行者）；--kind 不再硬编码 choices，
+    # 否则 argparse 会在 cmd_budget 之前就拒掉新增的阈值型 kind。
+    p.add_argument("action", choices=["check", "spend", "reset", "list"])
+    p.add_argument("--kind", default="",
+                   help="计数型 spawn|react|rework；阈值型 attempts|react_gap|"
+                        "stage_minutes|artifact_bytes|three_source_sample|three_source_pass")
     p.add_argument("--n", type=int, default=1)
     p.add_argument("--actor", default="main")
     _ws(p)

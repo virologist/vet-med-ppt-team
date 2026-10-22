@@ -33,6 +33,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   14 版本号四处一致（codebuddy/claude/yaml/py）  → 不一致则告警【只读】★新
   15 agent frontmatter 闭合（双平台解析兼容）   → 未闭合则告警【只读】★新
   16 受众分层单一数据源（v3.11.0）             → 层数/深度档/时间结构/唯一默认/旧层名残留【只读】★新
+  17 悬空脚本引用（v3.12.0）                       → MD 引用了 scripts/ 里没有的 .py【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -93,7 +94,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 16  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
+N = 17  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -747,6 +748,58 @@ def check_audience_profile(expert_dir):
     return 0
 
 
+def check_dangling_script_ref(expert_dir):
+    """v3.12.0：悬空脚本引用巡检（第 17 项）。
+
+    背景（真实缺陷）：agent MD 引用 `registry_rebuild.py` / `repair_p0_v200.py`
+    作为"职责已被承接"的论据，但两者**均不在本包 scripts/ 内**（属课程工作区）。
+    拿包外脚本当包内论据 = 悬空引用：工作区一换，论据自动失效且无人察觉。
+
+    判据：扫描 agents/ 与 references/ 中形如 `<name>.py` 的反引号引用，
+         若不在 scripts/ 且不在"已知外部脚本"白名单里 → 告警。
+    白名单是显式的：新增外部依赖必须登记，不靠"忘了就没人管"。
+    """
+    scripts_dir = os.path.join(expert_dir, "scripts")
+    if not os.path.isdir(scripts_dir):
+        print(f"[17/{N}] – 无 scripts/ 目录，跳过")
+        return 0
+    local = {f for f in os.listdir(scripts_dir) if f.endswith(".py")}
+    # 显式登记的外部脚本（课程工作区等），登记即"承认这是外部依赖"
+    known_external = {"registry_rebuild.py", "repair_p0_v200.py"}
+
+    import re as _re
+    pat = _re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.py)`")
+    dangling = []
+    for sub in ("agents", "references"):
+        d = os.path.join(expert_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith((".md", ".yaml", ".yml")):
+                continue
+            fp = os.path.join(d, name)
+            try:
+                txt = open(fp, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            for m in set(pat.findall(txt)):
+                if m in local or m in known_external:
+                    continue
+                dangling.append(f"{sub}/{name} 引用 `{m}`（包内 scripts/ 无此文件）")
+
+    if dangling:
+        print(f"[17/{N}] ⚠ 悬空脚本引用 {len(dangling)} 处")
+        for x in dangling:
+            print(f"     {x}")
+        print("     → 处置：① 若确为本包脚本，补进 scripts/；"
+              "② 若属外部依赖，在本检查的 known_external 白名单登记并在 MD 标注来源；"
+              "③ 若已废弃，删除该引用——悬空论据会让「职责已被承接」的判断失效")
+        return 1
+    print(f"[17/{N}] ✓ 无悬空脚本引用（本地 {len(local)} 个 .py；"
+          f"外部白名单 {len(known_external)} 个已标注来源）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -800,6 +853,8 @@ def main():
     rc |= check_agent_frontmatter(path)
     # v3.11.0：受众分层单一数据源巡检（防 11 处引用各自漂移）
     rc |= check_audience_profile(path)
+    # v3.12.0：悬空脚本引用巡检（防拿包外脚本当包内论据）
+    rc |= check_dangling_script_ref(path)
 
     print()
     if rc == 0:

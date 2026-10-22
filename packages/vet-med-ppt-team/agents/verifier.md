@@ -61,7 +61,7 @@ maxTurns: 40
 - 复检项：证据标注是否可回溯、`[推测]` 是否与事实物理分离、术语首现是否中英一致、目标-活动-评价三方是否对齐
 - 只回答一个问题：**「从我的独立视角，这份交付物会在哪个环节让人/学生/评审出错？」**
 
-## 回传格式
+## 回传格式（v3.12.0：字段定义以 `references/result-envelope.yaml` 为唯一源）
 
 ```json
 {
@@ -70,9 +70,18 @@ maxTurns: 40
   "phase": "gate4",
   "status": "success|partial|failed|blocked",
   "confidence": 0,
-  "deliverable_summary": "判决：pass/partial/fail；P0=x/P1=y/P2=n%(机器草稿m页)/P3=k"
+  "deliverable_summary": "判决：pass/partial/fail；P0=x/P1=y/P2=n%(机器草稿m页)/P3=k",
+  "issues": [],
+  "evidence": [],
+  "next_agent_hint": "",
+  "metrics": {"duration_ms": 0, "retry_count": 0}
 }
 ```
+
+> **v3.12.0 修复**：本文件此前只声明 6 字段，**缺 `issues`**。
+> 而 `issues` 是 Loop B 下成员上抛缺失信息/能力阻塞的**唯一通道**
+> （`round-review-sop` 规定成员不得直接联系用户），缺它 = 阻塞理由无处可传。
+> 校验：`python3 scripts/harness.py verify-envelope --path <产出文件>`
 
 ## 注意事项
 

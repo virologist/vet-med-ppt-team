@@ -6,6 +6,82 @@
 
 ---
 
+## [v3.12.0] - 2026-10-22
+
+### 概述（回传信封治本批 + 并发安全 + 死配置激活）
+
+管家节点指令「优先解决回传信封互斥」，并给出排查方向（并发/重试/幂等/锁）。
+**据实澄清**：实测两条线都查了——并发隐患**真实存在且已实证**，
+但它**不是信封互斥的根因**；根因是「多处各自定义 schema」。两线均修。
+
+### ① 回传信封单一数据源（根因修复 · P0）
+
+包内此前有**四套互斥定义**：`spawn-protocol.md:19` 自称唯一权威源要
+`{from,stage,artifact,warnings,evidence_used,next_recommendation}`；
+`harness.py` 校验 `{agent_id,task_id,phase,status,confidence,deliverable_summary}`；
+5 个 agent MD 第三套（10 字段）；`ppt-producer.md` 同一文件内 §75/§117 又两套。
+后果：按权威源产出的**合规**信封被校验器判「缺字段 → 退回」。
+
+- **新增 `references/result-envelope.yaml`**：必填 6 / 选填 4 / status 枚举 / 逐字段语义判据
+  + **legacy_aliases**（from→agent_id 等 6 组映射）+ 校验行为 + 漂移守卫
+- `harness.py` 改为**读 yaml**（`load_envelope_schema`），不再硬编码 `ENVELOPE_REQUIRED`
+- 新增**旧字段归一化**：读到旧名自动改写并在报告标注 `normalized_keys`（历史 trace 仍可回溯，
+  不用因旧名把整条历史判红）；`reject_legacy_keys` 确保新产出不再用旧名
+- 报错信息补「字段定义见 references/result-envelope.yaml」——修前只说"缺字段"，不知道该按哪份补
+
+### ② 并发安全（实证缺陷 · A 线）
+
+- **原子写**：`_write_loop_state` 原为裸 `open(w)` + `json.dump`——先截断后写，
+  中途崩溃会留半截 JSON，而 `_read_loop_state` 解析失败会「按空状态处理」= **静默重置整个 Loop 状态**。
+  改为 `mkstemp` 同目录 → `fsync` → `os.replace`（同 fs 内原子替换，读者只见旧版或新版）
+- **文件锁**：新增 `_StateLock`（`fcntl.flock` 排他；无 fcntl 退化为进程内并**显式告警**），
+  并把 `cmd_loop` 的 10+ 分支抽为 `_loop_dispatch`，使「读状态 → 改 → 写」**整段事务**在锁内
+- **对照实验（决定性证据）**：同一工作区并发跑 20 次 `loop add-item`——
+  **修复前只保住 1/20 条**（丢 19），**修复后 20/20 全存**，`history` 亦 20 条
+
+### ③ 6 项死配置激活（`budget` 从 3 项 → 9 项）
+
+`harness.yaml#budgets` 有 9 项，但 `cmd_budget` 的 `limit_map` 只映射 3 项；
+其余 6 项（`max_spawn_attempts_per_member` / `max_react_rounds_per_gap` / `max_stage_minutes` /
+`max_artifact_bytes` / `three_source_sample_rate` / `three_source_pass_threshold`）
+**只在 `_FALLBACK` 兜底字典出现、代码从不读**，而 `sop-stages.md` 等文档仍把它们当生效约束引用
+——「看起来有护栏、实际不设防」。
+
+- 分两类处理，不混为一谈：① 计数型 → 补进可 check/spend；② 阈值型 → 注册为**可查但不由 harness 执行**，
+  输出标明 `executed_by`（哪个脚本/文档负责），未配值时 **exit 1 暴露"护栏缺失"**而非静默通过
+- 新增 `budget list`：一次列出全部 9 项及其执行者；argparse 的 `--kind` 放开硬编码 `choices`
+
+### ④ 悬空脚本引用（agent MD 拿包外脚本当论据）
+
+`ppt-producer.md` 两处把 `registry_rebuild.py` / `repair_p0_v200.py` 作为「职责已被承接」的依据，
+但两者**均不在 `scripts/`**（Glob 确认无此文件，属课程工作区）。包外脚本随工作区丢失后，
+该论据自动失效且无人察觉。已删除「已由 registry_rebuild 承接」的表述（包内真正承接者是 `harness.py gate`），
+另一处改为显式标注**外部依赖** + 工作区不可用时改用 `harness.py state init`。
+
+### ⑤ 体检第 17 项（悬空脚本引用巡检，防复发）
+
+扫描 agents/ 与 references/ 中反引号包裹的 `<name>.py`，不在 `scripts/` 且不在
+**显式外部白名单**（登记即"承认这是外部依赖"）→ 告警。
+反例验证：植入 `ghost_script_xyz.py` → `[17/17] ⚠` → 恢复 → `✓`。
+
+### 验证
+
+- 体检 **17/17 全绿**（16 受众分层 + 17 悬空引用，反例验证均通过）
+- 9 个 `test_*.py` 回归套件全过（**test_loop_state 33/33**：状态机重构未破坏）
+- 信封校验实测：新 schema ✓ 合规 / 旧 schema 归一化后再按新规则判缺（信息里带正确文件指引）
+- `budget`：计数型 check/spend 行为不变；阈值型可查、spend 被拒（exit 2 用法错误）
+- 版本四处同步 **3.12.0**
+
+### 未做 / 挂账
+
+- `verify_deck.py` 的 three_source 阈值仍**硬编码** 0.8/0.1（本次只让 harness 能查、能标注"执行者是 verify_deck"，
+  **没改 verify_deck 本身**——改它涉及闸4.5 判定逻辑，须单独评审）
+- `seven-dimension-rubric.md`（诊断量规唯一源）在本机 marketplace 仍不可解析
+- 元素重叠双实现（verify_deck 26 行 vs ooxml_lint 264 行）未合并
+- 跨成员通信禁令与「视觉→内容 交检索单」等 2 处业务指令的冲突未裁决（需管家节点定口径）
+
+---
+
 ## [v3.11.0] - 2026-10-22
 
 ### 概述（受众分层治本批：四层 + 国家标准深度标尺 + 第 16 项体检兜底）

@@ -1,7 +1,12 @@
-# Spawn 协议（任务包 schema + 成员人设注入 · 全文权威源）
+# Spawn 协议（任务包 schema + 成员人设注入）
 
-> 从主理人 MD 外置（v3.4.3 遗留批瘦身，P1-3 三轮的延续）。主 MD 只留索引，
-> **执行以本文件为准**。适用：所有 Agent spawn / 降级 spawn 场景。
+> 从主理人 MD 外置（v3.4.3 遗留批瘦身，P1-3 三轮的延续）。主 MD 只留索引。
+> 适用：所有 Agent spawn / 降级 spawn 场景。
+> **v3.12.0 变更**：本文件此前自称「回传 schema 唯一权威源」，其字段定义
+> （`{from, stage, artifact, warnings, evidence_used, next_recommendation}`）与
+> `scripts/harness.py` 的校验字段**互斥**——按本文产出的合规信封会被校验器判
+> 「缺字段 → 退回补充」。根因是"多处各自定义"。现回传信封改为
+> **`references/result-envelope.yaml` 单一数据源**，本文件只引用、不再定义。
 
 ## 一、下发任务包 schema（v1.7.0：spawn 成员必附，防委派模糊）
 
@@ -16,7 +21,15 @@
 }
 ```
 
-- 回传 schema 不变：`{"from", "stage", "artifact", "warnings", "evidence_used", "next_recommendation"}`，任一字段缺失视为回传失败
+### 回传信封（v3.12.0：定义见 `references/result-envelope.yaml`，此处只列必填）
+
+必填六字段：`agent_id` / `task_id` / `phase` / `status` / `confidence` / `deliverable_summary`
+选填四项：`evidence` / `issues` / `next_agent_hint` / `metrics`
+`status` 只能取 `success` / `partial` / `failed` / `blocked`。
+
+校验命令：`python3 scripts/harness.py verify-envelope --path <成员产出文件>`
+（字段定义、语义判据、旧字段别名映射全部以 yaml 为准，本文件不复述——避免两处定义再次漂移）
+
 - **绝对路径强制（v2.2.0）**：任务包里的落盘路径一律给**绝对路径**；成员回传后主理人必须 `ls -la <绝对路径>` 核验文件真实存在且非空——实测出现过成员自报"已落盘 19.5KB"而文件全盘不存在
 - 并行 spawn 时任务边界必须互斥无交集（防重复劳动与覆盖缺口）；任务包写入 task_state.json 备查
 
