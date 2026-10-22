@@ -11,11 +11,11 @@
 
 | 项 | 已确认值 | 详情 |
 |---|---|---|
-| 受众 | 默认**职业本科**；按需切 基层兽医/一线技术人员、本科生、研究生（四层参数） | `course-profile-defaults.md#1` |
-| 课时 | **1–4 课时 × 45 min**，按表控制知识点/案例/图表/互动时长 | `course-profile-defaults.md#2` |
-| 模板 | **`/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx`**（指纹 5fa78154）；已有原稿版式的沿用原稿 | `default-template-profile.md` |
+| 受众 | 默认**职业本科与本科生**；按需切 大专 / 基层兽医及一线技术人员 / 研究生（**四层**，深度主轴=国家三档「了解/理解/掌握」） | `course-profile-defaults.md#1` · 参数源 `audience-profile-schema.yaml` |
+| 课时 | **1–4 课时 × 45 min**；课内 90/5/5；页数按表控制 | `course-profile-defaults.md#2` |
+| 模板 | **`/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx`**（指纹 5fa78154）；已有原稿版式的沿用原稿（**须写明沿用理由**） | `default-template-profile.md` |
 | 范围 | **全部页面**，逐页六查（标题层级/正文/图表/案例/思考题/小结） | `course-profile-defaults.md#3` |
-| 验收标准 | 内容 5 条 + 视觉 7 条 + 按受众/课时差异化阈值 | `course-profile-defaults.md#4` |
+| 验收标准 | 内容 5 条 + 视觉 7 条 + 受众/课时差异化阈值 | `course-profile-defaults.md#4` |
 | 交付 | 成品 PPTX + 逐页修改说明 + 验收自检清单（三件缺一不算完成） | `delivery-spec.md` |
 
 **但默认值不等于本单意图**——开工前仍需确认一句：*本单沿用上述默认，还是有覆盖？*
@@ -23,6 +23,8 @@
 
 > 本课件的具体受众/课时/范围仍属**每单必问**（默认只回答"没有特别说明时怎么办"）：
 > 例如"这版给基层兽医培训用、2 课时"必须在 intake 写明。
+> `intake.audience_layers` 落盘时**必须取 schema 里的四个 id**（`dazhuan` /
+> `jiceng_yixian` / `zhiye_benke_benke` / `yanjiusheng`），**不得自造层名**。
 
 ## 0. 使用方式
 

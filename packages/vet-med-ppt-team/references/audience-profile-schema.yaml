@@ -1,0 +1,172 @@
+# audience-profile-schema.yaml — 受众分层单一数据源（v3.11.0 · 治本件）
+#
+# 定位：受众分层的**唯一定义源**。references/ 与 agents/ 内的所有受众描述
+#       必须引用本文件，不得各自另立一张表（防止 11 处引用各自漂移）。
+# 消费方：ensure_settings.py 第 16 项校验、course-profile-defaults.md §1、
+#         pedagogy-architect.md / dvm-content-expert.md / team-lead.md
+#
+# 深度标尺的第一性原理（不拍脑袋，来自国家教学标准原文）：
+#   《动物医学专业教学标准》对"禽病防治技术"用三档行为动词描述要求：
+#     了解 = 知道是什么        理解 = 知道为什么/怎么来的      掌握 = 能独立做出来
+#   本标准的专科与本科两版对同一课程的三档动词**完全一致**——
+#   故"受众深度"不是学历越高要求越高，而是**同一标尺上取不同的档位**。
+#   原文依据见 references/national-standard-mapping.md（含 PDF 归档路径）。
+
+schema_version: 1
+version: "3.11.0"
+
+# ── 全局课内时间结构（用户 2026-10-22 确认，四层统一）──────────────
+# 注意：这是**单次 PPT 这 45 分钟课内**的时间结构，不是课程实践学时占比。
+# 国家标准口径的实践性教学 ≥60% 是**四年总学时**的占比，两者层级不同，不可混用。
+time_structure:
+  lecture_pct: 90      # 讲授
+  case_pct: 5          # 案例
+  interaction_pct: 5   # 互动
+  applies_to: "所有四层统一；受众差异体现在讲授内容的深度档位，不体现在时间比例"
+
+# ── 三档深度标尺（国家教学标准原文用词，作为唯一判据）──────────────
+depth_scale:
+  了解:
+    meaning: "知道是什么、能识别"
+    verb_requirement: "能复述/能指出"
+    not_required: "不要求解释机制、不要求独立操作"
+  理解:
+    meaning: "知道为什么、怎么来的"
+    verb_requirement: "能解释机制、能说明因果链"
+    not_required: "不要求独立完成操作"
+  掌握:
+    meaning: "能独立做出来"
+    verb_requirement: "能独立操作/能制定方案"
+    not_required: "—"
+
+# ── 四层受众（顺序即教学建议顺序）────────────────────────────────
+audiences:
+
+  - id: dazhuan
+    name: 大专
+    display: "大专（高等职业教育专科）"
+    standard_ref: "《动物医学专业教学标准（高等职业教育专科）》禽病防治技术条目"
+    is_default: false
+    depth_mapping:
+      禽病诊断: 了解
+      发病机理: 了解
+      预防控制方法: 理解
+      诊断方法: 理解
+      治疗方法: 理解
+    terminology:
+      level: low
+      rule: "核心术语给通俗解释；缩写少用；不作名词解释考点"
+    theory_depth:
+      level: 了解
+      rule: "病原→靶器官→症状链条即止；不讲免疫机理与分子机制"
+    case_style:
+      count_by_hours: {1: 1, 2: 1, 3: 2, 4: 2}
+      rule: "案例取真实养殖场景，讲『怎么做』；不给复杂决策树"
+    interaction:
+      form: "高频短互动：判断对错、看图识病变、举手复述"
+      freq_per_min: 10
+    data_requirement: "结论性数字（发病率/死亡率）+ 来源；不要求统计量"
+
+  - id: jiceng_yixian
+    name: 基层兽医及一线技术人员
+    display: "基层兽医及一线技术人员"
+    standard_ref: "国家标准的岗位面向：兽医兽药技术人员（2-03-06）、动植物疫病防治人员（5-05-02）"
+    is_default: false
+    depth_mapping:
+      禽病诊断: 掌握
+      发病机理: 理解
+      预防控制方法: 掌握
+      诊断方法: 掌握
+      治疗方法: 掌握
+      废弃物与动物尸体处理: 掌握
+    terminology:
+      level: low_mid
+      rule: "能用行话就用行话（法氏囊/胸腺出血）；一切术语必须落到可操作判据"
+    theory_depth:
+      level: 理解
+      rule: "机理够用即止，落到可观察/可操作/可判断；强调现场判读阈值"
+    case_style:
+      count_by_hours: {1: 1, 2: 2, 3: 2, 4: 3}
+      rule: "病例为主线，含鉴别诊断决策树、用药方案与休药期、常见失误"
+    interaction:
+      form: "病例讨论、现场/视频演示、故障排查模拟、『如果是你怎么办』"
+      freq_per_min: 15
+    data_requirement: "现场可测指标（死淘率/料肉比/抗体滴度）+ 判读阈值 + 来源"
+
+  - id: zhiye_benke_benke
+    name: 职业本科与本科生
+    display: "职业本科与本科生（默认）"
+    standard_ref: "《动物医学专业教学标准（高等职业教育本科）》禽病防治技术条目"
+    is_default: true
+    depth_mapping:
+      禽病诊断: 掌握
+      发病机理: 理解
+      预防控制方法: 掌握
+      诊断方法: 掌握
+      治疗方法: 掌握
+      废弃物与动物尸体处理: 掌握
+      禽-人共患病: 掌握
+    terminology:
+      level: mid
+      rule: "术语规范化，掌握 IBD/ND/AI 等缩写；核心术语给中文全称 + 首次解释"
+    theory_depth:
+      level: 理解
+      rule: "含病原分类、致病机制、免疫应答基本过程；不展开分子机制细节"
+    case_style:
+      count_by_hours: {1: 1, 2: 2, 3: 3, 4: 4}
+      rule: "到场能干：强调『为什么这么判』，案例来自规模化养殖场真实场景"
+    interaction:
+      form: "每 10–15 min 一次提问 + 章节小结复述 + 思维导图"
+      freq_per_min: 15
+    data_requirement: "结论性数字 + 样本量与来源；关键数据逐条注来源与年份"
+
+  - id: yanjiusheng
+    name: 研究生
+    display: "研究生"
+    standard_ref: "国家标准的师资/学位层次要求（研究生学位专任教师比例 ≥50%）"
+    is_default: false
+    depth_mapping:
+      禽病诊断: 掌握
+      发病机理: 掌握
+      预防控制方法: 掌握
+      流行病学诊断: 掌握
+      诊断方法: 掌握
+      治疗方法: 掌握
+    terminology:
+      level: high
+      rule: "术语精确，能区分近义概念（抗原漂移 vs 抗原转变）；可直接用文献表述"
+    theory_depth:
+      level: 掌握
+      rule: "含分子机制、演化/选择压、文献争议与证据强度，须标注证据等级"
+    case_style:
+      count_by_hours: {1: 1, 2: 1, 3: 2, 4: 3}
+      rule: "案例服务于机制解释与研究问题提出；不重复基础操作"
+    interaction:
+      form: "低频深度：文献精读讨论、方法学批判、研究设计推演"
+      freq_per_min: 20
+    data_requirement: "统计量检验、置信区间、效应量；必须有文献出处（年份 + DOI/PMID）"
+
+# ── 校验规则（供 ensure_settings.py 第 16 项执行）────────────────
+validation:
+  expect_audience_count: 4
+  expect_depth_scale_keys: [了解, 理解, 掌握]
+  time_structure_sum_must_equal: 100
+  default_audience_must_be_one: true
+  each_audience_required_keys:
+    - id
+    - name
+    - depth_mapping
+    - terminology
+    - theory_depth
+    - case_style
+    - interaction
+    - data_requirement
+  drift_guard:
+    # 引用文件里出现下列任一模式即视为"自行另立定义"，须告警
+    forbidden_definitions_in_references:
+      - "① 职业本科（**默认**）"     # v3.10.0 旧层名残留
+      - "③ 本科生 "                  # 已并入职业本科层
+    required_reference_to_schema:
+      - "course-profile-defaults.md"
+      - "pedagogy-architect.md"
+      - "dvm-content-expert.md"

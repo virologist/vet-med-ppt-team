@@ -32,6 +32,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   13 联邦 shim 同步（各包声明 + vendor 哈希）     → 告警【只读】★新
   14 版本号四处一致（codebuddy/claude/yaml/py）  → 不一致则告警【只读】★新
   15 agent frontmatter 闭合（双平台解析兼容）   → 未闭合则告警【只读】★新
+  16 受众分层单一数据源（v3.11.0）             → 层数/深度档/时间结构/唯一默认/旧层名残留【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -92,7 +93,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 15  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合）
+N = 16  # 检查项总数（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -644,6 +645,108 @@ def check_agent_frontmatter(expert_dir):
     return 0
 
 
+def check_audience_profile(expert_dir):
+    """v3.11.0：受众分层单一数据源巡检（第 16 项）。
+
+    背景（真实缺陷，非假设）：受众分层此前是「单点定义 + 11 处文件各自引用」，
+    无机器校验。v3.10.0 已发生过同类事故——「终审 10 项」改成 11 项后，
+    dual-loop-governance / loop-master-prompt / team-lead 三处仍写 10。
+    本项把「受众层数 / 深度档位 / 时间结构 / 唯一默认 / 旧层名残留」变成可执行断言，
+    下次再加层或改层，漏改会当场报出。
+
+    判据：
+      ① schema 存在且可解析
+      ② 层数 == schema.validation.expect_audience_count（当前 4）
+      ③ 深度档位键 == expect_depth_scale_keys（了解/理解/掌握）
+      ④ 讲授+案例+互动 == 100
+      ⑤ 有且仅有一个默认层
+      ⑥ 引用文件不得出现 drift_guard 里的旧层名残留
+    """
+    schema_path = os.path.join(expert_dir, "references", "audience-profile-schema.yaml")
+    if not os.path.exists(schema_path):
+        print(f"[16/{N}] ⚠ 受众 schema 缺失：references/audience-profile-schema.yaml")
+        print(f"     → 处置：受众分层无单一数据源，各文件各自定义必然漂移；"
+              f"先落 schema 再改引用方")
+        return 1
+    try:
+        import yaml
+        with open(schema_path, encoding="utf-8") as f:
+            sc = yaml.safe_load(f)
+    except Exception as e:
+        print(f"[16/{N}] ⚠ 受众 schema 解析失败：{e}")
+        return 1
+
+    bad = []
+    val = sc.get("validation", {}) or {}
+    audiences = sc.get("audiences", []) or []
+
+    # ② 层数
+    exp_n = val.get("expect_audience_count", 4)
+    if len(audiences) != exp_n:
+        bad.append(f"受众层数 {len(audiences)} ≠ 期望 {exp_n}")
+    # ③ 深度档位
+    exp_scale = val.get("expect_depth_scale_keys", ["了解", "理解", "掌握"])
+    got_scale = list((sc.get("depth_scale") or {}).keys())
+    if got_scale != exp_scale:
+        bad.append(f"深度档位 {got_scale} ≠ 期望 {exp_scale}")
+    # ④ 时间结构合计
+    ts = sc.get("time_structure", {}) or {}
+    ssum = ts.get("lecture_pct", 0) + ts.get("case_pct", 0) + ts.get("interaction_pct", 0)
+    if ssum != val.get("time_structure_sum_must_equal", 100):
+        bad.append(f"课内时间结构合计 {ssum} ≠ 100")
+    # ⑤ 唯一默认层
+    defaults = [a.get("id") for a in audiences if a.get("is_default")]
+    if val.get("default_audience_must_be_one", True) and len(defaults) != 1:
+        bad.append(f"默认层数 {len(defaults)}（应为 1）：{defaults}")
+    # 每层必备键
+    req = val.get("each_audience_required_keys", []) or []
+    for a in audiences:
+        miss = [k for k in req if k not in a]
+        if miss:
+            bad.append(f"层 {a.get('name', a.get('id'))} 缺键 {miss}")
+
+    if bad:
+        print(f"[16/{N}] ⚠ 受众分层定义不合规（{len(bad)} 项）")
+        for b in bad:
+            print(f"     {b}")
+        print(f"     → 处置：以 references/audience-profile-schema.yaml 为唯一源修正；"
+              f"各引用文件不得自行另立定义")
+        return 1
+
+    # ⑥ 旧层名残留扫描
+    drift = val.get("drift_guard", {}) or {}
+    stale = drift.get("forbidden_definitions_in_references", []) or []
+    hits = []
+    for sub in ("references", "agents"):
+        d = os.path.join(expert_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith((".md", ".yaml", ".yml")):
+                continue
+            if name == "audience-profile-schema.yaml":
+                continue      # schema 自身含 forbidden 字面量（自检用），跳过
+            fp = os.path.join(d, name)
+            try:
+                txt = open(fp, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            for pat in stale:
+                if pat in txt:
+                    hits.append(f"{sub}/{name} 含旧层名「{pat}」")
+    if hits:
+        print(f"[16/{N}] ⚠ 旧层名残留 {len(hits)} 处（受众已改四层，引用未同步）")
+        for h in hits:
+            print(f"     {h}")
+        print(f"     → 处置：这些文件仍用 v3.10.0 旧受众层；改为引用 schema，勿各自定义")
+        return 1
+
+    print(f"[16/{N}] ✓ 受众分层合规（{len(audiences)} 层 · 深度档 {'/'.join(got_scale)} · "
+          f"时间 {ts.get('lecture_pct')}/{ts.get('case_pct')}/{ts.get('interaction_pct')} · "
+          f"默认层 {defaults[0] if defaults else '无'}）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -695,6 +798,8 @@ def main():
     rc |= check_version_consistency(path)
     # v3.8.0：agent frontmatter 闭合巡检（无论 quick/no-governance 均跑）
     rc |= check_agent_frontmatter(path)
+    # v3.11.0：受众分层单一数据源巡检（防 11 处引用各自漂移）
+    rc |= check_audience_profile(path)
 
     print()
     if rc == 0:
