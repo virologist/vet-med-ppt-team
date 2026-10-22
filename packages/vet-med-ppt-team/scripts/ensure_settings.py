@@ -34,7 +34,9 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   15 agent frontmatter 闭合（双平台解析兼容）   → 未闭合则告警【只读】★新
   16 受众分层单一数据源（v3.11.0）             → 层数/深度档/时间结构/唯一默认/旧层名残留【只读】★新
   17 悬空脚本引用（v3.12.0）                       → MD 引用了 scripts/ 里没有的 .py【只读】★new
-  18 死配置巡检（v3.12.0）                            → config/ 里的键在 scripts/ 中无读取者【只读】★新
+  18 死配置巡检（v3.12.0）                            → config/ 里的键在 scripts/ 中无读取者【提示·不阻断】
+  19 回退阈值漂移巡检（v3.14.0）                      → _FALLBACK 与 visual-rules.yaml 不一致【只读】★新
+  20 跨成员交接落盘契约巡检（v3.14.0）                → 交接指令未给载体（issues/落盘/中转/禁直连）【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -95,7 +97,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 18  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
+N = 20  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -967,6 +969,176 @@ def check_dead_config_keys(expert_dir):
     return 0   # 恒不阻断
 
 
+def check_fallback_drift(expert_dir):
+    """v3.14.0：`_FALLBACK` 回退阈值 vs `visual-rules.yaml` 漂移巡检（第 19 项）。
+
+    背景：`_FALLBACK` 是 verify_deck 在 yaml 不可读时的**受控逃生舱**
+    （须显式设 `VERIFY_ALLOW_FALLBACK=1` 才启用）。它的风险不在"当前值错"
+    ——实测当前 7 项阈值与 yaml **完全一致**；风险在于**改了 yaml 忘了改 _FALLBACK**：
+    yaml 加载失败时门禁会拿过期阈值继续判，且**完全静默**——比无护栏更危险
+    （人以为在用新红线，实际是老红线）。
+
+    本项把 _FALLBACK 与 yaml 逐项比对：漂移即告警并指出**该同步哪一项**。
+    这与第 18 项的区别：18 项查"配置有没有人读"，本项查"**两份同源数据是否一致**"——
+    后者判据确定（等值即可比）、假阳性为零，故本项**阻断**。
+    """
+    vd = os.path.join(expert_dir, "scripts", "verify_deck.py")
+    rules_p = os.path.join(expert_dir, "config", "visual-rules.yaml")
+    if not os.path.exists(vd) or not os.path.exists(rules_p):
+        print(f"[19/{N}] – 缺 verify_deck.py 或 visual-rules.yaml，跳过")
+        return 0
+    try:
+        import yaml
+        src = open(vd, encoding="utf-8", errors="replace").read()
+        rules = yaml.safe_load(open(rules_p, encoding="utf-8"))
+    except Exception as e:
+        print(f"[19/{N}] ⚠ 读取失败：{e}")
+        return 1
+
+    # 从 _FALLBACK 字面量里解析出各阈值（用 AST 避免正则误抓）
+    import ast
+    try:
+        tree = ast.parse(src)
+        fb = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "_FALLBACK" for t in node.targets):
+                fb = ast.literal_eval(node.value)
+                break
+        if fb is None:
+            print(f"[19/{N}] – verify_deck.py 中未找到 _FALLBACK 字面量，跳过")
+            return 0
+    except Exception as e:
+        print(f"[19/{N}] ⚠ 解析 _FALLBACK 失败：{e}")
+        return 1
+
+    # yaml 侧对应值（键名映射：fallback 键 → yaml 取值路径）
+    def yget(path, default=None):
+        cur = rules
+        for seg in path:
+            if not isinstance(cur, dict) or seg not in cur:
+                return default
+            cur = cur[seg]
+        return cur
+
+    pairs = [
+        ("body_min_pt", yget(("font", "body_min_pt")), "font.body_min_pt"),
+        ("note_min_pt", yget(("font", "note_min_pt")), "font.note_min_pt"),
+        ("max_colors_per_slide", yget(("density", "max_colors_per_slide")), "density.max_colors_per_slide"),
+        ("max_chars_per_slide", yget(("density", "max_chars_per_slide")), "density.max_chars_per_slide"),
+        ("overlap_ratio", yget(("geometry", "overlap_ratio")), "geometry.overlap_ratio"),
+        ("p2_note_coverage", yget(("gate", "p2_note_coverage")), "gate.p2_note_coverage"),
+    ]
+    drift = []
+    for fk, yv, ypath in pairs:
+        if yv is None:
+            continue          # yaml 未配该项（如 gate 缺省），不判漂移
+        fv = fb.get(fk)
+        if fv is None:
+            drift.append(f"{fk}: _FALLBACK 缺该项（yaml={yv} @ {ypath}）")
+            continue
+        try:
+            same = abs(float(fv) - float(yv)) < 1e-9
+        except (TypeError, ValueError):
+            same = fv == yv
+        if not same:
+            drift.append(f"{fk}: _FALLBACK={fv!r} ≠ yaml={yv!r}（{ypath}）")
+
+    # hours_page_range 单独比
+    y_hpr = rules.get("hours_page_range")
+    f_hpr = fb.get("hours_page_range")
+    if isinstance(y_hpr, dict) and isinstance(f_hpr, dict):
+        for k, v in y_hpr.items():
+            fv = f_hpr.get(k, f_hpr.get(float(k)))
+            if fv is None or list(fv) != list(v):
+                drift.append(f"hours_page_range[{k}]: _FALLBACK={fv!r} ≠ yaml={v!r}")
+
+    if drift:
+        print(f"[19/{N}] ⚠ 回退阈值与 yaml 漂移 {len(drift)} 项"
+              f"——yaml 加载失败时门禁会拿过期阈值继续判，且静默")
+        for d in drift:
+            print(f"     {d}")
+        print("     → 处置：同步 verify_deck.py 的 `_FALLBACK`（受控逃生舱，"
+              "仅 VERIFY_ALLOW_FALLBACK=1 时启用）；勿只改 yaml 不改回退值")
+        return 1
+    n = len(pairs) + (len(y_hpr) if isinstance(y_hpr, dict) else 0)
+    print(f"[19/{N}] ✓ 回退阈值无漂移（_FALLBACK 与 visual-rules.yaml 逐项一致，"
+          f"核对 {n} 项）")
+    return 0
+
+
+def check_handoff_paths(expert_dir):
+    """v3.14.0：跨成员交接指令的落盘契约巡检（第 20 项）。
+
+    背景：包内 4 处禁令禁止成员横向直连（平台无 agent-to-agent 通道），
+    但历史上有 3 处业务指令写成「交严真奥补查」「进入苏学法的候选」——
+    **交接路径未定义**，成员可能干等或私聊。v3.13.0 已把那 3 处改写为
+    落盘契约/信封字段，但**新写或改写文档时极易复现**（这是文风问题，不是一次性问题）。
+
+    本项扫 agents/ 与 references/ 中形如「交/找/通知/传给 + 某成员」的交接表述，
+    检查同一句（或紧邻段落）是否给出了合规载体：
+      ① 信封 `issues` 字段  ② 落盘路径（`/…` 或 `.md` 文件名）
+      ③ 明示「经主理人」  ④ 明示「不得直接联系 / 禁止 SendMessage」
+    四者皆无 = 悬空交接 → 告警。
+
+    判据确定（有无载体即可判）故**阻断**；误报面通过要求"同一行或下两行内出现载体"收敛。
+    """
+    import re as _re
+    # 交接动词：交…补查 / 找…/ 通知… / 传给… / 交由…
+    pat = _re.compile(
+        r"(交[给被]?\s*[\u4e00-\u9fa5]{2,3}(补查|核查|补|处理|确认|答复)"
+        r"|通知\s*[\u4e00-\u9fa5]{2,3}"
+        r"|传给\s*[\u4e00-\u9fa5]{2,3}"
+        r"|找\s*[\u4e00-\u9fa5]{2,3}(补查|核查|确认|处理))")
+    # 合规载体信号
+    carriers = (
+        "issues",             # 信封字段
+        ".md", "/",           # 落盘路径或文件名
+        "落盘", "写入", "文件",
+        "主理人",             # 明示中转
+        "不得直接", "禁止", "❌",
+    )
+    members = {"严真奥", "苏学法", "屠明熙", "郅作基", "验收员"}
+
+    dangling = []
+    for sub in ("agents", "references"):
+        d = os.path.join(expert_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".md"):
+                continue
+            fp = os.path.join(d, name)
+            try:
+                lines = open(fp, encoding="utf-8", errors="replace").read().split("\n")
+            except OSError:
+                continue
+            for i, ln in enumerate(lines):
+                if not pat.search(ln):
+                    continue
+                if not any(m in ln for m in members):
+                    continue      # 不是指向具体成员的交接
+                # 上下文窗口：本行 + 下两行（跨行的补充说明也算给了载体）
+                window = "\n".join(lines[i:i + 3])
+                if any(c in window for c in carriers):
+                    continue
+                snippet = ln.strip()[:60]
+                dangling.append(f"{sub}/{name}:{i + 1} 「{snippet}」")
+
+    if dangling:
+        print(f"[20/{N}] ⚠ 悬空跨成员交接 {len(dangling)} 处（说了要交给谁，但没给交接载体）")
+        for x in dangling[:12]:
+            print(f"     {x}")
+        if len(dangling) > 12:
+            print(f"     … 还有 {len(dangling) - 12} 处")
+        print("     → 处置：每处须补①信封 `issues` 字段 ②落盘路径 ③明示经主理人中转 "
+              "④明示不得直接联系（四者之一即可）；否则成员只能干等或私聊")
+        return 1
+    print(f"[20/{N}] ✓ 跨成员交接均有载体（扫 agents/ 与 references/，"
+          f"未发现悬空交接）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -1022,8 +1194,12 @@ def main():
     rc |= check_audience_profile(path)
     # v3.12.0：悬空脚本引用巡检（防拿包外脚本当包内论据）
     rc |= check_dangling_script_ref(path)
-    # v3.12.0：死配置巡检（防「配了没人读」）
+    # v3.12.0：死配置巡检（防「配了没人读」；提示不阻断）
     rc |= check_dead_config_keys(path)
+    # v3.14.0：回退阈值漂移巡检（防 yaml 改了忘改 _FALLBACK）
+    rc |= check_fallback_drift(path)
+    # v3.14.0：跨成员交接落盘契约巡检（防「交XX」不写路径复现）
+    rc |= check_handoff_paths(path)
 
     print()
     if rc == 0:

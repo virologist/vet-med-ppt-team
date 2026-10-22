@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.13.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.14.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -1674,7 +1674,7 @@ def cmd_doctor(args):
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
         ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason", "0/1/2/3", "harness.py loop start --deck x.pptx"),
     ]
-    out = {"version": "v3.13.0", "executable": __file__,
+    out = {"version": "v3.14.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
