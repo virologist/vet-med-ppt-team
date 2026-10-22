@@ -18,6 +18,10 @@ ooxml_lint.py — PPTX OOXML 兼容性检查器（v3.2.0-batch2）
   GEO  插入物与既有形状空间冲突（GEO-003，v3.8.2 实现；阈值 --geo-threshold，默认 15%）
        —— 仅 WARN：教学课件存在有意叠放（文字压图），机器分不清设计与事故，
           判 ERROR 会一律阻断合法设计（假阳性），故报 WARN 交人工结合渲染图裁定。
+       —— v3.10.0 增 --geo-baseline：以模板为基线豁免「继承叠放」。
+          实测默认模板 33 页产生 552 条 GEO-003，几乎全是模板固有底纹叠放，
+          不过滤会淹没新增遮挡、使验收 V7（无文字溢出或遮挡）无法判定。
+          豁免口径：同页序号 + 同名形状对 + 重叠率差 ≤5%（存 ratio 集合，因页内同名形状常见）。
 
 退出码（与 harness.py 统一）：
   0 全部 ERROR=0
@@ -29,6 +33,11 @@ ooxml_lint.py — PPTX OOXML 兼容性检查器（v3.2.0-batch2）
 CLI：
   python3 ooxml_lint.py <课件.pptx> [--json] [--baseline <original>]
                             [--level ERROR|WARN|all] [--strict]
+                            [--geo-threshold 0.15] [--no-geo] [--geo-baseline <模板.pptx>]
+
+  V7 验收标准用法（新增重叠必须为 0）：
+  python3 ooxml_lint.py 新版.pptx --geo-baseline <模板.pptx> --json
+      → summary.geo_new_overlap == 0 且 summary.geo_inherited 如实记录豁免条数
 """
 from __future__ import annotations
 
@@ -94,7 +103,8 @@ class Issue:
 class LintRunner:
     def __init__(self, pptx_path: str, baseline_path: Optional[str] = None,
                  level: str = "all", strict: bool = False,
-                 geo_threshold: float = 0.15, geo_disabled: bool = False):
+                 geo_threshold: float = 0.15, geo_disabled: bool = False,
+                 geo_baseline: Optional[str] = None):
         self.pptx_path = Path(pptx_path).resolve()
         self.baseline_path = Path(baseline_path).resolve() if baseline_path else None
         self.level = level  # ERROR / WARN / all
@@ -102,6 +112,10 @@ class LintRunner:
         # v3.8.2：GEO-003 参数（重叠面积 / 较小形状面积 的阈值；--no-geo 可整体关闭）
         self.geo_threshold = geo_threshold
         self.geo_disabled = geo_disabled
+        # v3.10.0：GEO-003 基线豁免（模板固有叠放不计 WARN，防 552 条噪音淹没新增遮挡）
+        self.geo_baseline_path = Path(geo_baseline).resolve() if geo_baseline else None
+        self.geo_baseline_map: dict = {}   # slide_no -> {(name_a, name_b): ratio}
+        self.geo_inherited = 0             # 被豁免的继承重叠条数（如实报告，不静默）
         self.issues: list[Issue] = []
         self._names: list[str] = []  # zip 内所有 name（去重检测用）
         self._parts_data: dict[str, bytes] = {}  # name -> raw bytes
@@ -133,6 +147,21 @@ class LintRunner:
                 log.info("baseline 扫描完成：%d issues", len(baseline_runner.issues))
             except Exception as e:
                 log.warning("baseline 扫描失败: %s（继续走非 baseline 模式）", e)
+
+        # 2.5) 若给了 --geo-baseline，构建模板继承重叠映射（v3.10.0）
+        if self.geo_baseline_path:
+            if not self.geo_baseline_path.exists():
+                log.warning("GEO 基线模板不存在: %s（不豁免，全部按新增重叠计）", self.geo_baseline_path)
+            else:
+                try:
+                    self.geo_baseline_map = build_geo_baseline_map(
+                        str(self.geo_baseline_path), self.geo_threshold)
+                    total = sum(len(v) for v in self.geo_baseline_map.values())
+                    log.info("GEO 基线载入：%d 页 / %d 组固有重叠（来自 %s）",
+                             len(self.geo_baseline_map), total, self.geo_baseline_path.name)
+                except Exception as e:
+                    log.warning("GEO 基线构建失败: %s（不豁免）", e)
+                    self.geo_baseline_map = {}
 
         # 3) 跑 6 组检查
         try:
@@ -202,6 +231,9 @@ class LintRunner:
         n_wrn = sum(1 for i in self.issues if i.severity == "WARN")
         lines.append(f"== ooxml_lint {self.pptx_path.name} ==")
         lines.append(f"扫描完成: {n_err} ERROR / {n_wrn} WARN")
+        if self.geo_inherited:
+            lines.append(f"GEO-003 继承豁免: {self.geo_inherited} 条"
+                         f"（模板固有叠放，不计 WARN；新增重叠见下列 GEO-003 条数）")
         if self.issues:
             lines.append("")
             by_code = {}
@@ -226,6 +258,9 @@ class LintRunner:
                 "summary": {
                     "ERROR": sum(1 for i in self.issues if i.severity == "ERROR"),
                     "WARN": sum(1 for i in self.issues if i.severity == "WARN"),
+                    # v3.10.0：模板继承叠放豁免条数与新增重叠条数（V7 验收判据）
+                    "geo_inherited": self.geo_inherited,
+                    "geo_new_overlap": sum(1 for i in self.issues if i.code == "GEO-003"),
                 },
                 "issues": [asdict(i) for i in self.issues],
             },
@@ -721,12 +756,107 @@ class GeoChecker:
                     continue
                 ratio = (ix * iy) / area_small
                 if ratio >= thr:
+                    # v3.10.0：命中模板基线 → 继承叠放，豁免（不计 WARN），但如实计数
+                    if self._is_inherited(slide_name, a["name"], b["name"], ratio):
+                        self.r.geo_inherited += 1
+                        continue
                     self.r.add(
                         "GEO-003", "WARN", slide_name,
                         f"「{a['name']}」与「{b['name']}」重叠 {ratio:.0%}（阈值 {thr:.0%}）",
                         "对照渲染图确认是否为有意叠放；无意重叠按迭代六原则⑤插入物避让整改"
                         "（短注→备注→缩框→挂账）",
                     )
+
+    # ---------- 模板继承判定 ----------
+    def _is_inherited(self, slide_name: str, na: str, nb: str, ratio: float) -> bool:
+        """同名形状对在模板同序号页已存在、且重叠率差 ≤5% → 判定为继承（模板固有叠放）。
+
+        保守设计：只按「页序号 + 形状名对 + 重叠率」三者同时命中才豁免，
+        避免把真正的新增遮挡误判为继承（宁可多报，不可漏报）。
+        """
+        bmap = getattr(self.r, "geo_baseline_map", None)
+        if not bmap:
+            return False
+        no = slide_no_of(slide_name)
+        if no is None:
+            return False
+        pairs = bmap.get(no)
+        if not pairs:
+            return False
+        for key in ((na, nb), (nb, na)):
+            for base in pairs.get(key, ()):     # 同名形状可能有多组重叠，逐值比对
+                if abs(base - ratio) <= 0.05:
+                    return True
+        return False
+
+
+# ---------- GEO 基线豁免（v3.10.0）----------
+_SLIDE_NO_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+
+
+def slide_no_of(part_name: str) -> Optional[int]:
+    """ppt/slides/slide12.xml → 12；非幻灯片 part → None。"""
+    m = _SLIDE_NO_RE.match(part_name)
+    return int(m.group(1)) if m else None
+
+
+def collect_slide_rects(data: bytes) -> list:
+    """从 slide part 原始字节收集矩形（含 GROUP 换算）；GeoChecker 与基线构建共用。"""
+    rects: list = []
+    try:
+        root = etree.fromstring(data)
+    except etree.XMLSyntaxError:
+        return rects
+    tree = root.find(f"{{{NS['p']}}}cSld/{{{NS['p']}}}spTree")
+    if tree is None:
+        return rects
+    probe = GeoChecker(None)     # 只用其矩形收集逻辑，不产生 issue
+    probe._walk(tree, rects, None, 0)
+    return rects
+
+
+def build_geo_baseline_map(baseline_path: str, threshold: float) -> dict:
+    """扫描模板，返回 {slide_no: {(name_a, name_b): [ratio...]}}——模板固有叠放的指纹。
+
+    只记录 ≥ 阈值的重叠对，供新稿比对时判定「继承」：
+    同名形状对 + 重叠率差 ≤ 5% → 视为模板固有设计，不计 WARN（但仍报告条数）。
+
+    为什么存 ratio **列表**而不是取最大值：实测模板 slide1 存在两个同名「Picture 2」，
+    与「Picture 4」形成 1.000 与 0.908 两对重叠；若按名字归并取 max=1.000，
+    则 0.908 那对因差值 0.092 > 容差 0.05 被误判为「新增」（同文件比自身仍报 1 条）。
+    存全部 ratio 后逐值比对即可正确豁免——**同名形状是 PPTX 常态，不能假设名字唯一**。
+    """
+    out: dict = {}
+    with zipfile.ZipFile(baseline_path, "r") as z:
+        for name in z.namelist():
+            no = slide_no_of(name)
+            if no is None:
+                continue
+            rects = collect_slide_rects(z.read(name))
+            pairs: dict = {}
+            n = len(rects)
+            for i in range(min(n, GeoChecker.MAX_SHAPES_PER_SLIDE)):
+                a = rects[i]
+                if a["w"] <= 0 or a["h"] <= 0:
+                    continue
+                for j in range(i + 1, min(n, GeoChecker.MAX_SHAPES_PER_SLIDE)):
+                    b = rects[j]
+                    if b["w"] <= 0 or b["h"] <= 0:
+                        continue
+                    ix = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+                    iy = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
+                    if ix <= 0 or iy <= 0:
+                        continue
+                    area_small = min(a["w"] * a["h"], b["w"] * b["h"])
+                    if area_small <= 0:
+                        continue
+                    ratio = (ix * iy) / area_small
+                    if ratio >= threshold:
+                        key = (a["name"], b["name"])
+                        pairs.setdefault(key, set()).add(round(ratio, 3))
+            if pairs:
+                out[no] = pairs
+    return out
 
 
 # ============== SYN 检查 ==============
@@ -818,6 +948,9 @@ def main():
     ap.add_argument("--geo-threshold", type=float, default=0.15,
                     help="GEO-003 重叠率阈值（重叠面积/较小形状面积，默认 0.15）")
     ap.add_argument("--no-geo", action="store_true", help="关闭 GEO 组检查")
+    # v3.10.0：模板固有叠放豁免（防 552 条噪音淹没新增遮挡；V7 验收必用）
+    ap.add_argument("--geo-baseline", dest="geo_baseline", default=None,
+                    help="模板 .pptx 路径：与模板同序号页的同名形状对重叠视为继承，不计 WARN")
     args = ap.parse_args()
 
     runner = LintRunner(
@@ -827,6 +960,7 @@ def main():
         strict=args.strict,
         geo_threshold=args.geo_threshold,
         geo_disabled=args.no_geo,
+        geo_baseline=args.geo_baseline,
     )
     rc = runner.run()
 

@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.9.0"
+version: "3.10.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -186,6 +186,18 @@ loop_b:
     no_progress_threshold: 2
     max_rework_per_item: 2
   termination: ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+  # v3.10.0：用户已确认的接单默认（覆盖须在 intake 显式记录并置 confirmed）
+  defaults:
+    profile_ref: "references/course-profile-defaults.md"   # 受众四层 / 课时映射 / 范围 / 验收矩阵
+    template_ref: "references/default-template-profile.md" # 默认模板指纹 5fa78154 + 三条硬约束
+    delivery_ref: "references/delivery-spec.md"            # 交付三件套 schema
+    audience: "职业本科（默认）；可切 基层兽医/一线技术人员、本科生、研究生"
+    hours_per_session: "1-4 课时 × 45min"
+    scope: "全部页面，逐页六查（标题层级/正文表述/图表/案例/思考题/小结）"
+    default_template: "/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx"
+    template_fingerprint: "5fa78154"
+    keep_original_layout: true    # 已有原稿版式的沿用原稿，不强制迁到默认模板
+    geo_baseline_required: true   # 成品 lint 必配 --geo-baseline，否则 V7 无法判定
 
 # ── 门禁退出码语义（主理人据此分流，不再一律"打回"）────────────
 gate_exit_codes:

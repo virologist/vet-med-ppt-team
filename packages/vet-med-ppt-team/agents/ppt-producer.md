@@ -90,7 +90,26 @@ maxTurns: 50
 > - **GEO-003（插入物空间冲突）已实现**——`ooxml_lint.py` 新增 GeoChecker，逐页解析 `a:xfrm` 矩形（GROUP 按 chOff/chExt 换算），两两求交，重叠率 ≥ `--geo-threshold`（默认 15%）报 **WARN**（非 ERROR：有意叠放无法由机器区分）。跑法：`python3 scripts/ooxml_lint.py <成品.pptx> --baseline <原件.pptx>`。
 > - **API-001（写入属性名核验）保持人工项**——它是**写入时行为**，成品文件里反推不出来；防线是写入纪律（下节"批量写入原子语义"）。报告中仍须标注"API-001 人工项"，不虚报通过。
 > - 旧课件转换层的**图片引用修复**已可用：`python3 scripts/fix_md_image_refs.py --md <original.md> --manifest <manifest.json> --out <original.refs.md> [--deck 原.pptx]`（退出码 1 = 存在未决项，须人工处置）。
+> - **v3.10.0：GEO-003 必须配基线跑**（否则 552 条模板固有叠放会淹没新增遮挡）：
+>   `python3 scripts/ooxml_lint.py <成品.pptx> --geo-baseline <模板.pptx> --json` →
+>   `summary.geo_new_overlap == 0` 才算 V7 通过；`geo_inherited` 是豁免条数，须在自检清单写明。
 4. 通过 SendMessage 回传主理人
+
+## 默认模板的三条硬约束（v3.10.0 · 制作前必读）
+
+默认模板：`/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx`
+（指纹 `5fa78154`，实测见 `references/default-template-profile.md`）。**违反任一条即返工**：
+
+1. **版式零占位符**——两个版式（`空白`、`1_标题和内容`）的 `placeholders` 均为空。
+   ❌ 禁止按占位符填内容（`slide.placeholders[0]` 必炸）；
+   ✅ 深拷贝同类型既有页（遵守 Batch 2 三条防修复铁律）或新建文本框后按同类页坐标对齐。
+2. **页眉是每页硬编码文本框**（名「文本框 18」），母版无页眉页脚占位符。
+   ⚠️ **换课题必须逐页改**，改母版无效；**新增页必须手动复制该框**，否则新页无页眉（违反验收 V1）。
+3. **模板零原生表格 / 零原生图表**（33 页中均为 0）。可编辑图表只能用 `add_chart` 从零建并手工着色，
+   取色必须落在模板 `clrScheme` 十二色内（验收 V3 的机器判据）。
+
+> 已有原稿版式的**沿用原稿**（用户规则）；是否迁移由 pedagogy-architect + visual-slide-designer 联合判定，
+> 不由你自行决定。
 
 
 ## 接口契约（Interface Contract · 2026-09-30 补齐）

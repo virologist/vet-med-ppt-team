@@ -268,5 +268,111 @@ class TestOoxmlLint(unittest.TestCase):
         self.assertGreaterEqual(len(runner.issues), 0, "跨学科样本与动医样本共享同一规则集")
 
 
+@unittest.skipUnless(PPTX_OK, "python-pptx 未装")
+class TestGeoBaseline(unittest.TestCase):
+    """GEO-003 模板继承豁免回归（v3.10.0）。
+
+    背景：默认模板产生 552 条 GEO-003 WARN（模板固有底纹叠放），
+    若不豁免会淹没新增遮挡，使验收 V7「无文字溢出或遮挡」无法判定。
+    本组用合成样本锁住豁免行为：**继承不报、新增必报**。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="geo_baseline_"))
+        self.base = self.tmp / "baseline.pptx"
+        self._build_base()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _build_base(self):
+        """基线：一页含 两个大面积重叠框（模板固有设计）+ 一个远离的框。"""
+        prs = Presentation()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        a = s.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(2))
+        a.name = "固有底纹A"
+        a.text_frame.text = "A"
+        b = s.shapes.add_textbox(Inches(1.2), Inches(1.2), Inches(4), Inches(2))
+        b.name = "固有底纹B"
+        b.text_frame.text = "B"
+        c = s.shapes.add_textbox(Inches(7), Inches(5), Inches(2), Inches(1))
+        c.name = "远离框C"
+        c.text_frame.text = "C"
+        prs.save(str(self.base))
+
+    def _run(self, deck, geo_baseline=None):
+        r = LintRunner(str(deck), geo_baseline=str(geo_baseline) if geo_baseline else None)
+        r.run()
+        return r
+
+    # ---------- G1 ----------
+    def test_G1_self_compare_zero_new(self):
+        """基线比自身：全部判继承，新增重叠必须为 0（V7 通过判据）。"""
+        r = self._run(self.base, self.base)
+        self.assertGreaterEqual(r.geo_inherited, 1, "固有叠放应被判为继承")
+        geo = [i for i in r.issues if i.code == "GEO-003"]
+        self.assertEqual(len(geo), 0, f"自身比对不应有新增重叠，实际 {len(geo)}: "
+                                      f"{[i.message for i in geo]}")
+
+    # ---------- G2 ----------
+    def test_G2_new_overlap_detected(self):
+        """在基线副本上加一个新框压住固有底纹 → 必须报出新增重叠（不得误豁免）。"""
+        deck = self.tmp / "deck.pptx"
+        shutil.copy(self.base, deck)
+        prs = Presentation(str(deck))
+        tb = prs.slides[0].shapes.add_textbox(Inches(1.5), Inches(1.5), Inches(3), Inches(1.5))
+        tb.name = "新增框X"
+        tb.text_frame.text = "X"
+        prs.save(str(deck))
+        r = self._run(deck, self.base)
+        geo = [i for i in r.issues if i.code == "GEO-003"]
+        self.assertGreaterEqual(len(geo), 1, "新增遮挡必须被检出")
+        self.assertTrue(any("新增框X" in i.message for i in geo),
+                        f"新增重叠应指向新框，实际 {[i.message for i in geo]}")
+
+    # ---------- G3 ----------
+    def test_G3_without_baseline_backward_compat(self):
+        """不传 --geo-baseline：行为与 v3.8.2 一致（不豁免，geo_inherited=0）。"""
+        r = self._run(self.base)
+        self.assertEqual(r.geo_inherited, 0, "未给基线时不得产生豁免")
+        geo = [i for i in r.issues if i.code == "GEO-003"]
+        self.assertGreaterEqual(len(geo), 1, "未给基线时应正常报出固有叠放")
+
+    # ---------- G4 ----------
+    def test_G4_missing_baseline_no_crash(self):
+        """基线文件不存在：不得崩溃、不得静默豁免，按不豁免处理。"""
+        r = self._run(self.base, self.tmp / "ghost.pptx")
+        self.assertEqual(r.geo_baseline_map, {}, "基线缺失时映射应为空")
+        self.assertEqual(r.geo_inherited, 0)
+        geo = [i for i in r.issues if i.code == "GEO-003"]
+        self.assertGreaterEqual(len(geo), 1, "基线缺失时应按不豁免处理并正常报出")
+
+    # ---------- G5（v3.10.0 修 bug 的回归锁）----------
+    def test_G5_duplicate_shape_names(self):
+        """页内同名形状重复：两组不同重叠率都必须豁免（不得按名字归并取 max 后误判新增）。
+
+        真因记录：模板 slide1 有两个同名「Picture 2」，与「Picture 4」形成 1.000 / 0.908
+        两对重叠；按名字取 max 会把 0.908 那对误判为新增。故基线须存 ratio **集合**。
+        """
+        deck = self.tmp / "dup.pptx"
+        prs = Presentation()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        t = s.shapes.add_textbox(Inches(2), Inches(2), Inches(4), Inches(2))
+        t.name = "target"
+        t.text_frame.text = "T"
+        d1 = s.shapes.add_textbox(Inches(2.1), Inches(2.1), Inches(3.8), Inches(1.9))
+        d1.name = "dup"          # 与 target 高度重叠
+        d1.text_frame.text = "D1"
+        d2 = s.shapes.add_textbox(Inches(5.5), Inches(3.8), Inches(0.8), Inches(0.4))
+        d2.name = "dup"          # 同名，与 target 轻微重叠（重叠率不同）
+        d2.text_frame.text = "D2"
+        prs.save(str(deck))
+        r = self._run(deck, deck)     # 自身比对
+        geo = [i for i in r.issues if i.code == "GEO-003"]
+        self.assertEqual(len(geo), 0,
+                         f"同名多组重叠应全部判继承，实际新增 {len(geo)}: {[i.message for i in geo]}")
+        self.assertGreaterEqual(r.geo_inherited, 2, "至少两组同名重叠应被计为继承")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
