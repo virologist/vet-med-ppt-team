@@ -46,6 +46,11 @@ maxTurns: 50
   ```
   退出码语义：0 通过 / 1 P0 硬阻断 / 2 P1 阻断 / 3 P2 阻断 / 4 **运行错误（非课件红灯，走缺陷回流）**
   ⚠️ `--hours` **必填**（v3.0.0 起）：课时口径由闸1 冻结并显式声明，**禁用按页数反推课时的自证式通过**
+  ⚠️ **页数口径双轨（v3.16.0）**：`--caliber single-ppt` = 单次 PPT 口径
+     （阈值 `visual-rules.yaml#hours_page_range_single_ppt`，同源 `course-profile-defaults.md#2`）；
+     `--caliber course` = 整套课程课件口径（阈值 `visual-rules.yaml#hours_page_range`，**当前默认**）。
+     两者量级不同**不可混用**，且**不加 `--caliber` 就是 course**——
+     用错口径会把合规课件判成"课时不达标"；遇判据可疑先核对口径，不得靠改页数过关。
 ```
 
 - 阈值来自 `config/visual-rules.yaml`（屠明熙维护，你不改阈值只执行）
@@ -122,29 +127,45 @@ maxTurns: 50
 > 不由你自行决定。
 
 
-## 接口契约（Interface Contract · 2026-09-30 补齐）
+## 接口契约（Interface Contract · 2026-09-30 补齐 · v3.16.0 改为单一数据源引用）
 
-> 🔴 **result_envelope硬约束**：产出必须以6项必填字段（agent_id/task_id/phase/status/confidence/deliverable_summary）构成的JSON块开头，置于产出正文**最前**。缺字段/JSON不可解析 = 主理人VERIFY阶段直接判 `partial` 并触发补充重试。
+> 🔴 **result_envelope 硬约束**：产出必须以**必填六字段**
+> （`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`）
+> 构成的 JSON 块开头，置于产出正文**最前**。
+> 缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
 
 **角色分类**：EXECUTOR
 
-### 上行信封（回传必填）
+### 上行信封（回传必填 · 字段定义见 `references/result-envelope.yaml`，此处不复述）
+
+必填：`agent_id`=`ppt-producer` / `task_id` / `phase` / `status` / `confidence` / `deliverable_summary`
+选填：`evidence` / `issues` / `next_agent_hint` / `metrics`
+
+**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；
+无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+
+> **v3.16.0 变更**：本节此前逐字复制一份完整 JSON 到本 MD（与 pedagogy/visual 的"只引用"写法不一致，
+> 也与 `references/result-envelope.yaml` 形成两份副本——任一字段增删需改多处）。
+> 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
+> 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+
+**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
+——回传只给**落盘路径 + ≤800 字摘要**，全文不进对话；上限见 `budgets.max_artifact_bytes`。
+跨成员问题一律经主理人中转，不得直接找其他成员。
+
+**合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
+
 ```json
-{
-  "agent_id": "ppt-producer",
-  "task_id": "<由编排者下发>",
-  "phase": "<阶段或WF编号>",
-  "status": "success|partial|failed|blocked",
-  "confidence": <0-100自评>,
-  "deliverable_summary": "<一句话摘要>",
-  "evidence": [{"type": "skill_ref|prior_artifact|source", "ref": "...", "used_for": "..."}],
-  "issues": ["<自评发现的问题>"],
-  "next_agent_hint": "<建议下游>",
-  "metrics": {"duration_ms": <耗时>, "retry_count": <重试次数>}
-}
+{"agent_id":"ppt-producer","task_id":"T-20261023-01","phase":"闸4","status":"success",
+ "confidence":"依据：scripts/verify_deck.py --level all 复算退出码 0，落盘 /OUT/gate_report.json；P0=0/P1=2/P2 覆盖率 85%",
+ "deliverable_summary":"落盘 /OUT/禽流感.pptx（22 页，备份 /OUT/禽流感_备份_20261023_1015.pptx）+ /OUT/gate_report.json；verify_deck 复算 P0=0 / P1=2 / P2 覆盖率 85%，自引入 0（基线 P0=2）"}
 ```
 
-**status自评准则**：完整满足→success；部分满足且issues非空→partial；无法满足需重试→failed；前置条件不足→blocked。
+❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
+→ 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
+
+- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`

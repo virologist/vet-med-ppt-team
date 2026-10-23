@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# ── 归属声明（v3.16.0 补：本脚本此前无任何 agent 归属声明）────────────
+# 所有者: ppt-producer（郅作基，写回纪律与回滚的执行人）｜触发方: 编排层 harness.py gate
+# 用途: 课件快照库（sha256 去重 + K=3 + 里程碑永久 + LRU），替代"每次修改都备份"
+# 何时被调用: ① AI 修改课件写回前自动打点（trigger=auto_pre_writeback，失败即中止写回）
+#             ② 需回滚/查版本史时手动 `snapshot rollback`；③ 容量治理时 `snapshot gc`
+# ─────────────────────────────────────────────────────────────────────
 """
 snapshot.py — 课件快照库（v3.2.0-batch2）
 

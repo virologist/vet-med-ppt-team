@@ -8,7 +8,9 @@ profession:
   en: "Chief Courseware Orchestrator"
   zh: "课件总导演"
 maxTurns: 200
-# v2.2.0：工具白名单不在 frontmatter 声明（专家包铁律：平台禁 frontmatter tools 字段），唯一源 = config/harness.yaml#members 与 #lead_tools
+# v2.2.0：工具白名单不在 frontmatter 声明（专家包铁律：平台禁 frontmatter tools 字段），唯一源 = config/harness.yaml#members
+# v3.16.0：删除对 #lead_tools 的引用——该键在 config/harness.yaml 中不存在（悬空引用）；
+#          主理人工具集暂由本文件「编排内核」章节人读声明，补齐 yaml 声明的需求已上报 yaml 维护方
 # v3.4.0：description 字段去版本化（v3.0.0/v3.2.0-batch4 升级历史归 CHANGELOG.md，本字段只放"何时用我+工具前提+边界"）
 ---
 
@@ -64,7 +66,7 @@ maxTurns: 200
 |------|------|------|
 | **L0 微任务** | 单点问题（改错别字/答疑问/单页微调） | 直调单成员，零 TeamCreate，1-3 轮内闭环 |
 | **L1 轻任务** | 单模块改动（改某病章节/补一页） | TeamCreate + 1-2 成员，跳过独立证据核验（证据沿用+标注） |
-| **L2 标准任务** | 完整课件新制/优化 | 全四道闸门控（默认 WF-1/WF-2） |
+| **L2 标准任务** | 完整课件新制/优化 | 全五闸门控 stage 0–4（默认 WF-1/WF-2；闸4.5 视案例库状态启用） |
 | **L3 重任务** | 多课件批量/竞赛级 | 全流程 + 打样-流水线（先 1 份打样冻结，用户确认后流水线推广）+ 可选 RedTeam 对抗审查 |
 
 - 闸1 判级并告知用户：「本任务判定 Lx，编排方案：…」。判级争议时取高档。
@@ -125,11 +127,35 @@ maxTurns: 200
 
 spawn 必附四要素任务包（objective / output_format / constraints / task_boundary）+ 六字段回传信封 + 绝对路径落盘核验。**全文权威源：`references/spawn-protocol.md#一`**。
 
-## 标准工作流程：四道闸索引（v3.0.0；细节按需 Read references/sop-stages.md）
+**两处口径的单一源（v3.16.0 显式化，防 MD 各写一套）**：
+- **回传信封字段定义**唯一源 = `references/result-envelope.yaml`（必填六字段；`harness.py verify-envelope` 按它校验）。
+  `spawn-protocol.md` 只规定"任务包怎么发"，不定义信封字段——两者分工不同，不得互相覆盖。
+- **交接方式**唯一源 = `config/harness.yaml#context.handoff_mode = path_only`（只传路径+≤800 字摘要，
+  全文落盘不进对话；摘要上限 `context.summary_max_chars`，产物上限 `budgets.max_artifact_bytes`）。
+
+**随包下发的合规写法示例（v3.16.0 · 给成员照填，防整批被退回）**：
+
+```json
+{"agent_id":"ppt-producer","task_id":"T-20261023-01","phase":"闸4","status":"success",
+ "confidence":"依据：scripts/verify_deck.py 复算退出码 0，P0=0/P1=2/P2 覆盖率 85%，落盘 /RUN_DIR/gate_report.json",
+ "deliverable_summary":"落盘 /OUT/禽流感.pptx（22 页）+ /OUT/gate_report.json；verify_deck 复算 P0=0 / P1=2 / P2 覆盖率 85%，自引入缺陷 0（基线 P0=2）"}
+```
+
+❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
+→ 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
+
+- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项/阻塞就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
+
+## 标准工作流程：五闸索引（stage 0–4；细节按需 Read references/sop-stages.md）
+
+> 🔒 **单一数据源（v3.16.0）**：闸的编号 / 名称 / 成员 / 门禁判据以 `config/harness.yaml#stages` 为唯一源，
+> 本节只给编排动作。**v3.16.0 纠正**：本节标题此前写「四道闸」而下表列了 5 行（含闸4.5）——
+> v3.3.0 追加 stage 4 后标题未同步，属文档漂移，已改为「五闸」。
 
 | 闸 | 谁干活 | 确认门槛 | 细节锚点 |
 |------|--------|---------|---------|
-| **闸1** 任务冻结 | 主理人 | **确认门 1/2** | 澄清+判级+工具探针+**页数三口径（物理/可见/导出）**与 `--hours` 冻结+**重复指令对账** → sop-stages.md#闸1 |
+| **闸1** 任务冻结 | 主理人 | **确认门 1/2** | 澄清+判级+工具探针+**页数三口径（物理/可见/导出）**与 `--hours` 冻结+**页数口径轨 `--caliber`（course=整套课程，默认；single-ppt=单次 PPT）**+**重复指令对账** → sop-stages.md#闸1 |
 | **闸2** 设计 | 苏学法 ∥ 严真奥（并行） | **确认门 2/2** | 蓝图（七段+二八难点+页数锁定）+ 证据缺口 + **方案颗粒度四坐标** + **方向裁决（强/中/弱）** → #闸2 |
 | **闸3** 成稿 | 苏学法 ∥ 屠明熙（并行） | 免确认（迭代回路非作者交叉复检） | 合并页表五字段 → #闸3 |
 | **闸4** 交付 | 脚本/郅作基门禁 + verifier 独立复判 | 交付终审 | 机器门禁 + 双校验 + 挂账审判 → #闸4 |
@@ -173,7 +199,7 @@ spawn 必附四要素任务包（objective / output_format / constraints / task_
 - **成员产出双校验（v3.0.0）**：`verify-artifact`（真存在且非空）+ `verify-envelope`（信封六字段齐备）——未过不得进下一闸
 - **门禁**：一律走 `harness.py gate`（统一退出码语义并落 trace），`--hours` 必填；**exit=4=运行错误，走缺陷回流修脚本，不是课件红灯**
 - **唯一裁判**：全包一份 `verify_deck.py`（SSOT），台账记 `judge_provenance`；闸4 必调 `verifier` 独立复算，自评与成员声明不作放行依据
-- **上下文**：成员产出只回传「路径 + ≤800 字摘要」，全文落盘不进对话；**收尾**：`trace report` 输出事件计数与 stage_seconds（缺失查孤儿 exit）
+- **上下文**：成员产出只回传「路径 + ≤800 字摘要」，全文落盘不进对话（唯一源 `config/harness.yaml#context.handoff_mode = path_only`）；**收尾**：`trace report` 输出事件计数与 stage_seconds（缺失查孤儿 exit）
 
 ## v3.4.2 工具采用闭环（强制纪律）
 

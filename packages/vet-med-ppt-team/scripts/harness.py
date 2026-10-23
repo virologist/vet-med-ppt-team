@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.15.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.16.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -74,6 +74,21 @@ v3.9.0（2026-10-22 双层 Loop 契约下沉批）：
     hook）——它校验的是"路径是否越界"与"状态推进是否合规"，不是沙箱，不得对外宣称
     "两环隔离已由代码强制"。
 
+v3.16.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
+  + F2 删重复声明源：harness.yaml#budgets 的 three_source_sample_rate /
+    three_source_pass_threshold 删除（与 domain_config.yaml#three_source_check 重复声明，
+    而 verify_deck.py 只读后者 → 改前者静默失效）。`budget --kind three_source_*`
+    改读 domain_config.yaml，输出明示 config_source 与真实执行者；缺值只告警不补内置值。
+  + F3 内容判据落地：verify-envelope 不再只判"字段存在且非空"，改按
+    references/result-envelope.yaml#validation.content_rules 判 confidence 裸标签、
+    deliverable_summary 裸表述、status/issues 一致性、metrics 键子集——
+    词表/正则/阈值全在 yaml，代码只执行；规则无执行器时显式告警。
+  + F6 质量收敛判据：loop continue 落 quality_history（**报告优先**：
+    --verify-json <verify_deck 报告> > --p0/--p1/--p2 手工自报；来源写进快照的
+    source 字段与 trace，报告缺字段即报错不静默取 0）；
+    连续 no_progress_threshold 轮 P0+P1 未下降 → exit 1 + trace 事件 no_progress +
+    终止建议。终止原因改读 harness.yaml#loop_b.termination（唯一源）。
+
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
 不做任何语义判断（识别、匹配、权衡仍归 LLM 与主理人）。
@@ -121,9 +136,10 @@ _FALLBACK = {
     "budgets": {"max_member_spawns": 8, "max_spawn_attempts_per_member": 2,
                 "max_react_rounds_per_gap": 3, "max_react_rounds_total": 15,
                 "max_rework_rounds_per_stage": 2, "max_stage_minutes": 20,
-                "max_artifact_bytes": 60000,
-                # v3.3.0：闸4.5 三源核验预算
-                "three_source_sample_rate": 0.1, "three_source_pass_threshold": 0.8},
+                # v3.16.0：删掉 three_source_sample_rate / three_source_pass_threshold——
+                # 它们在 harness.yaml 里是"第二份声明"，真正被消费的是
+                # config/domain_config.yaml#three_source_check（见 _load_three_source_thresholds）。
+                "max_artifact_bytes": 60000},
     "context": {"handoff_mode": "path_only", "summary_max_chars": 800,
                 "state_max_bytes": 32768, "state_allowed_keys": []},
     "observability": {"trace_file": ".workbuddy/harness_trace.jsonl"},
@@ -152,6 +168,59 @@ def load_cfg():
         print(f"⚠ harness.yaml 加载失败（{e}）→ 回退内置值。"
               f"编排护栏已降级，请修复后再继续。", file=sys.stderr)
         return dict(_FALLBACK), False
+
+
+# v3.16.0：三源阈值的**唯一源** = config/domain_config.yaml#three_source_check。
+# 与 verify_deck.py#_load_three_source_thresholds 同源同责（那里是执行者，这里是查询者），
+# 差异只在缺值策略：本函数**不静默补内置值**——缺键即告警并返回 None，
+# 由 `budget check` 按"护栏缺失"如实返回 exit 1（配了 0/null 同样视为不存在）。
+# 若在此补 0.1/0.8，改配置的人会以为生效而实际没生效，正是本批要根治的"静默失效"。
+_DOMAIN_CFG = os.path.join(PKG, "config", "domain_config.yaml")
+
+
+def _load_three_source_thresholds():
+    """读 domain_config.yaml#three_source_check 的 sample_rate / pass_threshold。
+
+    返回 {"sample_rate": x|None, "pass_threshold": y|None}；缺值不补默认值，只告警。
+    ⚠ 有意**不做缓存**：本批治的正是"改配置不生效"，进程内缓存会让长驻进程读到过期阈值，
+      与 load_envelope_schema 的缓存取舍不同（schema 每次启动读一次、且变化需重启）。
+    """
+    out = {"sample_rate": None, "pass_threshold": None}
+    try:
+        import yaml
+        with open(_DOMAIN_CFG, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        tsc = cfg.get("three_source_check") or {}
+        if not tsc:
+            print(f"⚠ {_DOMAIN_CFG}#three_source_check 缺失或为空——"
+                  f"三源阈值无唯一源，harness 不补内置值（改配置请改这里）。", file=sys.stderr)
+        for k in ("sample_rate", "pass_threshold"):
+            v = tsc.get(k)
+            if v is None:
+                print(f"⚠ {_DOMAIN_CFG}#three_source_check.{k} 未配置——"
+                      f"该护栏实际不存在，harness 不补内置值。", file=sys.stderr)
+            else:
+                out[k] = float(v)
+    except Exception as e:
+        print(f"⚠ domain_config.yaml#three_source_check 读取失败（{e}）——"
+              f"三源阈值不可知，harness 不补内置值。", file=sys.stderr)
+    return out
+
+
+def load_term_reasons(cfg):
+    """v3.16.0：终止原因读 harness.yaml#loop_b.termination（不再与代码里另立一份）。
+
+    此前 LOOP_TERMINATIONS 是 harness.py 里的硬编码常量，yaml 里又写一份——
+    在 yaml 加终止原因不会生效，属同型"双声明"缺陷。本函数为唯一取值口，
+    yaml 不可读/为空时退回内置五类（并告警），保证不因配置缺失而整链不可用。
+    """
+    lb = (cfg or {}).get("loop_b") or {}
+    reasons = [str(x) for x in (lb.get("termination") or []) if str(x).strip()]
+    if reasons:
+        return reasons
+    print("⚠ harness.yaml#loop_b.termination 缺失或为空 → 退回内置终止原因清单，"
+          "在 yaml 里新增的终止原因不会生效。", file=sys.stderr)
+    return list(_FALLBACK_TERMINATIONS)
 
 
 def now_iso():
@@ -326,6 +395,11 @@ def cmd_budget(args):
     three_source_pass_threshold）只在 _FALLBACK 兜底字典里出现，代码从不读——
     配置写了、文档也引用了（如 sop-stages.md 引用 max_stage_minutes），
     但**没有任何执行者**，等于"看起来有护栏、实际不设防"。
+    v3.16.0：后两项（three_source_*）已从 harness.yaml 删除——它们与
+    domain_config.yaml#three_source_check 重复声明，而 verify_deck.py 只读后者，
+    改 harness.yaml 静默无效。现 three_source_sample / three_source_pass 两个 kind
+    改读 domain_config.yaml（见 threshold_map 的第三项"配置源"），
+    并在输出里明示 config_source 与真实执行者。
 
     修法分两类，不混为一谈：
       ① 计数型（可由 harness 自己判断用没用超）→ 补进 limit_map，可 --kind check/spend
@@ -339,20 +413,46 @@ def cmd_budget(args):
     limit_map = {"spawn": "max_member_spawns", "react": "max_react_rounds_total",
                  "rework": "max_rework_rounds_per_stage"}
     # v3.12.0：阈值型预算——harness 不代执行，只做「配置查得到 + 标明执行者」
+    # v3.16.0：三元组第三项是**配置源**：
+    #   "budgets"            → 读 config/harness.yaml#budgets.<key>
+    #   "domain_three_source"→ 读 config/domain_config.yaml#three_source_check.<key>
+    # 背景：three_source_* 曾在 harness.yaml 与 domain_config.yaml 两处同值声明，
+    #   而 verify_deck.py 只读后者 → 改 harness.yaml 静默无效。现 harness.yaml 已删这两键，
+    #   executed_by 也更正为真实执行者（verify_deck.py#_load_three_source_thresholds）。
     threshold_map = {
         "attempts": ("max_spawn_attempts_per_member",
-                     "spawn-protocol.md#工具/通道不可用回退（主理人判定，不自动计数）"),
+                     "spawn-protocol.md#工具/通道不可用回退（主理人判定，不自动计数）",
+                     "budgets"),
         "react_gap": ("max_react_rounds_per_gap",
-                      "dvm-content-expert.md#联网检索循环（成员自评，harness 不代判）"),
+                      "dvm-content-expert.md#联网检索循环（成员自评，harness 不代判）",
+                      "budgets"),
         "stage_minutes": ("max_stage_minutes",
-                          "sop-stages.md#超时降级（trace 侧可比对，非阻断）"),
+                          "sop-stages.md#超时降级（trace 侧可比对，非阻断）",
+                          "budgets"),
         "artifact_bytes": ("max_artifact_bytes",
-                           "harness-engine.md#产物压缩策略（成员侧自律）"),
-        "three_source_sample": ("three_source_sample_rate",
-                                "verify_deck.py#闸4.5 三源核验抽检率"),
-        "three_source_pass": ("three_source_pass_threshold",
-                              "verify_deck.py#闸4.5 通过率"),
+                           "harness-engine.md#产物压缩策略（成员侧自律）",
+                           "budgets"),
+        "three_source_sample": ("sample_rate",
+                                "verify_deck.py#_load_three_source_thresholds()（three_source_check() "
+                                "按 sample_rate 抽检）",
+                                "domain_three_source"),
+        "three_source_pass": ("pass_threshold",
+                              "verify_deck.py#_load_three_source_thresholds()（three_source_check() "
+                              "按 pass_threshold 判定达标）",
+                              "domain_three_source"),
     }
+
+    def _threshold_value(key, source):
+        """按配置源取阈值：domain_three_source 走 domain_config.yaml，其余走 budgets。"""
+        if source == "domain_three_source":
+            return _load_three_source_thresholds().get(key)
+        return b.get(key)
+
+    def _threshold_source(key, source):
+        if source == "domain_three_source":
+            return f"config/domain_config.yaml#three_source_check.{key}"
+        return f"config/harness.yaml#budgets.{key}"
+
     all_kinds = set(limit_map) | set(threshold_map)
     w = wkspace(args)
     st = read_state(w)
@@ -377,13 +477,17 @@ def cmd_budget(args):
             return 2  # 用法错误，提示重跑
         # 阈值型：查得到值，但不做 spent/exceeded 判定（执行者是别的脚本）
         if args.kind in threshold_map:
-            key, owner = threshold_map[args.kind]
-            val = b.get(key)
+            key, owner, source = threshold_map[args.kind]
+            val = _threshold_value(key, source)
             print(json.dumps({
                 "kind": args.kind, "type": "threshold", "config_key": key,
+                "config_source": _threshold_source(key, source),
                 "value": val, "executed_by": owner,
-                "note": "阈值型预算：harness 只查配置，不计数不阻断——"
-                        "由执行者判定。配成 0/null 即该护栏实际不存在，勿当已有",
+                "note": ("阈值型预算：harness 只查配置，不计数不阻断——由执行者判定。"
+                         "配成 0/null 即该护栏实际不存在，勿当已有。"
+                         + ("配置源=domain_config.yaml#three_source_check.%s；"
+                            "harness.yaml 不再提供此键（v3.16.0 已删 three_source_* 重复声明）。"
+                            % key if source == "domain_three_source" else "")),
             }, ensure_ascii=False))
             if val in (None, 0):
                 return 1      # 没配值 = 护栏缺失，如实暴露而非静默通过
@@ -400,8 +504,10 @@ def cmd_budget(args):
         for k, key in sorted(limit_map.items()):
             out["counter"][k] = {"config_key": key, "limit": b.get(key),
                                  "used": bud.get(k, 0)}
-        for k, (key, owner) in sorted(threshold_map.items()):
-            out["threshold"][k] = {"config_key": key, "value": b.get(key),
+        for k, (key, owner, source) in sorted(threshold_map.items()):
+            out["threshold"][k] = {"config_key": key,
+                                   "config_source": _threshold_source(key, source),
+                                   "value": _threshold_value(key, source),
                                    "executed_by": owner}
         print(json.dumps(out, ensure_ascii=False, indent=2))
         missing = [v["config_key"] for v in list(out["counter"].values())
@@ -920,12 +1026,148 @@ def _extract_envelope(text):
     return m.group(0) if m else None
 
 
+# ── v3.16.0：内容判据执行器 ───────────────────────────────────────────
+# 为什么单独成段：fields.*.rule 写了语义（confidence 禁裸标签、deliverable_summary
+# 禁裸表述），但校验器只判"字段存在且非空"，规则与校验器是两套。
+# 设计约束（与 result-envelope.yaml#validation.content_rules 配套）：
+#   · 词表 / 正则 / 阈值 / 严重度**全部来自 yaml**，本段只做执行，不自带任何词表；
+#   · 规则 id 与执行器一一对应；yaml 声明了规则但这里没注册执行器 → 显式告警
+#     （防止又出现"规则写了没人执行"的同型缺陷）。
+def _rule_has_evidence(s, patterns):
+    """按 yaml 给的正则列表判断字符串里有没有"可复核依据"（任一命中即有）。"""
+    import re as _re2
+    for p in patterns or []:
+        pat = p.get("pattern") if isinstance(p, dict) else p
+        if not pat:
+            continue
+        try:
+            if _re2.search(pat, s):
+                return True, p.get("id") if isinstance(p, dict) else str(pat)
+        except Exception as e:
+            print(f"⚠ content_rules 正则不可编译（{pat!r}）：{e}——该证据项按未命中处理",
+                  file=sys.stderr)
+    return False, None
+
+
+def _rule_confidence_not_bare(env, rule):
+    """confidence 不得是裸标签：命中裸值集合，或过短且不含任何证据。"""
+    fld = rule.get("field") or "confidence"
+    s = str(env.get(fld, "") or "").strip()
+    bares = [str(x).strip().lower() for x in (rule.get("bare_values") or [])]
+    if s.lower() in bares:
+        return False, f"{fld}={s!r} 命中裸值集合 {sorted(set(bares))}"
+    ok, _ = _rule_has_evidence(s, rule.get("evidence_patterns"))
+    if not ok and len(s) < int(rule.get("max_bare_length", 20)):
+        return False, (f"{fld}={s!r} 长度 {len(s)} < {rule.get('max_bare_length', 20)} "
+                       f"且不含任何依据（数字计数/文件路径/命令或工具名）")
+    return True, ""
+
+
+def _rule_deliverable_summary_verifiable(env, rule):
+    """deliverable_summary 不得是裸表述：命中裸词集且无可验证计数，或过短且无可验证计数。
+
+    ⚠ 关键细节（v3.16.0 实测修正）：命中裸词后要把**裸词本身从文本里剔除**再判
+    "有没有可验证计数"（开关：evidence_check_excludes_bare_terms）。原因：
+    "问题已修复归零" 里的"归零"含汉字数字"零"，会被证据正则当成"有计数"而漏网——
+    裸表述自己给自己提供了计数，判据就废了。
+    """
+    fld = rule.get("field") or "deliverable_summary"
+    s = str(env.get(fld, "") or "").strip()
+    minlen = int(rule.get("min_verifiable_length", 24))
+    # ① 先判裸词：命中则"剔除裸词后"再看有没有可验证计数（顺序不能反，
+    #    否则裸词里的汉字数字会先被当成计数，判据直接失灵）
+    hits = [t for t in (rule.get("bare_terms") or []) if str(t) in s]
+    if hits:
+        residue = s
+        for t in hits:
+            residue = residue.replace(str(t), "")
+        if rule.get("evidence_check_excludes_bare_terms", True):
+            ok2, _ = _rule_has_evidence(residue, rule.get("evidence_patterns"))
+            if ok2:
+                # 剔除裸词后仍有落盘路径/计数 → 只是措辞瑕疵，不是自评失真
+                return True, ""
+        return False, (f"{fld}={s!r} 命中裸词集 {hits}，且剔除裸词后的剩余文本"
+                       f"{residue.strip()!r} 不含可验证计数（数字/路径）")
+    # ② 未命中裸词：有过短且无可验证计数 → 判失败
+    ok, _ = _rule_has_evidence(s, rule.get("evidence_patterns"))
+    if not ok and len(s) < minlen:
+        return False, (f"{fld}={s!r} 长度 {len(s)} < {minlen} 且不含可验证计数"
+                       f"（数字/路径）——须写明落盘路径与原始 P0/P1/P2 计数")
+    return True, ""
+
+
+def _rule_status_issues_consistency(env, rule):
+    """status 与 fields.status.criteria 的一致性：success 时 issues 必须为空。"""
+    stt = str(env.get("status", "") or "").strip().lower()
+    issues = env.get("issues")
+    non_empty = bool(issues) if isinstance(issues, (list, dict, str)) else issues not in (None, "", 0)
+    if stt == "success" and non_empty:
+        return False, (f"status=success 但 issues 非空（{issues!r}）——按 "
+                       f"fields.status.criteria 应为 partial/failed/blocked")
+    return True, ""
+
+
+def _rule_metrics_keys_subset(env, rule):
+    """metrics 的键必须是 fields.metrics.keys 的子集；越界键只告警（severity=warn）。"""
+    sc = load_envelope_schema()
+    allowed = set(((sc.get("fields") or {}).get("metrics") or {}).get("keys") or [])
+    m = env.get("metrics")
+    if not isinstance(m, dict):
+        return True, ""
+    extra = sorted(set(m.keys()) - allowed)
+    if extra:
+        return False, f"metrics 含未登记键 {extra}；已登记键 {sorted(allowed)}"
+    return True, ""
+
+
+# 规则 id → 执行器（新增 yaml 规则必须在此登记，否则校验器会告警"无执行者"）
+_CONTENT_RULE_EXECUTORS = {
+    "confidence_not_bare": _rule_confidence_not_bare,
+    "deliverable_summary_verifiable": _rule_deliverable_summary_verifiable,
+    "status_issues_consistency": _rule_status_issues_consistency,
+    "metrics_keys_subset": _rule_metrics_keys_subset,
+}
+
+
+def _eval_content_rules(env, sc):
+    """按 yaml#validation.content_rules 逐条执行内容判据。
+
+    返回 (violations, warnings, disabled, unimplemented)，元素形如
+    {"id":..., "severity":..., "rule_ref":..., "detail":..., "message":...}。
+    """
+    rules = ((sc.get("validation") or {}).get("content_rules") or [])
+    violations, warnings, disabled, unimplemented = [], [], [], []
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get("id") or "<无名规则>"
+        if not r.get("enabled", True):
+            disabled.append({"id": rid, "reason": r.get("disabled_reason", "").strip()})
+            continue
+        fn = _CONTENT_RULE_EXECUTORS.get(rid)
+        if fn is None:
+            unimplemented.append({"id": rid, "rule_ref": r.get("rule_ref", "")})
+            continue
+        ok, detail = fn(env, r)
+        if ok:
+            continue
+        item = {"id": rid, "severity": r.get("severity", "fail"),
+                "field": r.get("field", ""), "rule_ref": r.get("rule_ref", ""),
+                "detail": detail, "message": r.get("message", ""),
+                "defined_at": "references/result-envelope.yaml#validation.content_rules.%s" % rid}
+        (violations if item["severity"] == "fail" else warnings).append(item)
+    return violations, warnings, disabled, unimplemented
+
+
 def cmd_verify_envelope(args):
     """校验成员回传的 result_envelope（把约定变成代码）。
 
     缘由（2026-10-04）：result_envelope 由 commit 7013f87 引入，但只写在 MD 里，
     成员"自觉遵守"——实测自报失真 4/4 个版本复发，说明约定必须有执行者。
     v3.12.0：字段改读 references/result-envelope.yaml，消除多套 schema 互斥。
+    v3.16.0：新增**内容判据**——此前只判字段存在且非空，`confidence:"高"` 能过；
+    现在按 yaml#validation.content_rules 逐条判裸标签/裸表述/status-issues 一致性/
+    metrics 键子集，规则与词表全在 yaml（改 yaml 即改校验器）。
     """
     p = os.path.abspath(args.path)
     res = {"path": p, "exists": os.path.exists(p)}
@@ -976,6 +1218,31 @@ def cmd_verify_envelope(args):
         res["verdict"] = f"❌ status 取值非法：{st!r}（应为 {'/'.join(sorted(allowed))}）"
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 1
+
+    # v3.16.0：内容判据（只判存在性拦不住 confidence:"高" 这类自评失真）
+    violations, warns, disabled, unimpl = _eval_content_rules(env, sc)
+    res["content_rules"] = {
+        "checked": len(((sc.get("validation") or {}).get("content_rules") or [])),
+        "violations": violations, "warnings": warns,
+        "disabled": [{"id": d["id"], "reason": d["reason"]} for d in disabled],
+    }
+    if unimpl:
+        # 规则已声明但无执行者 = 又一套"写了不执行"，必须显式暴露
+        print(f"⚠ {len(unimpl)} 条 content_rules 已启用但 harness.py 无对应执行器："
+              f"{[u['id'] for u in unimpl]}——规则当前未生效，请补注册。", file=sys.stderr)
+        res["content_rules"]["unimplemented"] = unimpl
+    if violations:
+        refs = "；".join(f"{v['rule_ref']}（{v['defined_at']}）" for v in violations)
+        res["verdict"] = (f"❌ 信封内容不合规：{len(violations)} 条——"
+                          + " | ".join(f"[{v['id']}] {v['detail']}" for v in violations)
+                          + f"（判据见 {refs}）")
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 1
+    if warns:
+        res["content_warnings"] = warns
+        for w in warns:
+            print(f"⚠ [{w['id']}] {w['detail']}——{w['message']}"
+                  f"（判据见 {w['rule_ref']}，{w['defined_at']}）", file=sys.stderr)
     # 产物路径真实性交叉核验（若有 artifact/deliverable 字段）
     art = env.get("deliverable") or env.get("artifact_path") or ""
     if isinstance(art, str) and art.startswith("/") and not os.path.exists(art):
@@ -983,7 +1250,7 @@ def cmd_verify_envelope(args):
         res["verdict_ok"] = True          # 字段齐备，但需人工处理
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
-    res["verdict"] = "✅ 信封合规"
+    res["verdict"] = "✅ 信封合规" + (f"（含 {len(warns)} 条告警，见 content_warnings）" if warns else "")
     res["verdict_ok"] = True
     print(json.dumps(res, ensure_ascii=False, indent=2))
     return 0
@@ -1059,7 +1326,11 @@ def cmd_template_audit(args):
 # 诚实边界：本段**不判定**条目的专业内容对错（仍归成员与主理人），也不拦截成员的实际
 #   写文件动作（平台层无 hook）——它校验"路径是否越界"与"状态推进是否合规"，不是沙箱。
 
-LOOP_TERMINATIONS = ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+# v3.16.0：终止原因的唯一源改为 harness.yaml#loop_b.termination（见 load_term_reasons）。
+#   本常量降级为**兜底**：仅当 yaml 缺失/为空时启用，且启用时打印告警。
+#   ⚠ 不要在这里新增终止原因——加了也不会生效（这正是本批要修的"双声明静默失效"）。
+_FALLBACK_TERMINATIONS = ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+LOOP_TERMINATIONS = _FALLBACK_TERMINATIONS   # 兼容旧引用；实际判定一律走 load_term_reasons(cfg)
 LOOP_INTAKE_A = ["audience", "periods", "template", "scope", "acceptance"]  # A 类五项：缺一即停
 
 
@@ -1168,6 +1439,110 @@ def _write_loop_state(w, loop, st):
             except OSError:
                 pass
         raise
+
+
+def _loop_quality_snapshot(st, rnd, p0, p1, p2, source="", extra=None):
+    """记录一轮结束时的质量快照（P0/P1/P2 计数），供"有无进展"判定。
+
+    v3.16.0：loop_b.budgets.no_progress_threshold 此前零命中——配了阈值但没有任何
+    执行者，缺陷数不再下降这件事机器检不出来。本函数是它的落点。
+    同一轮重复记录按"后者覆盖前者"处理（返修后复测值应为最新值）。
+
+    source（v3.16.0 F6 补）：数据从哪来——"verify_json|<报告路径>"（verify_deck 机器复算，
+    优先）或 "manual"（成员/主理人自报，未经交叉核验）。**必须写进快照**：
+    只知道数字不知道来源，就等于无法判断这个数能不能信（本包"工具自报不算数"纪律）。
+    """
+    snap = {"round": int(rnd), "p0": int(p0), "p1": int(p1), "p2": int(p2),
+            "p0p1": int(p0) + int(p1), "ts": now_iso()}
+    if source:
+        snap["source"] = source
+    if extra:
+        snap.update(extra)
+    hist = [h for h in (st.get("quality_history") or []) if int(h.get("round", -1)) != int(rnd)]
+    hist.append(snap)
+    hist.sort(key=lambda h: int(h.get("round", 0)))
+    st["quality_history"] = hist
+    return snap
+
+
+class _QualityReportError(Exception):
+    """--verify-json 取数失败：code=3 报告不存在，code=2 不可解析/缺字段。"""
+
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+def _load_quality_from_verify_json(path):
+    """从 `verify_deck.py --json` 报告里取本轮 P0/P1/P2（**报告优先**于手工自报）。
+
+    为什么必须有这条路（v3.16.0 F6）：`--p0/--p1/--p2` 手工值理论上可注水，而
+    verify_deck 早就有 `--json` 报告——机器复算的结果必须是第一数据源，人手填的只能
+    当"没有报告时的次选"，并且要在输出里标明未核验。
+
+    失败策略（铁律：不静默）：
+      · 文件不存在 → code 3（依赖缺失）
+      · 顶层不是对象 / 缺 gate 段 / gate 缺 p0|p1 / 既无 p2 也无 p2_block → code 2
+    两种都不退回手工值、**也不按 0 处理**——静默取 0 会造出"本轮缺陷为 0"的假象，
+    比不取数更危险（会让 no_progress 判据反向失灵）。
+    """
+    p = os.path.abspath(path)
+    if not os.path.isfile(p):
+        raise _QualityReportError(
+            f"报告不存在：{p}（先用 `verify_deck.py <课件> --hours N --level all "
+            f"--json <路径>` 产出再进位）", 3)
+    try:
+        with open(p, encoding="utf-8") as f:
+            rep = json.load(f)
+    except Exception as e:
+        raise _QualityReportError(f"报告不可解析：{p}（{e}）", 2)
+    if not isinstance(rep, dict):
+        raise _QualityReportError(f"报告顶层不是对象：{p}（{type(rep).__name__}）", 2)
+    gate = rep.get("gate")
+    if not isinstance(gate, dict):
+        raise _QualityReportError(
+            f"报告缺 gate 段：{p}（顶层键 {sorted(rep)}）——确认这是 verify_deck --json 的产物？", 2)
+
+    def _req_int(k):
+        if k not in gate:
+            raise _QualityReportError(
+                f"报告 gate 缺 {k}：{p}（gate 键 {sorted(gate)}）——不按 0 处理，先修报告", 2)
+        v = gate[k]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise _QualityReportError(
+                f"报告 gate.{k} 不是数值：{v!r}（{type(v).__name__}）——不猜、不折算", 2)
+        return int(v)
+
+    p0, p1 = _req_int("p0"), _req_int("p1")
+    # P2：报告给的是 p2_block(布尔) + note_coverage，没有 p2 计数；
+    #   有 gate.p2 数值就用数值，否则按 p2_block 折算 1/0，并把折算口径写进快照（可追溯）
+    if isinstance(gate.get("p2"), int) and not isinstance(gate.get("p2"), bool):
+        p2, p2_basis = int(gate["p2"]), "gate.p2"
+    elif "p2_block" in gate:
+        p2, p2_basis = (1 if bool(gate["p2_block"]) else 0), "gate.p2_block(bool→1/0)"
+    else:
+        raise _QualityReportError(
+            f"报告 gate 既无 p2 也无 p2_block：{p}（gate 键 {sorted(gate)}）——不按 0 处理", 2)
+    return {"p0": p0, "p1": p1, "p2": p2, "p2_basis": p2_basis,
+            "note_coverage": gate.get("note_coverage"), "path": p}
+
+
+def _loop_no_progress_streak(hist):
+    """连续多少轮 P0+P1 合计「未下降」（相邻两轮逐一比较，遇下降即归零）。
+
+    语义：比较次数 = len(hist)-1；连续 N 次"没变好"即触发（N 取自 no_progress_threshold）。
+    只有 1 条快照时无从比较 → 返回 0（宁可不判，也不凭空触发）。
+    """
+    hist = [h for h in (hist or []) if isinstance(h, dict)]
+    if len(hist) < 2:
+        return 0
+    streak = 0
+    for prev, cur in zip(hist, hist[1:]):
+        if int(cur.get("p0p1", 0)) >= int(prev.get("p0p1", 0)):
+            streak += 1
+        else:
+            streak = 0
+    return streak
 
 
 def _loop_hist(st, action, detail):
@@ -1315,6 +1690,9 @@ def cmd_loop(args):
             "wip_dir": wip,
             "intake": {k: None for k in LOOP_INTAKE_A} | {"confirmed": False},
             "current_round": 1, "items": {}, "budgets": eff_budgets,
+            # v3.16.0：质量快照序列（每轮 continue 带 --p0/--p1/--p2 追加一条；
+            # 供 no_progress_threshold 收敛判据消费）
+            "quality_history": [],
             "blockers": [], "termination": None,
             "awaiting_user_confirm": True,   # 启动即待确认：未对齐九项不得开工
             "last_decision": None, "history": [],
@@ -1418,6 +1796,12 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "blockers": st.get("blockers", []), "termination": st.get("termination"),
             "original_unchanged": orig_ok,
             "intake_confirmed": st.get("intake", {}).get("confirmed", False),
+            # v3.16.0：质量收敛判据的可观测面（no_progress_threshold 此前零命中，
+            # 现在每轮 continue 带 --p0/--p1/--p2 即落 quality_history）
+            "quality_history": st.get("quality_history", []),
+            "no_progress_streak": _loop_no_progress_streak(st.get("quality_history") or []),
+            "no_progress_threshold": (st.get("budgets") or {}).get(
+                "no_progress_threshold", (lb.get("budgets") or {}).get("no_progress_threshold", 2)),
         }, ensure_ascii=False, indent=2))
         return 0 if orig_ok is not False else 1
 
@@ -1471,12 +1855,83 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                   f"**暂停并报告，不宣布通过**。如需继续须用户上调 max_rounds 并确认。",
                   file=sys.stderr)
             return 1
+        # v3.16.0 F6：质量收敛判据——每轮结束（进位时）记该轮 P0/P1/P2 快照。
+        # 为什么挂在 continue：一轮的产出在此刻定稿，是唯一能拿到"本轮真实缺陷数"的时点；
+        # 而 loop_b.budgets.no_progress_threshold 此前**零命中**（配了无执行者），
+        # 五类终止条件全是工作量/交互维度，机器检不出"缺陷数已不再下降"。
+        rnd_end = int(st.get("current_round", 1))
+        snap = None
+        vjson = getattr(args, "verify_json", "") or ""
+        manual_given = args.p0 is not None or args.p1 is not None or args.p2 is not None
+        if vjson:
+            # 报告优先：verify_deck 机器复算 > 手工自报（自报理论可注水）
+            try:
+                q = _load_quality_from_verify_json(vjson)
+            except _QualityReportError as e:
+                print(f"⛔ 质量取数失败（--verify-json {vjson}）：{e}——"
+                      f"不静默退回手工值、也不按 0 处理。请产出有效报告后重试；"
+                      f"确无报告请去掉 --verify-json 改用 --p0/--p1/--p2"
+                      f"（输出会标 source=manual 未核验）。", file=sys.stderr)
+                return e.code
+            src = f"verify_json|{q['path']}"
+            extra = {"p2_basis": q["p2_basis"], "note_coverage": q["note_coverage"],
+                     "report_path": q["path"]}
+            if manual_given and (args.p0, args.p1, args.p2) != (q["p0"], q["p1"], q["p2"]):
+                extra["manual_ignored"] = {"p0": args.p0, "p1": args.p1, "p2": args.p2}
+                print(f"⚠ 手工 --p0/--p1/--p2（{args.p0}/{args.p1}/{args.p2}）与报告"
+                      f"（{q['p0']}/{q['p1']}/{q['p2']}）冲突：**以报告为准**"
+                      f"（工具自报不算数），手工值仅存证不采用。", file=sys.stderr)
+            snap = _loop_quality_snapshot(st, rnd_end, q["p0"], q["p1"], q["p2"],
+                                          source=src, extra=extra)
+            _loop_hist(st, "quality_snapshot", snap)
+        elif manual_given:
+            snap = _loop_quality_snapshot(st, rnd_end, args.p0 or 0, args.p1 or 0, args.p2 or 0,
+                                          source="manual",
+                                          extra={"unverified": "自报值，未经 --verify-json 交叉核验"})
+            _loop_hist(st, "quality_snapshot", snap)
+            print("⚠ 本轮质量数取自手工 --p0/--p1/--p2（source=manual）："
+                  "自报值未经 verify_deck 报告交叉核验，可信度低于 --verify-json。",
+                  file=sys.stderr)
         st["current_round"] = nxt
         st["awaiting_user_confirm"] = False
         st["last_decision"] = args.decision
         _loop_hist(st, "continue", {"from": nxt - 1, "to": nxt, "decision": args.decision})
         _write_loop_state(w, "b", st)
+
+        # 收敛判定：连续 N 轮 P0+P1 合计未下降 → 触发终止建议（不自动终止：
+        # 终止需用户裁决，代码只给结论与证据）
+        nthr = int(beff.get("no_progress_threshold", 2))
+        streak = _loop_no_progress_streak(st.get("quality_history") or [])
+        if streak >= nthr:
+            hist = st.get("quality_history") or []
+            detail = {"loop": "B", "round": rnd_end, "next_round": nxt,
+                      "threshold": nthr, "streak": streak,
+                      "p0p1_series": [h.get("p0p1") for h in hist],
+                      "quality_history": hist,
+                      "quality_sources": [h.get("source") for h in hist],
+                      "suggested_termination": "连续 N 轮无质量进展"}
+            _loop_hist(st, "no_progress", detail)
+            _write_loop_state(w, "b", st)
+            _trace(w, cfg, "no_progress", "team-lead", detail)
+            msg = (f"连续 {streak} 轮无质量进展（阈值 no_progress_threshold={nthr}，"
+                   f"取自 harness.yaml#loop_b.budgets）：P0+P1 序列 "
+                   f"{detail['p0p1_series']} 未下降 → 触发终止建议"
+                   f"「连续 N 轮无质量进展」。继续硬做不再减少缺陷，"
+                   f"请改方向或请用户裁决（`loop terminate --reason 连续 N 轮无质量进展`）。")
+            print(json.dumps({"current_round": nxt, "decision": args.decision,
+                              "no_progress": True, "threshold": nthr, "streak": streak,
+                              "p0p1_series": detail["p0p1_series"],
+                              "quality_sources": detail["quality_sources"],
+                              "suggested_termination": "连续 N 轮无质量进展",
+                              "message": msg}, ensure_ascii=False, indent=2))
+            print(f"⛔ {msg}", file=sys.stderr)
+            return 1
         print(json.dumps({"current_round": nxt, "decision": args.decision,
+                          "no_progress": False,
+                          "quality_snapshot": snap,
+                          "quality_source": (snap or {}).get("source"),
+                          "no_progress_streak": streak,
+                          "no_progress_threshold": nthr,
                           "note": f"每轮最多处理 {budgets.get('max_items_per_round', 5)} 条"
                                   f"（loop_b.budgets.max_items_per_round）"},
                          ensure_ascii=False, indent=2))
@@ -1630,8 +2085,12 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
 
     # ── terminate：五类终止（穷举，不得自造）
     if args.action == "terminate":
-        if args.reason not in LOOP_TERMINATIONS:
-            print(f"用法错误：--reason 必须是五类之一 {LOOP_TERMINATIONS}", file=sys.stderr)
+        # v3.16.0：终止原因读 harness.yaml#loop_b.termination（唯一源），
+        # 不再用代码里另立的常量——否则在 yaml 加原因不生效（同型双声明缺陷）
+        reasons = load_term_reasons(cfg)
+        if args.reason not in reasons:
+            print(f"用法错误：--reason 必须是已登记终止原因之一 {reasons}"
+                  f"（源：harness.yaml#loop_b.termination）", file=sys.stderr)
             return 2
         if args.reason == "成功完成" and not args.confirmed:
             c = _loop_counts(st)
@@ -1672,9 +2131,9 @@ def cmd_doctor(args):
         ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
-        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason", "0/1/2/3", "harness.py loop start --deck x.pptx"),
+        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason/--verify-json/--p0/--p1/--p2", "0/1/2/3", "harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（报告优先于手工 --p0/--p1/--p2）"),
     ]
-    out = {"version": "v3.15.0", "executable": __file__,
+    out = {"version": "v3.16.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -2017,7 +2476,8 @@ def main():
     p.add_argument("action", choices=["check", "spend", "reset", "list"])
     p.add_argument("--kind", default="",
                    help="计数型 spawn|react|rework；阈值型 attempts|react_gap|"
-                        "stage_minutes|artifact_bytes|three_source_sample|three_source_pass")
+                        "stage_minutes|artifact_bytes|three_source_sample|three_source_pass"
+                        "（v3.16.0：three_source_* 改读 config/domain_config.yaml#three_source_check）")
     p.add_argument("--n", type=int, default=1)
     p.add_argument("--actor", default="main")
     _ws(p)
@@ -2139,7 +2599,15 @@ def main():
     p.add_argument("--decision", choices=["accept", "partial_accept", "rework", "pause"],
                    help="continue/freeze：用户裁决（不传即拒绝进位——沉默不构成确认）")
     p.add_argument("--confirmed", action="store_true", help="continue/terminate：已获用户确认")
-    p.add_argument("--reason", help="terminate：五类终止之一")
+    p.add_argument("--reason", help="terminate：已登记终止原因之一（harness.yaml#loop_b.termination）")
+    # v3.16.0 F6：continue 带本轮 P0/P1/P2 计数 → 落 quality_history，
+    # 供 loop_b.budgets.no_progress_threshold 的"连续 N 轮无质量进展"判据消费
+    p.add_argument("--p0", type=int, default=None, help="continue：本轮结束时的 P0 缺陷数")
+    p.add_argument("--p1", type=int, default=None, help="continue：本轮结束时的 P1 缺陷数")
+    p.add_argument("--p2", type=int, default=None, help="continue：本轮结束时的 P2 缺陷数")
+    p.add_argument("--verify-json", dest="verify_json", default="",
+                   help="continue：verify_deck.py --json 产出的报告路径（**优先于** --p0/--p1/--p2："
+                        "机器复算 > 手工自报；缺字段/不可解析即报错，不静默取 0）")
     p.add_argument("--kind", default="", help="block：阻塞类型（capability/evidence/...）")
     p.add_argument("--note", default="", help="人读备注")
     p.add_argument("--path", help="check-path：待写入的目标路径（越界校验）")

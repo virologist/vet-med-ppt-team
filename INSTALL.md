@@ -252,5 +252,5 @@ echo '{"agent": "vet-med-ppt-team-team-lead"}' > \
 ## 下一步
 
 - 阅读 [UPGRADE.md](UPGRADE.md) 了解如何更新本专家团
-- 阅读 [docs/architecture.md](docs/architecture.md) 了解六阶段门控流水线设计
+- 阅读 [docs/architecture.md](docs/architecture.md) 了解团队组成与**五闸（stage 0–4）门控流水线**设计（阶段事实以 `config/harness.yaml#stages` 为唯一源）
 - 阅读 [CHANGELOG.md](CHANGELOG.md) 查看版本历史

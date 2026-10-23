@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# ── 归属声明（v3.16.0 补：本脚本此前无任何 agent 归属声明）────────────
+# 所有者/执行者: ppt-producer（郅作基，施工自检）｜第二签: verifier（都衡言，闸4 抽检）
+# 用途: PPTX OOXML 兼容性检查（PKG/REL/CT/ID/XML/SYN 六组 ERROR 阻断）+ 几何 GEO-003（WARN）
+# 何时被调用: 闸4 门禁前置跑成品 lint——**必配 --geo-baseline**（否则模板固有叠放会淹没新增遮挡）
+# ─────────────────────────────────────────────────────────────────────
 """
 ooxml_lint.py — PPTX OOXML 兼容性检查器（v3.2.0-batch2）
 

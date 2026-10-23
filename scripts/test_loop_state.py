@@ -249,6 +249,137 @@ def main():
                                  "--confirmed", "--workspace", w3])
             check("全部冻结后可报「成功完成」", rc29 == 0)
 
+        # ── 场景 8（v3.16.0 F6）：质量收敛判据 ──────────────────────────
+        # 背景：loop_b.budgets.no_progress_threshold 此前**零命中**（配了无执行者），
+        #   五类终止条件全是工作量/交互维度，机器检不出"缺陷数已不再下降"。
+        with tempfile.TemporaryDirectory() as w4:
+            deck4 = os.path.join(w4, "d.pptx")
+            make_deck(deck4)
+            run(["loop", "start", "--deck", deck4, "--workspace", w4])
+            # 三轮 P0+P1 恒为 5（P0=3/P1=2），no_progress_threshold=2 → 第 3 轮触发
+            r1, _, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                            "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+            r2, so2, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                              "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+            r3, so3, se3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+            s2 = jout(so2)
+            check("质量收敛：第 1、2 轮未达阈值（exit 0，streak=0/1），第 3 轮触发（exit 1）",
+                  r1 == 0 and r2 == 0 and s2.get("no_progress_streak") == 1 and r3 == 1,
+                  f"got {r1},{r2},{r3} streak={s2.get('no_progress_streak')}")
+            check("质量收敛：stdout 与 stderr 都明示「连续 N 轮无质量进展」",
+                  "连续 2 轮无质量进展" in so3 and "连续 2 轮无质量进展" in (se3 or ""),
+                  f"got so={so3[:120]} se={se3[:120]}")
+            # trace 事件登记（observability.trace_events 已含 no_progress）
+            tp = os.path.join(w4, ".workbuddy", "harness_trace.jsonl")
+            evs = []
+            if os.path.exists(tp):
+                evs = [json.loads(l).get("event") for l in open(tp, encoding="utf-8") if l.strip()]
+            check("质量收敛：写出 trace 事件 no_progress", "no_progress" in evs, f"got {evs}")
+            s4 = jout(run(["loop", "status", "--workspace", w4])[1])
+            check("质量收敛：quality_history 落盘（3 条，P0+P1 序列 [5,5,5]）",
+                  [h.get("p0p1") for h in s4.get("quality_history", [])] == [5, 5, 5],
+                  f"got {s4.get('quality_history')}")
+
+        # 反向：有下降即不触发（5 → 3 → 4，streak 被下降打断，阈值 2 未达）
+        with tempfile.TemporaryDirectory() as w5:
+            deck5 = os.path.join(w5, "e.pptx")
+            make_deck(deck5)
+            run(["loop", "start", "--deck", deck5, "--workspace", w5])
+            run(["loop", "continue", "--decision", "accept", "--confirmed",
+                 "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w5])   # 5
+            run(["loop", "continue", "--decision", "accept", "--confirmed",
+                 "--p0", "1", "--p1", "2", "--p2", "5", "--workspace", w5])   # 3（下降）
+            r6, so6, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                              "--p0", "2", "--p1", "2", "--p2", "5", "--workspace", w5])  # 4
+            s6 = jout(so6)
+            check("质量收敛：出现下降后 streak 归零 → 不触发（exit 0）",
+                  r6 == 0 and s6.get("no_progress") is False
+                  and s6.get("no_progress_streak") == 1, f"got {r6} {so6[:160]}")
+
+        # ── 场景 9（v3.16.0 F6 补）：质量数**报告优先**，自报为辅 ──────────
+        # 背景：--p0/--p1/--p2 手工值理论可注水；verify_deck 早有 --json 报告，
+        #   机器复算必须是第一数据源，且来源要写进快照（可追溯 > 看起来自动）。
+        with tempfile.TemporaryDirectory() as w8:
+            deck8 = os.path.join(w8, "g.pptx")
+            make_deck(deck8)
+            run(["loop", "start", "--deck", deck8, "--workspace", w8])
+
+            def report(name, gate):
+                p = os.path.join(w8, f"{name}.json")
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump({"gate": gate, "stats": {}}, f)
+                return p
+
+            real = report("real", {"p0": 5, "p1": 1, "note_coverage": 0.62,
+                                   "p2_threshold": 0.8, "p2_block": True, "p3": 2})
+            # 灌水报告：把 p0 改成 1（模拟改报告而非改课件）
+            tampered = report("tampered", {"p0": 1, "p1": 0, "note_coverage": 0.95,
+                                           "p2_threshold": 0.8, "p2_block": False, "p3": 0})
+            # ① 真实报告：取到 gate.p0/p1，来源为 verify_json
+            rv1, sov1, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--verify-json", real, "--workspace", w8])
+            s1 = jout(sov1)
+            check("报告优先：--verify-json 取 gate.p0/p1（5/1），source=verify_json",
+                  rv1 == 0 and s1.get("quality_snapshot", {}).get("p0") == 5
+                  and s1.get("quality_snapshot", {}).get("p1") == 1
+                  and s1.get("quality_source", "").startswith("verify_json|"), f"got {sov1[:200]}")
+
+            # ② 灌水报告 + 冲突手工值 → 取报告值，手工值只存证不采用
+            rv2, sov2, sev2 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                   "--p0", "9", "--p1", "9", "--p2", "9",
+                                   "--verify-json", tampered, "--workspace", w8])
+            s2 = jout(sov2)
+            check("冲突场景：手工 9/9/9 vs 报告 1/0/0 → 取报告值并存证 manual_ignored",
+                  rv2 == 0 and s2.get("quality_snapshot", {}).get("p0") == 1
+                  and s2.get("quality_snapshot", {}).get("manual_ignored") == {"p0": 9, "p1": 9, "p2": 9}
+                  and "以报告为准" in (sev2 or ""), f"got {sov2[:200]} se={sev2[:120]}")
+
+            # ③ 报告缺 p0 → 显式报错（exit 2），**不静默取 0**、不退回手工值
+            badp0 = report("bad_nop0", {"p1": 1, "note_coverage": 0.9, "p2_block": False})
+            rv3, _, sev3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--p0", "0", "--p1", "0", "--p2", "0",
+                                "--verify-json", badp0, "--workspace", w8])
+            check("报告缺 gate.p0 → exit 2 且原文说明不按 0 处理（不退回手工值）",
+                  rv3 == 2 and "gate 缺 p0" in (sev3 or "") and "不按 0 处理" in (sev3 or ""),
+                  f"got {rv3} {sev3[:160]}")
+
+            # ④ 报告文件不存在 → exit 3（依赖缺失）
+            rv4, _, sev4 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--verify-json", os.path.join(w8, "nope.json"), "--workspace", w8])
+            check("报告不存在 → exit 3（依赖缺失，不静默取 0）", rv4 == 3 and "报告不存在" in (sev4 or ""),
+                  f"got {rv4} {sev4[:160]}")
+
+            # ⑤ 仅手工（无报告）→ source=manual 且标记未核验
+            rv5, sov5, sev5 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                   "--p0", "2", "--p1", "1", "--p2", "3", "--workspace", w8])
+            s5 = jout(sov5)
+            check("仅手工值 → source=manual 且标注未经 --verify-json 交叉核验",
+                  rv5 == 0 and s5.get("quality_source") == "manual"
+                  and s5.get("quality_snapshot", {}).get("unverified")
+                  and "source=manual" in (sev5 or ""), f"got {sov5[:200]} se={sev5[:120]}")
+
+        # 终止原因唯一源：yaml 新增的「连续 N 轮无质量进展」可用，自造原因仍被拒
+        with tempfile.TemporaryDirectory() as w6:
+            deck6 = os.path.join(w6, "f.pptx")
+            make_deck(deck6)
+            run(["loop", "start", "--deck", deck6, "--workspace", w6])
+            r7, so7, _ = run(["loop", "terminate", "--reason", "连续 N 轮无质量进展",
+                              "--workspace", w6])
+            check("终止原因读 yaml：新登记的「连续 N 轮无质量进展」被接受（exit 0）",
+                  r7 == 0 and jout(so7).get("termination") == "连续 N 轮无质量进展",
+                  f"got {r7} {so7[:120]}")
+            r8, _, se8 = run(["loop", "terminate", "--reason", "我自造的原因", "--workspace", w6])
+            check("终止原因穷举：自造原因仍被拒（exit 2）", r8 == 2, f"got {r8} {se8[:120]}")
+
+        # 白名单联动：quality_history 必须能写进 task_state.json（否则静默失败）
+        with tempfile.TemporaryDirectory() as w7:
+            run(["state", "init", "--workspace", w7])
+            r9, _, se9 = run(["state", "set", "--key", "quality_history", "--value",
+                              '[{"round":1,"p0":3,"p1":2,"p2":5}]', "--workspace", w7])
+            check("白名单联动：quality_history 可写入 task_state.json（context.state_allowed_keys）",
+                  r9 == 0, f"got {r9} {se9[:120]}")
+
     print(f"\n通过 {len(PASS)} / 失败 {len(FAIL)}")
     if FAIL:
         print("失败用例：", FAIL)

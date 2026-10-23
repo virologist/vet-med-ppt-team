@@ -57,6 +57,18 @@ maxTurns: 50
 2. 同步探测 UpNote MCP（如 `mcp__upnote` 或 ReadMcpResource 形式），可用则后续闸1/闸2可检索用户个人笔记；不可用明说，不编造检索结果，不空转重试；
 3. 探测结果记入任务状态（task_state.json），避免后续阶段重复探测。
 
+**Ima 查询串的写法（v3.16.0 补显式说明 · 与下方 Europe PMC 布尔检索式是两套语法，不要互相照抄）**：
+
+- **形态不同**：Ima 是**选库 + 语义召回**（按库 ID 调 `mcp__ima-mcp__search_knowledge` 传查询串），**包内未记录其布尔检索语法**；
+  下方 Europe PMC 通道是**布尔检索式**（`AND` / `OR` / 引号短语 / 年份区间）。
+  ❌ **不得把布尔式原样套进 Ima**——套上去不会报错，但会静默降低召回、且看不出来失效（属"看起来严谨、实际失效"）。
+- **判据对齐方式**：布尔四要素是 Europe PMC 的语法；Ima 对齐的是**四要素的内容维度**——
+  查询串里必须能读出「物种 + 病原或主题 + 部位或病变 + （如适用）限定词」四个维度，**不必写成布尔式**。
+  实际写法是自然语言短串（如「鸡 传染性法氏囊病 法氏囊 病理变化」），库选错比串写得糙影响更大。
+- **判据强度**：Ima 通道的判据 = ① 库是否选对（上方路由表）② 四要素维度是否都进了查询串 ③ 查询串是否写进 `evidence[]`；
+  **不要求**布尔语法与年份区间。
+- **取证分工不变**：Ima 走**文本型知识核验**；图像类素材命中率低，**图注三要素（实验条件+部位+临床意义）的取证仍以 Europe PMC 通道为准**（见下方）。
+
 ### 图像素材获取通道（v1.5.0 新增：Ima 不是唯一通道）
 
 > **实战教训**：2026-09 实战中，Ima 图片类检索常返回 0 命中；共享知识库常报 `code 220030`（非本账号），CDN 图片需签名导致程序化取图失败；UpNote 经探测**无嵌入图片**。真正稳定拿到真实病理图的通道是 Europe PMC 开放获取论文——但它此前**不在本团队设计中**，属临时发挥。v1.5.0 将其列为正式主力通道。
@@ -71,7 +83,23 @@ maxTurns: 50
 **Europe PMC 取图 SOP**：
 - API：`https://www.ebi.ac.uk/europepmc/webservices/rest/{PMCID}/supplementaryFiles`
 - 许可：仅取 **CC-BY / 开放获取**论文图片；常用期刊 Front Vet Sci / Sci Rep / Vet Sci / Pathogens / Animals / Vet World / PLOS ONE / Viruses(MDPI)
-- 检索式：病原英文名 + lesion / pathology / histopathology
+- **检索式四要素（v3.16.0：由"病原 + 病变词"两要素扩为四要素）**：`物种 + 病原或主题 + 部位或病变类型 + （可选）限定词`
+  1. **物种（必填）**：chicken / broiler / layer / duck / Muscovy duck / goose / pigeon …——**漏物种会混进非目标宿主文献**（同名病原跨宿主意义不同）
+  2. **病原或主题（必填）**：英文名全称 + 通用缩写（如 infectious bronchitis virus, IBV）
+  3. **部位或病变类型（必填）**：器官名（trachea / bursa of Fabricius / liver / spleen / cecal tonsil）或病变词（necrosis / hemorrhagic / histopathology / immunohistochemistry / gross lesion）
+  4. **限定词（可选）**：年份区间 / 地域 / 文献类型（如 2020:2026 / China / review / case report）
+- **为什么必须是四要素**：图注要写「实验条件 + 部位 + 临床意义」三要素，检索式必须比图注判据**宽一格才拿得到材料**，同时**窄一格才不跑偏**：
+  要素 2 锁住"实验条件"是什么实验（攻毒 / 田间病例 / 疫苗免疫）的前提；要素 3 直接对应图注的"部位"；
+  要素 1（物种）保证"临床意义"写的是**本物种**的意义；要素 4 用来压噪声（限近期年份、限本地域流行）。
+  两要素版（病原 + 病变词）既可能检索不到图注要的"部位"，又混进非目标宿主与非目标年代——
+  **"检索判据宽于图注判据"的缺陷就出在这里**（F9）。
+- **可照抄实例（鸡）**：`chicken AND ("infectious bursal disease virus" OR IBDV) AND ("bursa of Fabricius" OR "bursal lesion") AND (histopathology OR immunohistochemistry) AND 2020:2026`
+  → 命中目标：法氏囊大体/组织学图。图注可写为「实验条件：IBDV 感染病例 · 部位：法氏囊 · 临床意义：滤泡淋巴细胞坏死与萎缩 → 免疫抑制」
+- **可照抄实例（鸭/水禽）**：`duck AND ("duck hepatitis A virus" OR DHAV) AND (liver OR hepatic) AND (histopathology OR "gross lesion") AND 2018:2026`
+  → 命中目标：雏鸭肝大体与组织学图。图注可写为「实验条件：DHAV 感染雏鸭 · 部位：肝 · 临床意义：肝肿大伴出血斑点，急性死亡」
+- ⚠️ **实例只是骨架示范**：具体病原名、缩写、靶器官写法以当次检索到的原文为准；命中不足就换同义写法或换通道（见上方通道优先级表），
+  **不得因命中不到就退回两要素式宽检索充数**；命中物仍须逐张判读图像本体后才可写图注（判据 `references/adjudication-rules.md#原则六`）
+- **包内检索起点**：`references/poultry-disease-index.md`（家禽疫病教学导航索引 + 实验室诊断方法对照表）——先查此文件取物种/病原英文名与靶器官骨架，再进通道检索
 - **图注三要素（缺一不可）**：实验条件（如"感染24h后"）+ 部位（如"A.肺叶"）+ 临床意义
 - 来源标注：期刊 + 年份 + PMCID + 许可
 - **禁用**：带水印论坛实拍图、分辨率不足放大图、未标来源图
@@ -179,6 +207,20 @@ maxTurns: 50
 > （4 份 × 11 行 ≈ 64 行、44 个字段实例），任一字段增删需改 4 处。
 > 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
 > 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+
+**合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
+
+```json
+{"agent_id":"dvm-content-expert","task_id":"T-20261023-03","phase":"闸2","status":"success",
+ "confidence":"依据：cases_library.json find --disease 命中 4 条（M4A1/M4A2/M4B1/M6A1），三源核验通过 7/9（PubMed 3、教辅 2、国标与公告 2），落盘 <RUN_DIR>/evidence/禽流感_证据包.md",
+ "deliverable_summary":"落盘 <RUN_DIR>/evidence/禽流感_证据包.md + <workspace>/.workbuddy/cases/cases_library.json（本次新增 4 条）；已核验结论 12 条 / [待核实] 2 条 / [推测] 1 条，三源核验通过 7/9"}
+```
+
+❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"禽流感证据包已优化完成，全部达标"`
+→ 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
+
+- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项——`[待核实]` 条目未闭合、检索单已落盘但补查未回、时效敏感字段未核验到现行版本——就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`（团队执行引擎规范）

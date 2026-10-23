@@ -13,8 +13,10 @@ verify_deck.py — 教学课件机械验证器（70% 机械验证的裁判）
   4. 配色混乱      —— 单页颜色数超阈值（视觉噪音）          [P0]
   5. 文字墙        —— 单页字符数超限（认知负荷过载）        [P1]
   6. 空白页        —— 无内容页                              [P0]
-  7. 课时匹配      —— 页数 vs 课时标准                      [P0]
+  7. 课时匹配      —— 页数 vs 课时标准（双口径，--caliber）      [P0]
   8. 结构性完备    —— 目录页/题页 [P0]；备注覆盖率 [P2]
+  9. 主框密度      —— 单页主框正文字符超限（标题/图注/页脚不计）[P1]  ★v3.16.0 新增（机器判定）
+ 10. rubric 建议级 —— V1 标题位置一致性 / V5 图文比例【默认关闭，不计门禁】★v3.16.0 新增（机器判定）
 
 分级门禁（v2.0.0，防"全清不可达→门禁必被绕过"）：
   P0 硬阻断：写回磁盘前必须为 0（任何 level 下都阻断）
@@ -23,7 +25,15 @@ verify_deck.py — 教学课件机械验证器（70% 机械验证的裁判）
   P3 明示  ：继承字号未取到 / 判定异常 / 装饰出血——不阻断，必须明示
 
 用法：
-  python3 verify_deck.py <课件.pptx> [--hours 3] [--level P0|P1|all] [--json out.json] [--strict]
+  python3 verify_deck.py <课件.pptx> --hours 3 [--caliber course|single-ppt] \
+                         [--level P0|P1|all] [--json out.json] [--strict]
+
+  --hours     课时数（必填：1 / 1.5 / 2 / 3 / 4）
+  --caliber   页数口径（v3.16.0）：
+                course     = 整套课程课件口径（hours_page_range，默认，见 yaml page_caliber_default）
+                single-ppt = 单次 PPT 口径（hours_page_range_single_ppt，
+                             数值同源 references/course-profile-defaults.md#2）
+              不加 --caliber 时结果与 v3.16.0 之前完全一致（历史复验不受影响）。
 
   --level P0   写回门禁：仅 P0 阻断
   --level P1   中检门禁：P0+P1 阻断
@@ -52,11 +62,14 @@ except ImportError:
 # v1.9.0：红线参数化。v2.0.0：分级映射与 P2 覆盖率同样参数化。
 import os
 
+# v3.16.0：**下面每个键都必须与 config/visual-rules.yaml 逐项一致**
+# （由 ensure_settings.py 第 19 项 check_fallback_drift() 强制；只改 yaml 不改这里 = 体检报错）。
 _FALLBACK = {
     "body_min_pt": 12.0,
     "note_min_pt": 9.0,
     "max_colors_per_slide": 5,
     "max_chars_per_slide": 400,
+    "max_body_chars_per_slide": 150,      # v3.16.0：主框密度（v3.5.0 起配了一直没人读，本版 wiring）
     "overlap_ratio": 0.15,
     "hours_page_range": {
         1: (18, 28),
@@ -65,33 +78,94 @@ _FALLBACK = {
         3: (55, 78),
         4: (72, 104),
     },
+    # v3.16.0：口径 B「单次 PPT」，同源 course-profile-defaults.md#2（详见 yaml 注释）
+    "hours_page_range_single_ppt": {
+        1: (12, 18),
+        2: (22, 32),
+        3: (32, 45),
+        4: (42, 58),
+    },
+    "page_caliber_default": "course",
     "p2_note_coverage": 0.80,
     "severity": {
         "P0": ["字号过小", "文字越界", "配色混乱", "空白页", "课时不达标", "缺目录页", "缺题页"],
-        "P1": ["元素重叠", "文字墙"],
+        "P1": ["元素重叠", "文字墙", "主框密度超标"],
         "P2": ["缺备注"],
+    },
+    # v3.16.0：建议级检查（rubric）默认值——与 yaml 的 checks 段同源，仅在 yaml 缺失时兜底
+    "checks": {
+        "title_position_consistency": {"enabled": False, "tolerance_in": 0.25},
+        "image_area_ratio": {"enabled": False, "min": 0.20, "max": 0.50,
+                             "max_consecutive_textonly": 3},
     },
 }
 
 _RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "..", "config", "visual-rules.yaml")
 
+def _hpr_table(raw):
+    """把 yaml 的 `{1: [18, 28], ...}` 规整为 `{float(课时): (下限, 上限)}`。
+
+    v3.16.0：双口径页数表各自规整一次，互不覆盖。
+    raw 为空或结构异常时返回空表——缺档/空表由调用方按 `.get(hours, (0, 9999))` 处理，
+    与历史行为一致（不阻断）。
+    """
+    out = {}
+    try:
+        for k, v in (raw or {}).items():
+            out[float(k)] = tuple(v)
+    except Exception:
+        return {}
+    return out
+
+
+CALIBER_COURSE = "course"           # 口径 A：整套课程课件（历史默认口径）
+CALIBER_SINGLE_PPT = "single-ppt"   # 口径 B：单次 PPT（course-profile-defaults.md#2）
+CALIBERS = (CALIBER_COURSE, CALIBER_SINGLE_PPT)
+
+
+def _resolve_caliber(caliber=None):
+    """确定页数口径：显式入参优先，否则取 yaml `page_caliber_default`（再否则 "course"）。
+
+    ⚠️ **默认恒为 `course`（口径 A）**——这是 v3.16.0 的硬承诺：
+    不加 `--caliber` 跑任何历史课件，页数判定结果必须与 v3.16.0 之前**逐字节一致**。
+    默认口径不随使用场景"智能"切换：规则引擎猜场景 = 同一份文件可能给出不同结论，
+    历史复验不可复现。场景差异只能由调用方显式声明。
+    （该承诺由 scripts/test_verify_deck.py 的 T_default_caliber 单测守着。）
+    """
+    if caliber in CALIBERS:
+        return caliber
+    d = THRESHOLD.get("page_caliber_default") if isinstance(THRESHOLD, dict) else None
+    return d if d in CALIBERS else CALIBER_COURSE
+
+
 def _load_threshold():
-    """优先读 config/visual-rules.yaml；失败回退内置值并告警（不中断裁判）。"""
+    """优先读 config/visual-rules.yaml；失败回退内置值并告警（不中断裁判）。
+
+    v3.16.0：页数标准一次性加载**两张表**（口径 A/B），并存互不覆盖；
+    运行时由 caliber 决定用哪张（见 `_resolve_caliber` 的注释）。
+    """
     try:
         import yaml
         with open(_RULES_PATH, encoding="utf-8") as f:
             rules = yaml.safe_load(f)
-        hpr = {float(k): tuple(v) for k, v in rules["hours_page_range"].items()}
+        hpr = _hpr_table(rules["hours_page_range"])
+        hpr_single = _hpr_table(rules.get("hours_page_range_single_ppt"))
         th = {
             "body_min_pt": float(rules["font"]["body_min_pt"]),
             "note_min_pt": float(rules["font"]["note_min_pt"]),
             "max_colors_per_slide": int(rules["density"]["max_colors_per_slide"]),
             "max_chars_per_slide": int(rules["density"]["max_chars_per_slide"]),
+            # v3.16.0：主框密度终于有代码读取者了（此前 yaml 配了 150 但无人消费）
+            "max_body_chars_per_slide": int(rules["density"]["max_body_chars_per_slide"]),
             "overlap_ratio": float(rules["geometry"]["overlap_ratio"]),
-            "hours_page_range": hpr,
+            "hours_page_range": hpr,                              # 口径 A
+            "hours_page_range_single_ppt": hpr_single,            # 口径 B（v3.16.0）
+            "page_caliber_default": str(rules.get("page_caliber_default", "course")),
             "p2_note_coverage": 0.80,
             "severity": dict(_FALLBACK["severity"]),
+            # v3.16.0：建议级（rubric）检查开关，缺省用内置值（默认全关）
+            "checks": {k: dict(v) for k, v in _FALLBACK["checks"].items()},
         }
         gate = rules.get("gate") or {}
         if "p2_note_coverage" in gate:
@@ -100,6 +174,10 @@ def _load_threshold():
         for lv in ("P0", "P1", "P2"):
             if lv in sev:
                 th["severity"][lv] = list(sev[lv])
+        ck = rules.get("checks") or {}
+        for cid, cfg in ck.items():
+            if isinstance(cfg, dict):
+                th["checks"][cid] = dict(cfg)
         return th
     except Exception as e:
         # v2.2.0：yaml 是红线唯一数据源，读不到 = 裁判失去准星。
@@ -157,6 +235,16 @@ _TYPE_LEVEL = {}
 for _lv in ("P0", "P1", "P2"):
     for _t in THRESHOLD["severity"].get(_lv, []):
         _TYPE_LEVEL[_t] = _lv
+
+# v3.16.0：未登记类型的默认等级 = None（不落任何级别），此前是 "P0"。
+# 改因：新增问题类型时若忘记登记 severity，旧默认值会把它算成 P0 硬阻断——
+#   表面"门禁很严"，实际是**类别错误**：未知类别的严重性是未知的，默认判最严没有任何依据，
+#   且会让新检查在标定期间就把课件拦死（进而诱导绕过门禁）。
+# 现状核查：本文件的 red 键全部已在 yaml severity 中登记（由单测 T_red_keys_in_severity 守着），
+#   故**本次改动不改变任何现有问题的分级结果**，只影响未来新增键。
+# 未知类型不会静默消失：计入 gate["p3"]（明示）并在 stats["unknown_red_keys"] 列出，
+#   由体检第 19 项 + 单测双保险推动"要么登记、要么删除"。
+_UNKNOWN_LEVEL = None
 
 EMU_PER_INCH = 914400
 
@@ -326,6 +414,77 @@ def _is_note_candidate(text):
     return len(text) <= 80
 
 
+# ── 主框密度（v3.16.0）：把 density.max_body_chars_per_slide 接到 statutory机器上 ──
+# 为什么需要单独一个口径：全页口径（max_chars_per_slide=400）会把标题/图注/页码一起算进"信息量"，
+# 而学生真正要读的是**主框正文**。历史上 yaml 早在 v3.5.0 就配了 150，
+# 但**没有任何代码读取它**——"设计期承诺"没有机器兜底，密到无可救药才被迫瘦身（v3.5.0 事故）。
+# 下面的判定全部是**确定性规则**（占位符类型 / 几何位置 / 关键词），不含任何语义猜测。
+
+def _shape_is_title_ph(shape):
+    """该形状是否为标题占位符（TITLE / CENTER_TITLE）——主框密度要排除它。"""
+    try:
+        if not shape.is_placeholder:
+            return False
+        from pptx.enum.shapes import PP_PLACEHOLDER
+        return shape.placeholder_format.type in (PP_PLACEHOLDER.TITLE,
+                                                 PP_PLACEHOLDER.CENTER_TITLE)
+    except Exception:
+        return False
+
+
+def _xml_is_title_ph(elm):
+    """XML 兜底路径：p:sp/p:nvSpPr/p:nvPr/p:ph@type ∈ {title, ctrTitle}。"""
+    try:
+        ph = elm.find(".//" + qn("p:nvSpPr") + "/" + qn("p:nvPr") + "/" + qn("p:ph"))
+        if ph is None:
+            return False
+        return (ph.get("type") or "") in ("title", "ctrTitle")
+    except Exception:
+        return False
+
+
+def _is_footer_frame(text, rect, slide_height):
+    """页脚/页码框判定：top ≥ 0.92×页高 **且** 文本 ≤20 字。
+
+    两个条件必须同时满足，缺一不可判为页脚：
+      · 只看位置 → 真页脚之外的底部正文引文会被误排除；
+      · 只看字数 → 正文里的短引导语会被误排除。
+    20 字上限对应"第 N 页""1 / 24""课程名·章节"这类页脚语义的长度上限。
+    """
+    if rect is None or not text:
+        return False
+    top = rect[1]
+    if slide_height and top is not None and top >= 0.92 * slide_height:
+        return len(text) <= 20
+    return False
+
+
+def body_frame_chars(adapters, slide_height):
+    """按上述三条排除规则累计主框正文字符数，并返回参与计数的框数（供详情给出依据）。
+
+    计数单位为**文本框架的原始字符数**（含段落间的换行符）——刻意取最严口径：
+    多项目符号的主框会多算 (段落数-1) 个字符。想"更准"就得剔除换行，那是放松判据，
+    与"既有限度不得放弱"冲突，故保留原始口径并在此明示，免得后人当作 bug 修掉。
+
+    Args:
+        adapters: 本页形状适配器列表
+        slide_height: 页高（EMU），用于页脚判定；取不到时传 None（页脚判定自动不成立）
+    """
+    total, n = 0, 0
+    for a in adapters:
+        if not a.get("has_tf") or not a.get("text"):
+            continue
+        if a.get("is_title_ph"):
+            continue                                   # ① 排除标题占位符
+        if _is_note_candidate(a["text"]):
+            continue                                   # ② 排除图注/来源（复用既有判据）
+        if _is_footer_frame(a["text"], a.get("rect"), slide_height):
+            continue                                   # ③ 排除页脚/页码框
+        total += len(a["text"])
+        n += 1
+    return total, n
+
+
 def _shape_colors(shape):
     """收集该形状**文字**用到的颜色（v3.5.1：不再统计填充色）。
 
@@ -395,6 +554,8 @@ def _extract_shape(shape, slide):
         "colors": set(), "is_pic": False,
         # v3.5.1：run 级粒度（None = 未取到，判据回退形状级 min）
         "run_pairs": None, "empty_runs": 0,
+        # v3.16.0：是否标题占位符（主框密度的排除项；不参与此前的任何判据）
+        "is_title_ph": False,
     }
     try:
         if shape.shape_type == 13:  # PICTURE
@@ -411,6 +572,10 @@ def _extract_shape(shape, slide):
         a["ok"] = False
         a["err"] = f"text_frame: {e}"
         return a
+    try:
+        a["is_title_ph"] = _shape_is_title_ph(shape)
+    except Exception:
+        a["is_title_ph"] = False
     try:
         a["rect"] = _rect(shape)
     except Exception:
@@ -451,8 +616,10 @@ def _extract_sp_xml(elm):
     a = {"ok": True, "err": None, "text": "", "has_tf": False,
          "rect": None, "sizes": [], "unresolved_runs": 0,
          "colors": set(), "is_pic": False,
-         "run_pairs": None, "empty_runs": 0}
+         "run_pairs": None, "empty_runs": 0,
+         "is_title_ph": False}          # v3.16.0
     try:
+        a["is_title_ph"] = _xml_is_title_ph(elm)
         a["has_tf"] = elm.find(qn("p:txBody")) is not None
         texts = [t.text or "" for t in elm.findall(".//" + qn("a:t"))]
         a["text"] = " ".join(texts).strip()
@@ -523,9 +690,19 @@ def _slide_shape_adapters(slide, stats):
     for shape in it:
         try:
             if getattr(shape, "shape_type", None) == 13:
+                # v3.16.0：补 rect（此前图片适配器 rect 恒为 None，图片面积占比无从计算）。
+                # 影响面核查：越界检查要求 `a["text"]` 非空才判、装饰出血跳过 is_pic、
+                # 重叠只取 has_tf 且有文本的适配器、配色只取 run 色——四条均与图片 rect 无关，
+                # 故补这个字段不改变任何既有判定结果。
+                try:
+                    _r = _rect(shape)
+                except Exception:
+                    _r = None
                 adapters.append({"ok": True, "err": None, "text": "", "has_tf": False,
-                                 "rect": None, "sizes": [], "unresolved_runs": 0,
-                                 "colors": set(), "is_pic": True})
+                                 "rect": _r, "sizes": [], "unresolved_runs": 0,
+                                 "colors": set(), "is_pic": True,
+                                 "run_pairs": None, "empty_runs": 0,
+                                 "is_title_ph": False})
                 continue
         except Exception:
             pass
@@ -536,9 +713,112 @@ def _slide_shape_adapters(slide, stats):
     return adapters, None
 
 
-def verify(path, hours=3, strict=False):
+# ============ 建议级检查（rubric，v3.16.0）============
+# 定位：**不是门禁，不计入 p0/p1/p2，不影响退出码**。产出只进 result["rubric"] 与 --json。
+# 为什么默认关闭、何时可转正：见 config/visual-rules.yaml#checks 的注释（需先做基线标定）。
+
+def _rubric_title_position(rows, cfg):
+    """V1 版式统一（标题位置一致性）：标题占位符的 (left, top, width) 取众数，
+    单页任一维偏离众数超过容差 → 出条目。
+
+    Args:
+        rows: [(slide_idx, (left, top, width)), ...]（EMU）
+        cfg : {"enabled": bool, "tolerance_in": float}
+    """
+    out = []
+    if not cfg.get("enabled") or len(rows) < 2:
+        # 少于 2 页有标题占位符时"众数"无意义——不产条目。
+        # 这是刻意的：众数判据在样本不足时必然产假阳性，而假阳性会让人关掉整个检查。
+        return out
+    tol_in = float(cfg.get("tolerance_in", 0.25))
+    tol = tol_in * EMU_PER_INCH
+    mode, mode_n = Counter([g for _, g in rows]).most_common(1)[0]
+    for idx, g in rows:
+        worst = max(abs(g[k] - mode[k]) for k in range(3))
+        if worst <= tol:
+            continue
+        out.append({
+            "check_id": "title_position_consistency",
+            "slide": idx,
+            "detail": (f"标题几何偏离众数 {round(worst / EMU_PER_INCH, 2)}in > 容差 {tol_in}in"
+                       f"（本页 left/top/width={tuple(round(v / EMU_PER_INCH, 2) for v in g)}in；"
+                       f"众数 {tuple(round(v / EMU_PER_INCH, 2) for v in mode)}in，"
+                       f"{mode_n} 页同此版式）"),
+        })
+    return out
+
+
+def _rubric_image_area(rows, cfg):
+    """V5 图文比例：① 含图页的图片面积占比越界；② 纯文字页连续超过上限。
+
+    Args:
+        rows: [(slide_idx, ratio, has_pic), ...]；ratio = 图片面积合计 / 页面积
+        cfg : {"enabled","min","max","max_consecutive_textonly"}
+    """
+    out = []
+    if not cfg.get("enabled"):
+        return out
+    lo = float(cfg.get("min", 0.20))
+    hi = float(cfg.get("max", 0.50))
+    max_run = int(cfg.get("max_consecutive_textonly", 3))
+    run = 0
+    for idx, ratio, has_pic in rows:
+        if has_pic:
+            run = 0
+            if not (lo <= ratio <= hi):
+                out.append({
+                    "check_id": "image_area_ratio",
+                    "slide": idx,
+                    "detail": (f"图片面积占比 {ratio * 100:.1f}% 越界"
+                               f"（容许 {lo * 100:.0f}–{hi * 100:.0f}%）"),
+                })
+        else:
+            run += 1
+            if run > max_run:
+                out.append({
+                    "check_id": "image_area_ratio",
+                    "slide": idx,
+                    "detail": f"已连续 {run} 页纯文字（上限 {max_run} 页）",
+                })
+    return out
+
+
+def _count_by_level(red, unknown_out=None):
+    """把 red 计数按 severity 映射拆成 (p0, p1)；未登记类型名写入 unknown_out（不清零、不落 P0）。
+
+    抽成函数是为了可单测（T_unknown_type_not_p0）：旧实现是一行 sum() 内联表达式，
+    无法对一个"假类型"验证分级行为。
+    """
+    p0 = p1 = 0
+    for k, v in red.items():
+        base = k.split("(")[0]
+        lv = _TYPE_LEVEL.get(base, _UNKNOWN_LEVEL)
+        if lv == "P0":
+            p0 += v
+        elif lv == "P1":
+            p1 += v
+        elif lv == "P2":
+            pass                      # P2 走覆盖率口径（p2_block），不进 p0/p1 计数
+        elif unknown_out is not None:
+            unknown_out.append(k)     # 只有"完全没登记"的类型才进明示队列
+    return p0, p1
+
+
+def verify(path, hours=3, strict=False, caliber=None):
+    """机械裁判主函数。
+
+    v3.16.0 新增 `caliber` 入参：`None`=取 yaml `page_caliber_default`（当前 "course"），
+    显式值 ∈ {course, single-ppt} 则按该口径取页数区间。
+    **不加该参数调用时，一切判定（除本次新增的两项：主框密度 + rubric 建议级）
+    与 v3.16.0 之前逐字节一致**——历史课件复验结论不得静默改变。
+    """
     prs = Presentation(path)
     sw, sh = prs.slide_width, prs.slide_height
+    caliber = _resolve_caliber(caliber)
+    _caliber_table = {
+        CALIBER_COURSE: THRESHOLD["hours_page_range"],
+        CALIBER_SINGLE_PPT: THRESHOLD["hours_page_range_single_ppt"],
+    }[caliber]
     issues = []
     stats = {
         "file": path,
@@ -546,9 +826,14 @@ def verify(path, hours=3, strict=False):
         "visible_slides": 0,
         "hidden_slides": 0,
         "hours": hours,
+        # v3.16.0：页数口径回显（报告/JSON 必须能看到实际用的哪张表与区间，防"以为用了 B 实际用了 A"）
+        "caliber": caliber,
+        "page_range": [0, 9999],
         "small_body": 0, "small_note": 0, "offcanvas": 0,
         "empty_runs_skipped": 0,  # v3.5.1：空 run 不计缺陷，单独计数备查
         "overlap": 0, "color_chaos": 0, "text_wall": 0,
+        # v3.16.0：主框密度（此前 yaml 有 150 的承诺、代码无兜底）
+        "body_wall": 0, "max_body_chars_seen": 0,
         "empty_slides": 0, "no_notes": 0, "unknown_font": 0,
         "bleed_decor": 0, "parse_errors": 0, "xml_fallback_slides": 0,
         "machine_notes": 0,
@@ -565,6 +850,8 @@ def verify(path, hours=3, strict=False):
 
     has_toc = False          # 目录页
     has_quiz = False         # 题页
+    title_geom = []          # v3.16.0 V1 rubric 取数：[(页号, (left, top, width)), ...]
+    img_rows = []            # v3.16.0 V5 rubric 取数：[(页号, 面积占比, 是否含图), ...]
     for idx, slide in visible:
         adapters, fb_err = _slide_shape_adapters(slide, stats)
 
@@ -576,6 +863,19 @@ def verify(path, hours=3, strict=False):
             has_toc = True
         if any(k in page_text for k in ("思考题", "练习题", "课堂提问", "随堂测", "Q1", "答案")):
             has_quiz = True
+
+        # v3.16.0：rubric 取数（纯读，零副作用；开关关闭时不产生任何计算外的代价）
+        for a in adapters:
+            r = a.get("rect")
+            if a.get("is_title_ph") and r and all(v is not None for v in r):
+                title_geom.append((idx, (r[0], r[1], r[2])))
+                break
+        pic_area = 0
+        for a in adapters:
+            r = a.get("rect")
+            if a.get("is_pic") and r and all(v is not None for v in r):
+                pic_area += (r[2] or 0) * (r[3] or 0)
+        img_rows.append((idx, (pic_area / (sw * sh)) if (sw and sh) else 0.0, pic_area > 0))
 
         # ---------- 1. 字号（v3.5.1：run 级判定；空 run 跳过，图注按 run 文本取阈值）----------
         for a in text_adapters:
@@ -709,12 +1009,30 @@ def verify(path, hours=3, strict=False):
                 "snippet": ",".join(sorted(page_colors)[:4]),
             })
 
-        # ---------- 5. 文字墙 ----------
+        # ---------- 5. 文字墙（全页口径） ----------
         if len(page_text) > THRESHOLD["max_chars_per_slide"]:
             stats["text_wall"] += 1
             issues.append({
                 "slide": idx, "type": "文字墙",
                 "detail": f"单页 {len(page_text)} 字 > {THRESHOLD['max_chars_per_slide']} 字",
+                "snippet": page_text[:40],
+            })
+
+        # ---------- 5b. 主框密度（v3.16.0：把 yaml 里躺了 8 个版本的 150 字接到机器上）----------
+        # 与「文字墙」是两个口径，别合并：40 字标题 + 380 字正文不触发 400 的全页墙，
+        # 但学生要读的主框已经 380 字——这正是 v3.5.0 事故的形态。
+        body_chars, body_frames = body_frame_chars(adapters, sh)
+        stats["max_body_chars_seen"] = max(stats["max_body_chars_seen"], body_chars)
+        if body_chars > THRESHOLD["max_body_chars_per_slide"]:
+            stats["body_wall"] += 1
+            full = len(page_text)
+            tail = (f"全页 {full} 字仍在 400 字口径内"
+                    if full <= THRESHOLD["max_chars_per_slide"]
+                    else f"全页 {full} 字亦超 400 字（另按「文字墙」计）")
+            issues.append({
+                "slide": idx, "type": "主框密度超标",
+                "detail": (f"主框 {body_chars} 字（{body_frames} 个框，已排除标题/图注/页脚） > "
+                           f"{THRESHOLD['max_body_chars_per_slide']} 字；{tail}"),
                 "snippet": page_text[:40],
             })
 
@@ -737,13 +1055,47 @@ def verify(path, hours=3, strict=False):
             stats["no_notes"] += 1
             issues.append({"slide": idx, "type": "缺备注", "detail": "该页无讲稿备注", "snippet": ""})
 
-    # ---------- 7. 课时匹配 ----------
-    lo, hi = THRESHOLD["hours_page_range"].get(hours, (0, 9999))
+    # ---------- 7. 课时匹配（v3.16.0：按 caliber 选口径）----------
+    # ⚠️ 默认走 `page_caliber_default`（当前 course = 口径 A），与 v3.16.0 之前完全一致；
+    #    单份 PPT 场景须由调用方显式 `--caliber single-ppt`（口径 B）切换，机器不猜场景。
+    # 措辞说明：默认口径下 detail 字符串**保持 v3.16.0 之前的原样**（不追加口径标签），
+    #    以保证历史复验输出的 diff 为零；仅当显式切到口径 B 时才在 detail 里标注口径来源——
+    #    此时结论本来就是新的，标注是为了让"这份绿灯是按单次 PPT 口径出的"可被追溯。
+    #
+    # ── 缺档与空表**不得静默通过**（v3.16.0 修 `get(hours, (0, 9999))` 的护栏空洞）──
+    # 旧写法下 `--caliber single-ppt --hours 1.5` 会落到缺省 (0, 9999) → hours_ok 恒真，
+    # 课时匹配这项 P0 检查**看起来在跑、实际没设防**；yaml 结构异常导致整表为空时更严重（全档静默放行）。
+    # 取舍记录：缺档时**不伪造 P0**（课件是否真的不符标准，机器此刻无从判断，凭空判失败会诱导绕过门禁），
+    # 但也**绝不算达标**：hours_ok=False + stats 标记 + stderr 告警 + 计入 gate.p3 明示队列。
+    # 三者叠加的结果：报告里任何一处都不可能读出"课时已达标"，且 **[未判定]** 与 **[不达标]** 是两个可见状态。
     n = stats["visible_slides"]
-    hours_ok = lo <= n <= hi
-    if not hours_ok:
-        issues.append({"slide": 0, "type": "课时不达标",
-                       "detail": f"可见{n}页，{hours}课时标准({lo}-{hi}页)", "snippet": ""})
+    if not _caliber_table:
+        lo, hi = 0, 9999
+        _missing_detail = (f"口径 {caliber} 的页数表为空（yaml 缺该键或结构异常），"
+                           f"课时匹配未执行（非通过）")
+    elif hours not in _caliber_table:
+        lo, hi = 0, 9999
+        _missing_detail = (f"口径 {caliber} 未定义 {hours} 课时的页数标准，"
+                           f"课时匹配未执行（非通过）")
+    else:
+        lo, hi = _caliber_table[hours]
+        _missing_detail = ""
+    hours_missing = bool(_missing_detail)
+    stats["page_range"] = [lo, hi]
+    stats["hours_standard_missing"] = hours_missing
+    stats["hours_missing_detail"] = _missing_detail
+    if hours_missing:
+        print(f"⚠ {_missing_detail}——请改用 course 口径，"
+              f"或按 references/batch-surgery-sop.md#§8 走降级签字", file=sys.stderr)
+
+    hours_fail = (not hours_missing) and not (lo <= n <= hi)
+    hours_ok = (not hours_missing) and (lo <= n <= hi)
+    if caliber == CALIBER_SINGLE_PPT:
+        _detail = f"可见{n}页，{hours}课时标准({lo}-{hi}页)［single-ppt·单次PPT口径］"
+    else:
+        _detail = f"可见{n}页，{hours}课时标准({lo}-{hi}页)"   # 与 v3.16.0 之前逐字节一致
+    if hours_fail:
+        issues.append({"slide": 0, "type": "课时不达标", "detail": _detail, "snippet": ""})
     if not has_toc:
         issues.append({"slide": 0, "type": "缺目录页", "detail": "未识别到目录页", "snippet": ""})
     if not has_quiz:
@@ -761,14 +1113,20 @@ def verify(path, hours=3, strict=False):
         "元素重叠": stats["overlap"],
         "配色混乱": stats["color_chaos"],
         "文字墙": stats["text_wall"],
+        "主框密度超标": stats["body_wall"],        # v3.16.0（P1，见 yaml severity）
         "空白页": stats["empty_slides"],
         "缺备注": stats["no_notes"],
-        "课时不达标": 0 if hours_ok else 1,
+        # v3.16.0：缺档时**不伪造这条 P0**（课件是否不符标准此刻无从判断），改为 P3 明示（见 §7 注释）
+        "课时不达标": 1 if hours_fail else 0,
         "缺目录页": 0 if has_toc else 1,
         "缺题页": 0 if has_quiz else 1,
     }
-    p0 = sum(v for k, v in red.items() if _TYPE_LEVEL.get(k.split("(")[0], "P0") == "P0")
-    p1 = sum(v for k, v in red.items() if _TYPE_LEVEL.get(k.split("(")[0], "P1") == "P1")
+    # v3.16.0：未知问题类型**不再默认落 P0**（旧代码写的是 `_TYPE_LEVEL.get(..., "P0")`）。
+    #   严重性未知 ≠ 最严重；默认判 P0 会让新检查在标定期就把课件拦死，进而诱导绕过门禁。
+    #   未登记类型改为计入 P3（明示）：不阻断，但**不会悄悄消失**（下面会列出来）。
+    unknown_red = []
+    p0, p1 = _count_by_level(red, unknown_red)
+    stats["unknown_red_keys"] = unknown_red
 
     note_cov = 1.0 if n == 0 else round((n - stats["no_notes"]) / n, 3)
     p2_block = note_cov < THRESHOLD["p2_note_coverage"]
@@ -776,18 +1134,29 @@ def verify(path, hours=3, strict=False):
     noted = n - stats["no_notes"]
     machine_ratio = round(stats["machine_notes"] / noted, 3) if noted else 0.0
 
-    p3 = stats["unknown_font"] + stats["parse_errors"] + stats["bleed_decor"]
+    # ---------- 建议级检查（rubric，v3.16.0：不计入任何分级、不影响退出码）----------
+    checks_cfg = THRESHOLD.get("checks") or {}
+    rubric = []
+    if (checks_cfg.get("title_position_consistency") or {}).get("enabled"):
+        rubric += _rubric_title_position(title_geom, checks_cfg["title_position_consistency"])
+    if (checks_cfg.get("image_area_ratio") or {}).get("enabled"):
+        rubric += _rubric_image_area(img_rows, checks_cfg["image_area_ratio"])
+
+    # v3.16.0：课时标准缺失/空表进 P3 明示队列——不阻断，但不可能被读成"达标"
+    p3 = (stats["unknown_font"] + stats["parse_errors"] + stats["bleed_decor"]
+          + (1 if hours_missing else 0))
 
     stats["note_coverage"] = note_cov
     stats["machine_note_pages"] = stats["machine_notes"]
     stats["machine_note_ratio"] = machine_ratio
 
-    return {"stats": stats, "red": red, "issues": issues,
+    return {"stats": stats, "red": red, "issues": issues, "rubric": rubric,
             "gate": {"p0": p0, "p1": p1, "note_coverage": note_cov,
                      "p2_threshold": THRESHOLD["p2_note_coverage"],
                      "p2_block": p2_block, "p3": p3,
                      "machine_note_ratio": machine_ratio,
-                     "machine_note_pages": stats["machine_notes"]}}
+                     "machine_note_pages": stats["machine_notes"],
+                     "rubric_count": len(rubric)}}
 
 
 def gate_decision(gate, level):
@@ -872,6 +1241,12 @@ def main():
                          "1.5=1小时教学单元60min档；扩展阅读页不计入可见页，由阶段0 冻结口径")
     ap.add_argument("--level", choices=["P0", "P1", "all"], default="all",
                     help="门禁级别：P0=写回门禁 / P1=中检门禁 / all=交付门禁（默认）")
+    # v3.16.0：页数口径显式切换（此前只有"整套课程课件"一张表，按单份 PPT 做的课件必被误判）
+    ap.add_argument("--caliber", choices=list(CALIBERS), default=None,
+                    help="页数口径：course=整套课程课件（hours_page_range，默认，见 yaml "
+                         "page_caliber_default）；single-ppt=单次 PPT（hours_page_range_single_ppt，"
+                         "数值同源 references/course-profile-defaults.md#2）。"
+                         "不加此参数时不改变任何历史复验结论。")
     ap.add_argument("--json", help="输出 JSON 报告路径")
     ap.add_argument("--strict", action="store_true", help="严格模式：未解析字号也判 P0")
     ap.add_argument("--limit", type=int, default=25, help="终端最多打印多少条问题")
@@ -902,7 +1277,7 @@ def main():
         sys.exit(0 if r.get("verdict") == "pass" else 1)
 
     try:
-        r = verify(a.deck, a.hours, a.strict)
+        r = verify(a.deck, a.hours, a.strict, a.caliber)
     except Exception as e:
         # v2.0.0：致命错误退出码 4（不再与 P1 的 2 混淆）
         # v2.2.0：必须打印 traceback —— 只打一行信息时，主理人无法区分
@@ -926,7 +1301,23 @@ def main():
     print(f"裁判：SSOT verify_deck.py（分级门禁 v3.0.0）｜阈值源 config/visual-rules.yaml"
           f"｜等级 {a.level}｜课时口径 {a.hours}（显式声明）")
     print(f"总页 {s['total_slides']} / 可见 {s['visible_slides']} / 隐藏 {s['hidden_slides']} / 课时 {s['hours']}")
-    print(f"目录页:{'✓' if s['has_toc'] else '✗'}  题页:{'✓' if s['has_quiz'] else '✗'}  课时匹配:{'✓' if s['hours_ok'] else '✗'}")
+    _hours_flag = ("✓" if s["hours_ok"]
+                   else ("⚠未判定" if s.get("hours_standard_missing") else "✗"))
+    print(f"目录页:{'✓' if s['has_toc'] else '✗'}  题页:{'✓' if s['has_quiz'] else '✗'}  课时匹配:{_hours_flag}")
+    # v3.16.0：缺档时 stdout 必须同样喊出来（不能只在 stderr）：
+    #   只写 stderr 的话，被上层脚本收走输出的使用者会看到一份"没有任何课时问题"的报告
+    if s.get("hours_standard_missing"):
+        print(f"⚠ 课时匹配【未执行】＝ 非通过：{s['hours_missing_detail']}"
+              f"——请改用 course 口径，或按 references/batch-surgery-sop.md#§8 走降级签字")
+        print(f"  报告解读：此时 `hours_ok=false` 表示**未判定**，不等于“课时不达标”，"
+              f"也不等于“达标”；该项计入 P3 明示，不阻断写回。")
+    # v3.16.0：口径回显——不贴这一行，读报告的人无法判断"这盏绿灯是按哪张表给的"
+    _range_txt = ("未定义（该口径无此课时档，见上方告警）" if s.get("hours_standard_missing")
+                  else f"{s['page_range'][0]}-{s['page_range'][1]} 页")
+    print(f"页数口径 {s['caliber']}（{'整套课程课件' if s['caliber'] == 'course' else '单次PPT'}）"
+          f"｜{s['hours']} 课时区间 {_range_txt}"
+          f"｜来源 config/visual-rules.yaml#hours_page_range"
+          f"{'' if s['caliber'] == 'course' else '_single_ppt'}")
     print(f"{'='*62}")
 
     print("分级门禁（v3.0.0）：")
@@ -951,10 +1342,21 @@ def main():
         flag = "🟢" if v == 0 else "🔴"
         print(f"  {flag} {k:16s} {v}")
 
+    # v3.16.0：建议级（rubric）——明确"不计门禁"，避免读者把它当红灯去清
+    rubric = r.get("rubric") or []
+    if rubric:
+        print(f"建议级提示（rubric，v3.16.0：不计入 P0/P1/P2、不阻断）共 {len(rubric)} 条：")
+        for entry in rubric[:a.limit]:
+            print(f"  P{entry['slide']:<3} [{entry['check_id']}] {entry['detail']}")
+
     verdict = {None: "✅ 通过（level=" + a.level + "）",
                "P0": "❌ P0 硬阻断——写回磁盘禁止，先清 P0",
                "P1": "❌ P1 阻断——可带修复计划写回，交付前必须清零",
                "P2": "❌ P2 阻断——备注覆盖率未达标"}[blocked_by]
+    # v3.16.0：课时标准缺档时给结论加限定语——否则"✅ 通过"会被读成"课时已达标"，
+    #   而这恰恰是本处罚完好几处静默失效要防的误读（exit code 仍按 P3 不阻断处理）。
+    if s.get("hours_standard_missing"):
+        verdict += "｜⚠ 但课时匹配未执行（口径缺此课时档），本次结论不含课时判定"
     print(f"\n{'='*62}")
     print(f"结论：{verdict}")
     if r["issues"]:
@@ -972,6 +1374,11 @@ def main():
             "version": "3.0.0",
             "level_arg": a.level,
             "hours_arg": a.hours,
+            # v3.16.0：口径与实际使用的区间入溯源块——复验时能反推"这条结论按哪张页数表出的"
+            "caliber_arg": a.caliber,
+            "caliber_used": s["caliber"],
+            "page_range_used": s["page_range"],
+            "page_caliber_default": THRESHOLD.get("page_caliber_default"),
             "thresholds": os.path.abspath(_RULES_PATH),
         }
         with open(a.json, "w", encoding="utf-8") as f:

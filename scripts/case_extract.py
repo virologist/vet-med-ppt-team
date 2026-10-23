@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# ── 归属声明（v3.16.0 补：本脚本此前只在正文提"留 verifier 抽检"，无明确归属）──
+# 所有者: 主理人 / 编排层（cases_library.json 登记册的维护责任人）
+# 主要消费方: dvm-content-expert（案例检索与三源核验）、pedagogy-architect（案例节点对齐）、verifier（10% 抽检）
+# 用途: 把 PPT 内"案例 1..5"页变成有 ID / 病种映射 / 三源核验 / 双向引用的结构化资产
+# 何时被调用: ① 课件入库扫描登记 `scan`；② 成员接疾病任务时先 `find` 再回退 Ima 检索
+# ─────────────────────────────────────────────────────────────────────
 """
 case_extract.py — vet-med-ppt-team 病例库登记册 v3.2.0-batch4
 

@@ -74,6 +74,12 @@
 - **跨成员信息流经主理人中转**：不直接对话（WorkBuddy 平台无 agent-to-agent 通道）
 - **产物路径显式**：每个成员产物声明绝对路径，主理人/verifier 跑 `verify-artifact` 落盘核验
 - **trace 是唯一时钟**：所有成员 spawn 走 `harness.py spawn --agent <name>` 留痕
+- **交接方式（v3.16.0 补口径单一源）**：`config/harness.yaml#context.handoff_mode = path_only`
+  ——成员只回传**落盘路径 + ≤800 字摘要**，全文不进对话
+- **回传信封字段（v3.16.0 补）**：唯一源 `references/result-envelope.yaml`（必填六字段）；
+  各成员 MD 只引用、不复述；校验 `harness.py verify-envelope --path <产出文件>`
+- **阶段/成员事实唯一源（v3.16.0 补）**：`config/harness.yaml#stages` 与 `#members`；
+  本文件与 `docs/architecture.md` 只给人读视图（`scripts/test_arch_drift.py` 机器比对防漂移）
 
 ## 6. v3.4.0 五条铁律（全团适用）
 

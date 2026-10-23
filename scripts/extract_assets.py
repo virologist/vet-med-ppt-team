@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-extract_assets.py — PPT 嵌入元素资产化提取器（v3.2.0-batch1）
+extract_assets.py — PPT 嵌入元素资产化提取器（v3.2.0-batch1 · v3.16.0 配图链路记录字段）
 
 > 适用场景：WF-2R 旧课件诊疗流水线 S1 资产化转换层。
 > 目标：把 PPT 嵌入元素从"靠人眼看"变成"机器可读 + 双向校验"，
 >       给 S2 诊断和 S3 C 轨施工提供真值；同时为 D11（修复对话框），
 >       D3（资产腐烂），D4（图表联动）提供数据基座。
+
+v3.16.0 变更（F8 配图链路补记录字段，针对九维度诊断 M3「配图链路几乎无记录」）：
+  1. 新增 4 个记录字段：width / height（EMU→px，取不到置 null 并写明原因）、
+     source_url（来源链接）、doi_pmcid（文献标识）——全部在 manifest 里有真实取值。
+  2. 许可纪律：license_note 默认值由「原课件自带」改为空字符串——原默认值等于
+     "默认可用"的错误暗示（与 adjudication-rules.md 原则六「不默认可用」冲突）。
+     license_note 为空时 reuse_status 必须为「待核查」；manifest 统计区块给出
+     「未登记许可的素材数」。
+  3. 新增 --require-license 门禁（默认关闭，不阻断既有流程）：存在空许可素材时
+     exit 1 + 前缀行数与 asset_id 清单。
+  4. 旧 manifest 兼容：AssetRecord.from_dict / load_manifest_records 缺字段容错。
+  默认值与提示语的机器源：references/asset-fields.yaml（人读说明见 extract_assets_usage.md §10）。
 
 依赖（宿主 venv 一次性安装，禁新增 requirements.txt —— 沿用 v3.1.0 惯例）：
   pip install python-pptx>=1.0.2 olefile>=0.46 Pillow>=10.0
@@ -21,18 +33,20 @@ extract_assets.py — PPT 嵌入元素资产化提取器（v3.2.0-batch1）
 
 退出码（与 harness.py 统一）：
   0 全部成功
-  1 完整性断言失败
+  1 完整性断言失败 / 许可门禁未过（v3.16.0：--require-license 命中空许可）
   2 形状识别异常（OLE/SmartArt 等）
   3 文件读取失败（IO/zip 损坏/路径无效）
   4 运行错误（脚本 bug、fixture 损坏、依赖缺失）
 
 CLI：
   python3 extract_assets.py <课件.pptx> [--out-dir DIR] [--dry-run] [--force] [--json]
+                            [--require-license]
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import io
 import json
@@ -43,10 +57,11 @@ import sys
 import tempfile
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, MISSING
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import typing
 
 try:
     from pptx import Presentation
@@ -63,6 +78,13 @@ except ImportError:
     olefile = None
     _HAS_OLEFILE = False
 
+try:
+    import yaml  # 配置登记块解析（与 verify_deck.py / case_extract.py 同依赖）
+    _HAS_YAML = True
+except ImportError:
+    yaml = None
+    _HAS_YAML = False
+
 # ============== 日志（INFO/ERROR 双级，不 silent）==============
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +92,94 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("extract_assets")
+
+# ============== 配置登记（v3.16.0）==============
+# 缘由：v3.16.0 之前 license_note 默认值「原课件自带」写死在代码里，等于"默认可用"的
+#   错误暗示（诊断 M3）。新增字段的默认值与缺值提示语同样不该散落硬编码。
+# 处置：默认值 / 缺值提示语 / EMU→px 换算系数集中登记在 **独立 yaml 文件**
+#   references/asset-fields.yaml（唯一机器源；人读说明在 extract_assets_usage.md §10，
+#   该 md 只做说明与指向，不再保留第二份可解析副本——避免"多源"）。
+#   读法与 verify_deck.py#_load_threshold() 读 config/visual-rules.yaml 同风格：
+#   显式路径 + 失败告警 + 内置回退（文件缺失/pyyaml 未装/YAML 语法错 → 回退，不阻断）。
+#   改 yaml 不同步改下面的内置回退值，会被 test_extract_assets.py T14 判「配置漂移」。
+_ASSET_FIELDS_PATH = Path(__file__).resolve().parent.parent / "references" / "asset-fields.yaml"
+
+_BUILTIN_ASSET_FIELD_CONFIG = {
+    "asset_fields": {
+        "emu_per_px": 9525,              # OOXML EMU → px 换算系数（1 px = 9525 EMU）
+        "width_default": None,           # 取不到尺寸时置 null（不是 0）
+        "height_default": None,
+        "source_url_default": "",        # 无来源链接时留空串
+        "doi_pmcid_default": "",         # 无文献标识时留空串
+        "license_note_default": "",      # v3.16.0：不再默认「原课件自带」
+        "reuse_status_default": "待核查",  # v3.16.0：统一语义（原「未决」）
+        "legacy_license_placeholders": ["原课件自带"],  # 旧 manifest 中的无效占位许可值
+        "size_missing_note": "宽高未取得：{reason}",
+        "legacy_placeholder_note": "旧占位许可值「{value}」已作废（v3.16.0），须人工重新登记",
+    },
+    "license_gate": {
+        "count_line": "未登记许可的素材数 = {n}",
+        "prefix": "未登记许可",
+        "summary_line": "未登记许可：{n} 条素材（--require-license 已启用，须补登记后重跑）",
+        "ids_line": "未登记许可明细：{ids}",
+        "reuse_violation_line": "许可纪律：{asset_id} license_note 为空但 reuse_status={status}（应为「{expected}」）",
+    },
+}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """浅层覆盖 + 二级字典合并；override 缺的键沿用 base（保证配置段可只写一部分）。"""
+    out = copy.deepcopy(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _load_asset_field_config() -> dict:
+    """优先读 references/asset-fields.yaml；失败回退内置值并告警（不阻断提取）。
+
+    与 verify_deck.py#_load_threshold() 同风格：显式路径 + 一次 yaml.safe_load +
+    内置回退。只读本文件一处，人读文档（extract_assets_usage.md）不再参与解析。
+    """
+    fallback = copy.deepcopy(_BUILTIN_ASSET_FIELD_CONFIG)
+    if not _HAS_YAML:
+        log.warning("pyyaml 未安装，asset-fields.yaml 无法解析，回退内置值")
+        return fallback
+    try:
+        with open(_ASSET_FIELDS_PATH, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except OSError as e:
+        log.warning("配置登记读取失败（%s: %s），回退内置值", _ASSET_FIELDS_PATH.name, e)
+        return fallback
+    except Exception as e:  # YAML 语法错等
+        log.warning("配置登记解析失败（%s: %s），回退内置值", _ASSET_FIELDS_PATH.name, e)
+        return fallback
+    if not isinstance(cfg, dict):
+        log.warning("配置登记不是字典结构（%s），回退内置值", _ASSET_FIELDS_PATH.name)
+        return fallback
+    # 只消费已知配置段；yaml 里的元信息键（如 version）与注释不参与合并
+    known = {k: v for k, v in cfg.items() if k in fallback}
+    return _deep_merge(fallback, known)
+
+
+_CFG = _load_asset_field_config()
+_AF = _CFG["asset_fields"]      # asset_fields 段
+_LG = _CFG["license_gate"]      # license_gate 段
+
+
+def _append_note(base: str, extra: str, sep: str = "｜") -> str:
+    """notes 拼接；任一侧为空时不插分隔符（保持既有 notes 文本不变形）。"""
+    base = base or ""
+    extra = extra or ""
+    if not extra:
+        return base
+    if not base:
+        return extra
+    return base + sep + extra
+
 
 # ============== 形状分类常量 ==============
 PIC_LIKE = {MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.PLACEHOLDER}
@@ -94,7 +204,10 @@ LARGE_MEDIA_BYTES = 50 * 1024 * 1024  # 50MB（D11 苗子告警阈值）
 # ============== 数据类 ==============
 @dataclass
 class AssetRecord:
-    """manifest 单条 schema（核心六字段 + 7 派生）。"""
+    """manifest 单条 schema（核心六字段 + v3.16.0 新增 4 记录字段 + 7 派生）。
+
+    默认值一律取自 _AF（机器源：references/asset-fields.yaml），不就地写死。
+    """
     asset_id: str
     type: str  # image|chart|video|table|diagram|ole
     source_page: int
@@ -103,8 +216,13 @@ class AssetRecord:
     raw_part: str
     render: str = ""           # 占位，Batch 2 渲染层补全
     sha256: str = ""
-    license_note: str = "原课件自带"
-    reuse_status: str = "未决"
+    # ── v3.16.0 新增：配图链路记录字段（取值口径与缺失语义见 usage 文档 §4.1）──
+    width: Optional[int] = _AF["width_default"]        # 显示宽度 px（EMU/emu_per_px 取整）
+    height: Optional[int] = _AF["height_default"]      # 显示高度 px；取不到为 null（不是 0）
+    source_url: str = _AF["source_url_default"]        # 来源链接；无则 ""
+    doi_pmcid: str = _AF["doi_pmcid_default"]          # 文献标识（DOI/PMCID）；无则 ""
+    license_note: str = _AF["license_note_default"]    # 许可登记；空 = 未登记（不默认可用）
+    reuse_status: str = _AF["reuse_status_default"]    # 未登记许可时为「待核查」
     notes: str = ""
     # 派生字段
     chart_part_refs: int = 0
@@ -114,6 +232,44 @@ class AssetRecord:
     source_deck_sha1: str = ""
     source_deck_mtime: str = ""
     pptx_schema: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AssetRecord":
+        """v3.16.0：从 manifest 字典回读，缺字段容错（旧 manifest 兼容策略）。
+
+        兼容规则（详见 references/extract_assets_usage.md §4.2）：
+          - 只取本类已声明字段，manifest 里的多余键忽略；
+          - 缺失字段用默认值补齐（width/height → null，source_url/doi_pmcid/license_note → ""）；
+          - license_note 命中 legacy_license_placeholders（如「原课件自带」）→ 视为未登记，
+            清空并在 notes 写明原因；
+          - license_note 为空但 reuse_status 不是「待核查」→ 归一为「待核查」。
+        """
+        d = d or {}
+        hints = typing.get_type_hints(cls)
+        kwargs = {}
+        for f, spec in cls.__dataclass_fields__.items():
+            if f in d:
+                kwargs[f] = d[f]
+            elif spec.default is MISSING and spec.default_factory is MISSING:
+                # 核心字段缺失（旧/损坏 manifest）：按声明类型补零值，不抛异常
+                kwargs[f] = 0 if hints.get(f) is int else ""
+        rec = cls(**kwargs)
+        # 旧占位许可值作废（M3：不默认可用）
+        if rec.license_note in (_AF.get("legacy_license_placeholders") or []):
+            rec.notes = _append_note(
+                rec.notes, _AF["legacy_placeholder_note"].format(value=rec.license_note)
+            )
+            rec.license_note = _AF["license_note_default"]
+        if not (rec.license_note or "").strip():
+            rec.reuse_status = _AF["reuse_status_default"]
+        return rec
+
+
+def load_manifest_records(manifest_path) -> list:
+    """v3.16.0：读取 manifest（含旧版）为 AssetRecord 列表，缺字段容错不抛异常。"""
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    return [AssetRecord.from_dict(x) for x in (manifest.get("assets") or [])]
 
 
 @dataclass
@@ -129,6 +285,10 @@ class ExtractionStats:
     integrity_passed: bool = False
     exit_code: int = 0
     warnings: list = field(default_factory=list)
+    # v3.16.0：许可登记统计
+    unlicensed_assets: int = 0                              # 未登记许可的素材数
+    unlicensed_asset_ids: list = field(default_factory=list)
+    license_gate_passed: bool = True                        # --require-license 门禁是否通过
 
 
 # ============== 形状分流器 ==============
@@ -221,11 +381,14 @@ class ShapeRouter:
 class AssetExtractor:
     """主控：open → 遍历 → 分流 → 写盘 → 完整性断言。"""
 
-    def __init__(self, pptx_path: str, out_dir: str, dry_run: bool = False, force: bool = False):
+    def __init__(self, pptx_path: str, out_dir: str, dry_run: bool = False, force: bool = False,
+                 require_license: bool = False):
         self.pptx_path = Path(pptx_path).resolve()
         self.out_dir = Path(out_dir).resolve()
         self.dry_run = dry_run
         self.force = force
+        # v3.16.0：许可门禁开关，默认关闭以免阻断既有流程（CLI: --require-license）
+        self.require_license = require_license
         self.stats = ExtractionStats()
         self.assets: list[AssetRecord] = []
         self.skipped: list[dict] = []
@@ -283,9 +446,9 @@ class AssetExtractor:
 
         # 6) 创建输出目录
         try:
-            self.out_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_dir(self.out_dir)
             for sub in ("images", "charts", "videos", "tables", "diagrams", "ole"):
-                (self.out_dir / sub).mkdir(exist_ok=True)
+                self._ensure_dir(self.out_dir / sub)
         except OSError as e:
             log.error("输出目录创建失败: %s", e)
             return 3
@@ -297,6 +460,17 @@ class AssetExtractor:
             import traceback
             log.error("提取过程崩溃: %s\n%s", e, traceback.format_exc())
             return 4
+
+        # 7.5) 许可纪律断言（写盘前）：license_note 为空 → reuse_status 必须为「待核查」
+        # v3.16.0：把"未登记许可"与"可复用"两个语义锁死，防止空许可被当作已授权流转。
+        ok_lic, lic_errs = self._assert_reuse_status_consistency()
+        if not ok_lic:
+            for e in lic_errs:
+                log.error("%s", e)
+            self.stats.license_gate_passed = False
+            self.stats.integrity_passed = False
+            self.stats.exit_code = 1
+            return 1
 
         # 8) 写 manifest
         try:
@@ -315,6 +489,17 @@ class AssetExtractor:
             return 1
 
         self.stats.integrity_passed = True
+
+        # 10) v3.16.0：--require-license 门禁（manifest 已落盘，便于照清单补登记）
+        gate_errs = self._check_license_gate()
+        if gate_errs:
+            for e in gate_errs:
+                log.error("%s", e)
+            self.stats.license_gate_passed = False
+            self.stats.exit_code = 1
+            return 1
+
+        self.stats.license_gate_passed = True
         self.stats.exit_code = 0
         return 0
 
@@ -329,6 +514,77 @@ class AssetExtractor:
         # 整合计数
         for a in self.assets:
             self.stats.assets_by_type[a.type] += 1
+        self._tally_license()
+
+    # ---------- v3.16.0：许可登记统计与门禁 ----------
+    def _unlicensed_assets(self) -> list:
+        """返回 license_note 为空（未登记许可）的素材列表。"""
+        return [a for a in self.assets if not (a.license_note or "").strip()]
+
+    def _tally_license(self):
+        """统计并打印「未登记许可的素材数」（默认流程必现，供人工与机器核对）。"""
+        bad = self._unlicensed_assets()
+        self.stats.unlicensed_assets = len(bad)
+        self.stats.unlicensed_asset_ids = [a.asset_id for a in bad]
+        log.info(_LG["count_line"].format(n=len(bad)))
+        return len(bad)
+
+    def _assert_reuse_status_consistency(self) -> tuple[bool, list]:
+        """写盘前断言：license_note 为空时 reuse_status 必须是「待核查」。"""
+        expected = _AF["reuse_status_default"]
+        errs = [
+            _LG["reuse_violation_line"].format(
+                asset_id=a.asset_id, status=a.reuse_status, expected=expected
+            )
+            for a in self._unlicensed_assets()
+            if a.reuse_status != expected
+        ]
+        return (len(errs) == 0, errs)
+
+    def _check_license_gate(self) -> list:
+        """--require-license 门禁：存在空许可素材时返回 [行数, asset_id 清单]，否则 []。"""
+        if not self.require_license:
+            return []
+        bad = self._unlicensed_assets()
+        if not bad:
+            return []
+        return [
+            _LG["summary_line"].format(n=len(bad)),
+            _LG["ids_line"].format(ids=", ".join(a.asset_id for a in bad)),
+        ]
+
+    # ---------- v3.16.0：尺寸（EMU→px）----------
+    def _shape_px_size(self, shape) -> tuple:
+        """取形状显示尺寸并换算为 px（EMU / emu_per_px，取整）。
+
+        返回 (width_px, height_px, reason)；reason 为空串表示取得成功，
+        非空时调用方须把 width/height 置 null 并把原因写进 notes。
+        """
+        default_w = _AF["width_default"]
+        default_h = _AF["height_default"]
+        try:
+            w_emu = shape.width
+            h_emu = shape.height
+        except Exception as e:
+            return default_w, default_h, f"shape.width/height 读取失败（{e}）"
+        if w_emu is None or h_emu is None:
+            return default_w, default_h, "shape.width/height 为 None"
+        try:
+            w_emu, h_emu = int(w_emu), int(h_emu)
+        except (TypeError, ValueError):
+            return default_w, default_h, f"shape 尺寸非数值（{w_emu!r}, {h_emu!r}）"
+        if w_emu <= 0 or h_emu <= 0:
+            return default_w, default_h, f"shape 尺寸非正（w={w_emu} h={h_emu} EMU）"
+        per_px = _AF["emu_per_px"] or 1
+        w_px, h_px = int(round(w_emu / per_px)), int(round(h_emu / per_px))
+        if w_px <= 0 or h_px <= 0:
+            return default_w, default_h, f"换算后不足 1px（w={w_px} h={h_px} px）"
+        return w_px, h_px, ""
+
+    @staticmethod
+    def _size_note(reason: str) -> str:
+        """尺寸取不到时的 notes 文本（模板登记在 references 文档 §10）。"""
+        return _AF["size_missing_note"].format(reason=reason) if reason else ""
 
     # ---------- 遍历 ----------
     def _walk_and_extract(self):
@@ -345,6 +601,8 @@ class AssetExtractor:
                     self.stats.large_media += 1
             if a.chart_part_refs > 1:
                 self.stats.shared_charts += 1
+        # v3.16.0：统计未登记许可的素材数（默认流程必打这一行）
+        self._tally_license()
 
     # ---------- 各类提取 ----------
     def _next_id(self) -> str:
@@ -377,11 +635,16 @@ class AssetExtractor:
         self._write_bytes(fpath, blob)
         sha = self._sha256_bytes(blob)
 
+        # v3.16.0：记录显示尺寸（EMU→px）；取不到置 null 并在 notes 写明原因
+        w, h, why = self._shape_px_size(shape)
+        # v3.16.0：source_url / doi_pmcid 由后续来源登记环节回填，本次留空串（缺失语义见 usage §4.1）
         rec = AssetRecord(
             asset_id=aid, type="image", source_page=page_num,
             shape_id=shape.name, file=fname,
             raw_part=self._find_raw_part_for_image(shape),
             sha256=sha, media_bytes=len(blob),
+            width=w, height=h,
+            notes=self._size_note(why),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -456,11 +719,14 @@ class AssetExtractor:
             note += f" 共享chart:被{refs}处引用"
             self.stats.warnings.append(f"p{page_num} {shape.name}: 共享 chart part 引用数={refs}（D4 联动风险）")
 
+        # v3.16.0：尺寸与来源登记字段（同 _extract_picture）
+        w, h, why = self._shape_px_size(shape)
         rec = AssetRecord(
             asset_id=aid, type="chart", source_page=page_num,
             shape_id=shape.name, file=fname_xml,
             raw_part=raw_part, sha256=sha_xml,
-            chart_part_refs=refs, notes=note,
+            width=w, height=h,
+            chart_part_refs=refs, notes=_append_note(note, self._size_note(why)),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -488,10 +754,14 @@ class AssetExtractor:
         self._write_text(self.out_dir / fname, md)
         sha = self._sha256_text(md)
 
+        # v3.16.0：尺寸与来源登记字段
+        w, h, why = self._shape_px_size(shape)
         rec = AssetRecord(
             asset_id=aid, type="table", source_page=page_num,
             shape_id=shape.name, file=fname,
             raw_part="", sha256=sha,
+            width=w, height=h,
+            notes=self._size_note(why),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -519,11 +789,15 @@ class AssetExtractor:
         elif size > LARGE_MEDIA_BYTES:
             notes = f"⚠️ 媒体 {size // (1024*1024)}MB 超 50MB（D11 苗子）"
 
+        # v3.16.0：尺寸与来源登记字段
+        w, h, why = self._shape_px_size(shape)
         rec = AssetRecord(
             asset_id=aid, type="video", source_page=page_num,
             shape_id=shape.name, file=fname,
             raw_part=self._find_raw_part_for_image(shape),
-            sha256=sha, media_bytes=size, notes=notes,
+            sha256=sha, media_bytes=size,
+            width=w, height=h,
+            notes=_append_note(notes, self._size_note(why)),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -574,11 +848,14 @@ class AssetExtractor:
         note_path = f"ole/{aid}.note.txt"
         self._write_text(self.out_dir / note_path, f"OLE 资产 {aid}\n页: {page_num}\nshape: {shape.name}\nnotes: {notes}\n需人工打开：可能含内嵌对象（Excel/Word/PDF 等）\n")
 
+        # v3.16.0：尺寸与来源登记字段
+        w, h, why = self._shape_px_size(shape)
         rec = AssetRecord(
             asset_id=aid, type="ole", source_page=page_num,
             shape_id=shape.name, file=fname,
             raw_part="", sha256=sha, media_bytes=len(blob),
-            notes=notes,
+            width=w, height=h,
+            notes=_append_note(notes, self._size_note(why)),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -590,7 +867,7 @@ class AssetExtractor:
         notes = "SmartArt 嗅探命中；diagrams 子目录导出 data1/layout/colors/quickStyle"
         target_dir = self.out_dir / "diagrams" / aid
         if not self.dry_run:
-            target_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_dir(target_dir)
         try:
             for child in shape._element.iter():
                 tag = child.tag
@@ -600,11 +877,14 @@ class AssetExtractor:
         except Exception as e:
             self.stats.warnings.append(f"p{page_num} {shape.name}: SmartArt XML 提取失败 {e}")
 
+        # v3.16.0：尺寸与来源登记字段
+        w, h, why = self._shape_px_size(shape)
         rec = AssetRecord(
             asset_id=aid, type="diagram", source_page=page_num,
             shape_id=shape.name, file=f"diagrams/{aid}/",
             raw_part="", sha256="",
-            notes=notes,
+            width=w, height=h,
+            notes=_append_note(notes, self._size_note(why)),
             extracted_at=datetime.now().isoformat(timespec="seconds"),
             source_deck_sha1=self._sha1, source_deck_mtime=self._mtime,
         )
@@ -628,17 +908,30 @@ class AssetExtractor:
                         self._chart_part_ref_count[tgt] = self._chart_part_ref_count.get(tgt, 0) + 1
 
     # ---------- 写盘/哈希辅助 ----------
+    @staticmethod
+    def _ensure_dir(path: Path):
+        """建目录：显式先判存在，再建。
+
+        v3.16.0 修复：本机 WorkBuddy Python shim 的 Path.mkdir 走宿主代理实现，
+        对**已存在**目录仍抛 FileExistsError（EEXIST），即 exist_ok=True 不生效 →
+        `--force` 重跑到 step6 直接 exit 3（输出目录已存在）、写素材时同样会炸。
+        故显式判存在后再建；**不用裸 try/except 吞异常**，以免把权限不足/只读盘/
+        路径被文件占用等真实 OSError 一起静默掉（那类错误仍由调用方上报）。
+        """
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+
     def _write_bytes(self, path: Path, data: bytes):
         if self.dry_run:
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir(path.parent)
         with open(path, "wb") as f:
             f.write(data)
 
     def _write_text(self, path: Path, text: str):
         if self.dry_run:
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir(path.parent)
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
 
@@ -694,6 +987,13 @@ class AssetExtractor:
             "zero_byte_media": self.stats.zero_byte_media,
             "large_media": self.stats.large_media,
             "shared_charts": self.stats.shared_charts,
+            # v3.16.0：许可登记统计（「未登记许可的素材数」= unlicensed_assets）
+            "unlicensed_assets": self.stats.unlicensed_assets,
+            "unlicensed_asset_ids": list(self.stats.unlicensed_asset_ids),
+            "license_gate": {
+                "require_license": self.require_license,
+                "passed": self.stats.license_gate_passed,
+            },
             "warnings": list(self.stats.warnings),
             "assets": [asdict(a) for a in self.assets],
         }
@@ -730,6 +1030,7 @@ class AssetExtractor:
                 errs.append(f"{a.asset_id} 读取失败: {e}")
         # 断言 2：manifest 自身可解析 + 含 schema_version
         manifest_path = self.out_dir / "manifest.json"
+        m: dict = {}   # v3.16.0：解析失败时也要能安全走到后续断言（原实现会 NameError）
         try:
             with open(manifest_path, encoding="utf-8") as f:
                 m = json.load(f)
@@ -741,6 +1042,20 @@ class AssetExtractor:
         if "assets" in m and "assets_count" in m:
             if len(m["assets"]) != m["assets_count"]:
                 errs.append(f"assets_count={m['assets_count']} 与实际 {len(m['assets'])} 不一致")
+        # 断言 4（v3.16.0）：manifest 必须带 4 个新记录字段键，且可被 from_dict 回读
+        # （回读走的是旧 manifest 兼容路径，等于每次全量跑都自测一遍容错逻辑）
+        for raw in (m.get("assets") or []):
+            missing = [k for k in ("width", "height", "source_url", "doi_pmcid") if k not in raw]
+            if missing:
+                errs.append(f"{raw.get('asset_id', '?')} 缺记录字段键: {', '.join(missing)}")
+        try:
+            recs = [AssetRecord.from_dict(x) for x in (m.get("assets") or [])]
+            if len(recs) != len(m.get("assets") or []):
+                errs.append("manifest assets 回读条数不一致")
+            if "unlicensed_assets" not in m:
+                errs.append("manifest 缺 unlicensed_assets（未登记许可的素材数）")
+        except Exception as e:
+            errs.append(f"manifest assets 回读失败: {e}")
         return (len(errs) == 0, errs)
 
     # ---------- dry-run 输出 ----------
@@ -755,6 +1070,10 @@ class AssetExtractor:
             "zero_byte_media": self.stats.zero_byte_media,
             "large_media": self.stats.large_media,
             "shared_charts": self.stats.shared_charts,
+            # v3.16.0：dry-run 也报未登记许可的素材数（S0 接单即可估许可核查工作量）
+            "unlicensed_assets": self.stats.unlicensed_assets,
+            "unlicensed_asset_ids": list(self.stats.unlicensed_asset_ids),
+            "require_license": self.require_license,
             "warnings": list(self.stats.warnings),
         }
         return json.dumps(out, ensure_ascii=False, indent=2)
@@ -770,6 +1089,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只读不写盘，输出 JSON 预测")
     ap.add_argument("--force", action="store_true", help="覆盖已有 manifest.json")
     ap.add_argument("--json", action="store_true", help="dry-run 时输出 JSON 到 stdout")
+    ap.add_argument(
+        "--require-license", dest="require_license", action="store_true",
+        help="v3.16.0 许可门禁：存在 license_note 为空的素材时 exit 1 并列出 asset_id"
+             "（默认关闭，不阻断既有流程）",
+    )
     args = ap.parse_args()
 
     pptx_path = Path(args.pptx).resolve()
@@ -784,6 +1108,7 @@ def main():
         out_dir=str(out_dir),
         dry_run=args.dry_run,
         force=args.force,
+        require_license=args.require_license,
     )
     rc = extractor.run()
 
@@ -793,9 +1118,15 @@ def main():
         print(extractor.emit_dry_run_json())
 
     if rc == 0:
-        log.info("✓ 全部成功（%d 条资产，%d 张幻灯片）", len(extractor.assets), extractor.stats.total_slides)
+        log.info("✓ 全部成功（%d 条资产，%d 张幻灯片，未登记许可 %d 条）",
+                 len(extractor.assets), extractor.stats.total_slides,
+                 extractor.stats.unlicensed_assets)
     elif rc == 1:
-        log.error("✗ 完整性断言失败（exit 1）")
+        if not extractor.stats.license_gate_passed:
+            log.error("✗ 许可门禁未过（exit 1）：按上方「%s」明细补登记 license_note 后重跑",
+                      _LG["prefix"])
+        else:
+            log.error("✗ 完整性断言失败（exit 1）")
     elif rc == 2:
         log.error("✗ 形状识别异常（exit 2）")
     elif rc == 3:

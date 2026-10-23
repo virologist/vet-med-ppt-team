@@ -1,0 +1,44 @@
+# asset-fields.yaml — extract_assets.py「配图链路记录字段 + 许可门禁」的机器可读配置唯一源
+# ══════════════════════════════════════════════════════════
+# v3.16.0 新增（F8 配图链路补记录字段）。
+#
+# 立项依据（九维度诊断 M3「配图链路几乎无记录」）：
+#   v3.16.0 之前 license_note 默认值「原课件自带」写死在代码里，等于"默认可用"的错误暗示，
+#   与 adjudication-rules.md 原则六冲突；新增字段的默认值与缺值提示语同样不该散落硬编码。
+#
+# 消费方：scripts/extract_assets.py（_load_asset_field_config 读本文件；失败回退内置值并告警）
+# 人读说明：references/extract_assets_usage.md §4.1（取值口径/缺失语义）、§10（指向本文件的说明）
+#
+# 为什么是独立 yaml 文件而不是 md 里嵌 yaml 块：
+#   包内机器可读配置一直是独立 yaml 文件（references/audience-profile-schema.yaml、
+#   references/result-envelope.yaml）或 config/*.yaml（如 verify_deck.py 读 visual-rules.yaml）。
+#   在 md 里嵌可解析副本 = 开第三个范式，将来没人确定该去哪份 md 找配置（"多源"病根）。
+#   本文件是唯一机器源；usage.md 只做人读表格 + 指向本文件，**不保留第二份可解析副本**。
+#
+# 纪律：改本文件的任何值都会改变脚本行为 —— 必须同步改 scripts/extract_assets.py 的
+#   _BUILTIN_ASSET_FIELD_CONFIG，否则 test_extract_assets.py T14 判「配置漂移」失败。
+
+version: "3.16.0"
+
+# ── 记录字段默认值 / 缺值提示语 / 换算系数 ────────────────────
+asset_fields:
+  emu_per_px: 9525                      # OOXML EMU → px 换算系数（1 px = 9525 EMU）
+  width_default: null                   # 取不到尺寸时置 null（**不是 0**）
+  height_default: null
+  source_url_default: ""                # 无来源链接时留空串
+  doi_pmcid_default: ""                 # 无文献标识时留空串
+  license_note_default: ""              # v3.16.0：不再默认「原课件自带」（不默认可用）
+  reuse_status_default: "待核查"         # v3.16.0：统一语义（原「未决」）
+  legacy_license_placeholders: ["原课件自带"]   # 旧 manifest 中的无效占位许可值，读到即作废
+  size_missing_note: "宽高未取得：{reason}"
+  legacy_placeholder_note: "旧占位许可值「{value}」已作废（v3.16.0），须人工重新登记"
+
+# ── 许可门禁输出文案（同为"提示语"，一并登记，不写死在代码里）──
+# 说明：本段与 asset_fields 同属"配图链路许可登记"配置，故与之上表同文件；
+#   若将来许可门禁独立成段，可整体迁出，脚本只需改 _load_asset_field_config 的取值键。
+license_gate:
+  count_line: "未登记许可的素材数 = {n}"          # 默认流程必打的统计行
+  prefix: "未登记许可"                            # 门禁输出前缀（grep 用）
+  summary_line: "未登记许可：{n} 条素材（--require-license 已启用，须补登记后重跑）"
+  ids_line: "未登记许可明细：{ids}"                # {ids} = 逗号分隔的 asset_id 清单
+  reuse_violation_line: "许可纪律：{asset_id} license_note 为空但 reuse_status={status}（应为「{expected}」）"

@@ -104,6 +104,111 @@ validation:
   # 归一化后仍缺 required 字段 → 判 partial 退回
   normalize_before_check: true
 
+  # ── 内容判据（v3.16.0 新增：**改这里即改校验器**）─────────────────────
+  # 背景（真实缺陷）：fields.*.rule 写了语义（confidence 禁裸标签、deliverable_summary
+  #   禁裸表述），但 harness.py#cmd_verify_envelope 只判"字段存在且非空"——
+  #   `confidence:"高"` 能过校验，规则与校验器是两套，"改这里即改校验器"不成立。
+  #
+  # 原则：词表、正则、阈值、严重度**全在本段**，harness.py 只做执行
+  #   （读取 → 按 id 找执行器 → 判定）。新增规则只改本文件 + 在 harness.py 注册执行器；
+  #   规则已声明但 harness.py 无对应执行器时，校验器会**显式告警**（不许静默跳过）。
+  #
+  # 字段含义：
+  #   id        —— 规则标识（harness.py 的执行器按此名注册）
+  #   field     —— 作用于哪个信封字段
+  #   enabled   —— false 时**显式跳过**并在校验输出里列出（不许偷偷不判）
+  #   severity  —— fail=判失败（exit 1）/ warn=只告警（exit 0，但输出 warnings）
+  #   rule_ref  —— 报错时引用的人读原文路径（定位到本文件的哪一条语义）
+  content_rules:
+    - id: confidence_not_bare
+      field: confidence
+      enabled: true
+      severity: fail
+      rule_ref: "fields.confidence.rule"
+      reason: "自评置信度必须带依据；裸标签（高/中/low…）无法复核，等同自评失真"
+      message: "confidence 不得是裸标签——须带可复核依据（数字计数 / 文件路径 / 命令或工具名）"
+      # ① 命中裸值集合即判失败（整值比对，去空白、忽略大小写）
+      bare_values: ["高", "中", "低", "较高", "较低", "很高", "一般",
+                    "high", "medium", "low", "very high", "ok", "good", "n/a"]
+      # ② 未命中裸值集合、但长度过短且不含任何证据 → 同样判失败
+      #    （长度阈值取 20：实测合规写法"依据 scripts/verify_deck.py 复算 P0=0/P1=2"远长于此；
+          #    取过大则漏判、过小则误伤长而无据的套话，此值是可调参数不是铁律）
+      max_bare_length: 20
+      # 证据三类，任一命中即算"带依据"
+      evidence_patterns:
+        - id: numeric_count
+          pattern: '[0-9零一二三四五六七八九十百千万两]'
+          desc: "数字计数（P0=0 / 6 页 / 0.85 / 三处）"
+        - id: file_path
+          pattern: '[\w.\-~]+(?:[\\/][\w.\-]+)+'
+          desc: "文件路径（scripts/verify_deck.py、/tmp/x.md 等含分隔符的路径）"
+        - id: tool_or_command
+          pattern: '`[^`]{2,}`|\b(?:python3|pytest|git|grep|lint|harness\.py|verify_deck\.py|ooxml_lint\.py|case_extract\.py|snapshot\.py|surgery_deck\.py)\b'
+          desc: "反引号包裹的命令，或已登记的工具/脚本名"
+
+    - id: deliverable_summary_verifiable
+      field: deliverable_summary
+      enabled: true
+      severity: fail
+      rule_ref: "fields.deliverable_summary.rule"
+      reason: "产出摘要须含可验证计数（落盘路径 + 原始 P0/P1/P2 计数）；裸表述无法复核"
+      message: "deliverable_summary 不得是裸表述——须含可验证计数（数字计数或落盘路径），并避免『已优化/归零/100%』类无据措辞"
+      # ① 命中裸词集 且 不含任何可验证计数 → 判失败
+      bare_terms: ["已优化", "已修复", "已完善", "已解决", "已完成", "归零", "清零",
+                   "100%", "全部完成", "全部通过", "全部达标", "无问题", "已达标"]
+      # 命中裸词后，**先把命中的裸词从文本里剔除**再判"有没有可验证计数"（v3.16.0 实测修正）：
+      #   漏网反例："问题已修复归零" 里的"归零"含汉字数字"零"，被证据正则当成"有计数"
+      #     → 判据失灵（裸表述自己给自己提供了"计数"）。剔除裸词后剩余"问题"→ 无计数 → 判失败。
+      #   同时保住不误伤：'已优化 6 页正文，落盘 demo_wip/v3.pptx；P0=0' 剔除"已优化"后
+      #     仍有落盘路径 + 原始计数 → 不判失败（裸词此时只是措辞瑕疵，不是自评失真）。
+      evidence_check_excludes_bare_terms: true
+      # ② 长度过短 且 不含任何可验证计数 → 判失败（如 "ok" / "完成"）
+      min_verifiable_length: 24
+      evidence_patterns:
+        - id: numeric_count
+          pattern: '[0-9零一二三四五六七八九十百千万两]'
+          desc: "数字计数（6 页 / P0=0 / 3 条）"
+        - id: file_path
+          pattern: '[\w.\-~]+(?:[\\/][\w.\-]+)+'
+          desc: "落盘路径"
+
+    - id: status_issues_consistency
+      field: status
+      enabled: true
+      severity: fail
+      rule_ref: "fields.status.criteria"
+      reason: "success 的判据是『完整满足任务包 objective，且 issues 为空』；issues 非空还自评 success 即自评失真"
+      message: "status 与 issues 不一致：issues 非空时 status 应为 partial（或 failed/blocked），不得自评 success"
+      # 取舍（如实写明为什么不选告警）：告警会被下游当成"可放行"，而自评失真正是要杜绝的行为；
+      #   且本条判据完全确定（issues 非空是布尔事实），不存在误判空间，故取 fail。
+      inconsistent_pairs:
+        success: "issues 非空"
+
+    - id: metrics_keys_subset
+      field: metrics
+      enabled: true
+      severity: warn
+      rule_ref: "fields.metrics.keys"
+      reason: "metrics 是选填自增字段；未知键说明新增了未登记的指标，应留痕供主理人决定是否补进 keys"
+      message: "metrics 出现 fields.metrics.keys 之外的键——请补登记或改用已登记键名"
+      # 取舍：只告警不失败——判失败会逼成员删指标或谎报键名（比不登记更糟），
+      #   而"未登记指标"本身不造成自评失真，属可追溯性瑕疵。
+      allowed_keys_from: "fields.metrics.keys"
+
+    # ── 显式禁用（不是偷偷跳过）───────────────────────────────────────
+    - id: confidence_requires_evidence_array
+      field: confidence
+      enabled: false
+      severity: fail
+      rule_ref: "fields.confidence.rule"
+      reason: "（候选规则）带依据的 confidence 必须另附非空 evidence 数组"
+      disabled_reason: >-
+        判据天然模糊、无法校准：「依据充分到什么程度必须另给 evidence 数组」没有可判定的界，
+        且纯计算/纯格式类任务确实没有外部证据条目，启用会稳定产生假阳性（合格回传被判失败），
+        而假阳性会逼成员注水凑 evidence，比原缺陷更糟。
+        故显式置 enabled=false，由 harness.py 在校验输出里列出"已禁用规则"，不做静默跳过。
+        启用前置条件：先跑 ≥20 例真实成员回传做假阳性率校准，把实测数字回填到本注释再改 true。
+
 # ── 反向漂移守卫（供 ensure_settings 第 17 项扫描）─────────────────────
 drift_guard:
   forbidden_in_references_and_agents:

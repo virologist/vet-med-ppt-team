@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# ── 归属声明（v3.16.0 补：本脚本此前无任何 agent 归属声明）────────────
+# 执行者: ppt-producer（郅作基，批量施工）｜迁移与否的裁决: pedagogy-architect + visual-slide-designer 联合判定
+# 用途: PPTX 模板迁移三档（T1 主题级 / T2 母版级 / T3 重灌级）+ 模板指纹登记
+# 何时被调用: 整套课件"统一更换模板"任务——**dry-run 先行**，`migrate` 必须带 --confirm
+# ─────────────────────────────────────────────────────────────────────
 """
 template_migrate.py — PPTX 模板迁移工具（v3.2.0-batch3）
 

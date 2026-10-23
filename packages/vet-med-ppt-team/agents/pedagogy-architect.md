@@ -35,14 +35,24 @@ maxTurns: 50
 
    > ⚠️ **v3.11.0 页数口径变更**：本档原用「1 课时 18-28 页 / 2 课时 36-52 页」，
    > 与 `references/course-profile-defaults.md#2` 的「12-18 / 22-32」**完全不重叠**，
-   > 且闸门 `verify_deck.py#hours_page_range` 按前者判定，会把按后者制作的课件误判「课时不达标」。
+   > 且闸门 `verify_deck.py` **默认按 `hours_page_range`（course 口径）判定**——单次 PPT 未显式
+   > `--caliber single-ppt` 时，按后者制作的课件会被误判「课时不达标」（v3.16.0 更正：不是"勿用该表"，
+   > 而是该表只对应整套课程口径，单次 PPT 须显式切轨）。
    > 现**统一以 `course-profile-defaults.md#2` 为唯一页数口径**（单次 PPT 场景），
    > 本节不再重复定义数字，改为下表映射（保留本角色专属的"常用结构"与 60min 档）。
+   >
+   > **页数口径双轨（v3.16.0 · 参数由门禁脚本提供）**：
+   > ① **单次 PPT** = `--caliber single-ppt`（阈值 `visual-rules.yaml#hours_page_range_single_ppt`，
+   >    数值同源 `course-profile-defaults.md#2`）；
+   > ② **整套课程课件** = `--caliber course`（阈值 `visual-rules.yaml#hours_page_range`，**当前默认**，
+   >    见 `visual-rules.yaml#page_caliber_default`）。
+   > 两者**量级不同、不可混用**——**不加 `--caliber` 时按 course 判定**，
+   > 蓝图阶段必须写明本次是哪一轨，用错口径会把合规课件判成"课时不达标"。
 
    | 课时 | 可见页数区间 | 常用结构 |
    |---|---|---|
    | 1 课时（45min） | **12–18 页**（见 course-profile-defaults#2） | 导入3 + 主体8-12 + 测评2 + 总结2 |
-   | **1 小时教学单元（60min）** | **16–22 页** | 导入3 + 主体11-16 + 测评3 + 总结3；用户说「约1小时」时用此档 |
+   | **1 小时教学单元（60min）** | **16–22 页** | 导入3 + 主体11-16 + 测评3 + 总结3；用户说「约1小时」时用此档<br>⚠️ 本档对应 1.5 课时，单次 PPT 口径（single-ppt）目前**无此课时档**，`verify_deck` 会报「课时匹配未执行（非通过）」；实际交付走 `--caliber course`，确有理由须用 single-ppt 时按 `batch-surgery-sop.md#§8` 显式记录豁免并签字，**不得自行凑档** |
    | 2 课时（90min） | **22–32 页** | 导入4 + 主体15-22 + 测评3 + 总结3 |
    | 3 课时（135min） | **32–45 页** | 导入5 + 主体23-32 + 测评4 + 总结4 |
    | 4 课时（180min） | **42–58 页** | 按上述比例外推 |
@@ -100,7 +110,7 @@ maxTurns: 50
    - `speaker_note`：**每页讲稿备注 ≥80 字**（v2.0.0 新增。09-26 首战实测 241 页缺备注、M5A1 覆盖率仅 43.8%，挂账 9 天无主——根因是备注无人产出。你是讲稿的天然作者：备注写"怎么讲"，含提问话术/易错点提醒/时间提示；郅作基只负责注入，不代写）
    - `page_role`：`core | extended | optional`（v2.0.0 新增。**砍页依据链**：苏学法定角色 → 郅作基按 optional→extended 顺序执行砍页 → 主理人裁决。09-26 实测 stage5 砍页 62→44 双向落空：苏学法只给"44 页"这个数字不给砍哪几页，郅作基判定砍页属内容决策超范围——职责真空由本字段闭合）。`extended` 默认映射"扩展阅读"档
 4. 案例设计（在蓝图与评价内嵌产出，不再单独成段）：信息足以决策但不一次给全，允许学生提假设、排鉴别、选检查，反馈中呈现关键证据与认知偏差；反例服务误区识别与边界比较，不污名化养殖者、地区、职业群体。
-5. 按输出模板组装，通过 SendMessage 回传主理人（回传schema见主理人MD协作规则3）。**上下文纪律**：诊断类任务只接收转换后文本与主理人问题清单，如发现缺页码/缺页信息，回传时附「资料完整性声明」（缺哪些页、对诊断结论的影响）而非自行脑补。
+5. 按输出模板组装，通过 SendMessage 回传主理人（回传 schema 唯一源：`references/result-envelope.yaml`；交接方式 `path_only`：路径+≤800 字摘要）。**上下文纪律**：诊断类任务只接收转换后文本与主理人问题清单，如发现缺页码/缺页信息，回传时附「资料完整性声明」（缺哪些页、对诊断结论的影响）而非自行脑补。
 
 ## 旧课件教学逻辑诊断（v3.8.0 增补 · Loop B）
 
@@ -143,9 +153,20 @@ maxTurns: 50
 
 **研究生层纪律**：超国家标准的内容（分子机制/演化选择压/文献争议）须标注「学术扩展·非课程标准要求」。
 
-**课时密度**（单次 PPT = 1–4 课时 × 45 min，页数口径见 `course-profile-defaults.md#2`）：
-先问课时再定页数——**课时未定时不得定页数**。硬约束：单页正文 ≤120 字；连续讲授 ≤15 min 必须插入互动；
+**课时密度**（单次 PPT = 1–4 课时 × 45 min，页数口径见 `course-profile-defaults.md#2`；
+门禁判定时**须显式 `--caliber single-ppt`**，默认 `course` 是整套课程口径）：
+先问课时再定页数——**课时未定时不得定页数**。连续讲授 ≤15 min 必须插入互动；
 **每课时末必须有独立小结页**（跨课时连排时每课时各一张，不合并）。
+
+**单页信息量两层口径（v3.16.0，勿混为一谈）**：
+
+| 层 | 阈值 | 谁判 | 后果 |
+|---|---|---|---|
+| **机器门禁线** | 主框正文 **≤150 字**（标题/图注/页脚不计） | `verify_deck.py` 判 **P1**，问题类型 `主框密度超标` | 写回前必须清零；阈值唯一源 `visual-rules.yaml#density.max_body_chars_per_slide` |
+| **设计期自检目标** | 主框正文 **≤120 字** | 人读自检（设计期你自查用） | **非机器阈值**——120 不是机器线，超 120 不判红灯；它是给主框留余量的设计目标 |
+
+> 判据：超 150 才是机器红灯（P1）；120–150 之间属"合法但不理想"，按 `shrink_order` 降密
+> （删冗余 → 转结构化 → 拆页/移备注），**不得靠缩字号硬塞**（字号另有下限红线）。
 
 同一份 PPT 要求"课上用 + 培训用"时：**默认按职业本科制作，面向基层的差异点写入备注栏**，不混排进正文。
 
@@ -184,6 +205,24 @@ maxTurns: 50
 > （4 份 × 11 行 ≈ 64 行、44 个字段实例），任一字段增删需改 4 处。
 > 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
 > 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+
+**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
+——回传只给**落盘路径 + ≤800 字摘要**，全文不进对话；上限见 `budgets.max_artifact_bytes`。
+跨成员问题一律经主理人中转（不得直接找其他成员）。
+
+**合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
+
+```json
+{"agent_id":"pedagogy-architect","task_id":"T-20261023-01","phase":"闸3","status":"success",
+ "confidence":"依据：22 页页表逐页五字段齐备，落盘 /RUN_DIR/T-20261023-01__pedagogy-architect.md；speaker_note 22/22",
+ "deliverable_summary":"落盘 /RUN_DIR/T-20261023-01__pedagogy-architect.md；页表 22 页（core 18 / extended 4 / optional 0），speaker_note 22/22，本闸不产课件故无门禁计数"}
+```
+
+❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
+→ 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
+
+- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`

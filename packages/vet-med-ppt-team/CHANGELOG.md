@@ -6,6 +6,150 @@
 
 ---
 
+## [v3.16.0] - 2026-10-23
+
+### 概述（九维度独立诊断整改：F1–F9 全部落地 · 治「声明层与执行层两张皮」）
+
+本次整改的起点是一份**从零开始的九维度独立诊断**（4 个只读子代理并行覆盖 + 主理人复核），
+确认 7 条高严重度短板（H1 页数口径冲突 / H2 三源阈值双重声明 / H3 信封字段规则不被消费 /
+H4 单页文字三套数值 / H5 缺「修复不得降级」条款 / H6 无质量收敛判据 / H7 领域知识零沉淀）。
+
+**诊断同时推翻了此前两个「已修复」的自评**：
+
+| 此前声称 | 实际 | 后果 |
+|---|---|---|
+| v3.13.0「页数口径冲突已消解」 | 只改了 MD，没改 yaml、没给代码豁免 | 按 MD 口径做的课件必被闸 4 P0 阻断 |
+| v3.15.0「第 18 项已用 AST 精确判据」 | 提示数从 83 变 89，判据变了但未同步口径说明 | 判据变更未声明 |
+
+> **本版贯穿的纪律**：每条规则必须回答「谁执行 / 什么算违反 / 违反后走到哪一步」。
+> 凡「写在文档里但没有执行者」的，一律治本（要么实现读取、要么删掉、要么显式登记为待办），
+> 不再允许「看起来有护栏、实际不设防」。
+
+### ① 页数双口径（F1 · 治 H1）
+
+`config/visual-rules.yaml` 保留 `hours_page_range`（整套课程口径）并新增
+`hours_page_range_single_ppt`（单次 PPT，取 `course-profile-defaults.md#2` 的 12–18/22–32/32–45/42–58）
+与 `page_caliber_default: "course"`；`verify_deck.py` 新增 `--caliber {course,single-ppt}`。
+
+**默认恒为 `course`，绝不因使用场景静默切换**——规则引擎猜场景 = 同一份文件可能给出不同结论。
+单次 PPT 必须显式 `--caliber single-ppt`。
+验证：同一份 24 页课件，`--caliber course --hours 2` 判「课时不达标」(36-52)，
+`--caliber single-ppt --hours 2` 通过 (22-32)，结论相反；不加参数与显式 course 输出一致。
+
+**缺档不再静默通过**：单次 PPT 口径只定义 1/2/3/4 课时，故 `--hours 1.5` 报
+「课时匹配未执行（非通过）」，`hours_ok=false` 明确表示**未判定**（既非达标也非不达标），
+计入 P3 明示、不阻断写回。**本版不推导 1.5 课时的新页数区间**——没有依据的数字宁可不写。
+
+### ② 单页主框字数真接线（F4 · 治 H4）
+
+`density.max_body_chars_per_slide: 150` 从 v3.5.0 起就配在 yaml 里却**零代码引用**，
+本版接入 `verify_deck.py`「主框密度」检查：排除标题占位符、图注/来源、页脚页码框后统计，
+超出发问题类型 `主框密度超标`（级别 **P1**，已显式登记进 `severity.P1`）。
+
+**三个数字各司其职，不再混为一谈**：400 看整页（发「文字墙」P1）／150 看主框（机器门禁）／120 看草稿（设计期自检目标，**机器不读**）。
+
+**附带修正一个类别错误**：`_TYPE_LEVEL` 未登记类型的默认级别此前是 `P0`——
+未知类别的严重性是未知的，默认判最严没有依据，且会让新检查在标定期就拦死课件（进而诱导绕过门禁）。
+改为不落任何级别、计入 P3 明示并列进 `stats.unknown_red_keys`，由单测 `T_red_keys_in_severity` 守着
+「现有 red 键必须全部已登记」，因此**不改变任何现有问题的分级结果**。
+
+### ③ 三源阈值单一数据源（F2 · 治 H2）
+
+删除 `harness.yaml#budgets` 里与 `domain_config.yaml#three_source_check` 重复的两个键，
+`harness.py` 的 `budget` 改读后者并在输出中标明 `config_source`；
+`executed_by` 由错误的「verify_deck.py#闸4.5」更正为真实函数 `_load_three_source_thresholds()`。
+
+**新增体检第 21 项**（阻断）作复发防线：双重声明检测 + 运行时断言
+（`budget check` 的值必须等于 domain_config 的值且来源指向 domain_config）。
+这条同时补上了第 18 项 AST 判据的已知盲区——「读了 fallback 而没读配置」静态原理上查不出，只能靠运行时断言。
+
+### ④ 回传信封字段规则落地（F3 · 治 H3）
+
+`references/result-envelope.yaml` 新增 `validation.content_rules`（5 条），`harness.py` 真实消费：
+confidence 禁裸标签 / deliverable_summary 须含可验证计数 / `status=success` 须 `issues` 为空 /
+metrics 键须为子集（未知键只告警）。规则、词表、正则全部读 yaml，代码只做执行。
+
+**取舍已写入代码注释**：`status=success` 且 `issues` 非空判**失败**（告警会被当可放行，拦不住自评失真）；
+metrics 未知键判**告警**（选填自增字段，判失败会逼成员删指标或谎报键名）。
+
+**顺带修掉一条判据漏网**（由新单测反向验证抓出，非测试写错）：`"问题已修复归零"` 曾因
+「归零」的汉字被证据正则当成可验证计数而逃过拦截——修法是命中裸词后**先剔除裸词再判计数**
+（`evidence_check_excludes_bare_terms`），判据侧修而非放宽覆盖面。
+
+### ⑤ 质量收敛判据（F6 · 治 H6）
+
+`loop_b.budgets.no_progress_threshold` 此前**零命中**（配了无执行者），五类终止条件全是工作量/交互维度，
+机器检不出「缺陷数已不再下降」。现于每轮 `continue` 落质量快照，连续 N 轮 P0+P1 未下降即
+exit 1 + 终止建议 + trace 事件 `no_progress`。
+
+**报告优先于自报**：`--verify-json <verify_deck 报告>` 从机器复算结果取数；
+手工 `--p0/--p1/--p2` 保留但标注「自报值，未经交叉核验」；两者冲突以报告为准并留证；
+报告缺字段/不可解析 → **显式报错，不静默退回手工值也不按 0 处理**。
+另：`quality_history` 必须登记进 `context.state_allowed_keys` 白名单，否则写入被静默拒绝（联动已在代码注释标明）。
+
+### ⑥ 修复不得降级（F5 · 治 H5）
+
+`references/batch-surgery-sop.md` 新增 §8：`adjudication-rules.md`、`references/sop-stages.md`、
+`agents/verifier.md` **三处降级授权**同步加约束——降级须①主理人显式签字 ②理由+恢复期限+受影响检查项清单
+③留痕可回滚，**缺任一步 = 未完成，门禁仍按原判据计**。明确「调字号改版面 ≠ 降级，把 12pt 红线往下调 = 降级」，
+并把「为让红灯变绿而放宽判据」定义为无效修复 + 自引入缺陷。
+
+### ⑦ 领域知识最小集（F7 · 治 H7）
+
+新增 `references/poultry-disease-index.md`（24 条家禽疫病索引 + 8 种实验室诊断方法对照表），
+填补此前全包 `ELISA`/`PCR`/`血凝`/`药敏` **均 0 命中**的空白。
+**零处编造编号/数值**：发病率、滴度阈值、药敏折点、国标编号、DOI/PMID 一处未写，
+不确定项（如 FAdV 血清型-综合征对应、HI/ELISA 判定阈值）就地标 ⚠️ 并集中列入「待人工核实」13 项。
+
+### ⑧ 配图链路记录字段（F8）
+
+`extract_assets.py` 增 `width/height`（EMU→px，取不到置 null 并在 notes 说明原因，不填 0 掩盖）、
+`source_url`、`doi_pmcid`；**`license_note` 默认值由「原课件自带」改为空**
+（原默认值暗示素材默认可用，与许可纪律冲突）；空许可 ⇒ `reuse_status` 必须为「待核查」，
+写盘前断言；`--require-license` 非 0 退出版并列出 asset_id。
+新配置源 `references/asset-fields.yaml`（**独立 yaml 文件，不采用 md 内嵌 yaml**——包内机器源只有
+`references/*.yaml` 与 `config/*.yaml` 两种范式，再开第三种就是本次要治的多源病根）。
+
+### ⑨ 架构与 agent 治理（M7 + 关联项）
+
+`docs/architecture.md` 由**已废弃的六阶段**改为 `harness.yaml#stages` 的**五闸 stage 0–4**
+（含并行判据、补上此前遗漏的 verifier），并声明 yaml 为唯一源。
+新增 `scripts/test_arch_drift.py`（7 断言）：镜像块与 yaml 逐项比对、成员表 == 注册表+主理人、
+每个成员 MD 必须把工具白名单指向 yaml、散文里不得再出现旧六阶段口径。
+
+7 个无归属脚本补「所有者/执行者 + 用途 + 何时被调用」头块；5 份成员 MD 的工具清单改为引用 yaml
+（不再各自复述）；逐字复制的信封 JSON 副本改为引用式；5 份 MD 补**可照抄的合规回传示例**
+（示例已落 /tmp 真跑过 `verify-envelope` 验证 rc）；README/INSTALL 的「六阶段」表述同步。
+
+### ⑩ 建议级检查（rubric，默认关闭）
+
+新增 `visual-rules.yaml#checks`：`title_position_consistency`（V1 标题位置众数偏离）、
+`image_area_ratio`（V5 图片面积占比 + 纯文字页连续上限）。产出进 `result["rubric"]`，
+**不计入 p0/p1/p2、不影响退出码**。默认关闭的理由写进 yaml 注释：缺乏基线标定，
+默认开启会产生无法校准的假阳性，而本项目铁律是「假阳性必须为零，否则门禁会被绕过」。
+
+### 版本与工程状态
+
+- 版本**五处**同步 **3.16.0**（`.claude-plugin/plugin.json` / `.codebuddy-plugin/plugin.json` /
+  `config/harness.yaml` / `scripts/harness.py` 文件头 + doctor 常量 / 两棵树的对应副本）
+  ——第 5 处（`harness.py` doctor 常量）是**体检第 14 项在收口时抓出来的**，说明该检查确实在起作用。
+- 体检 **21/21 全绿**（第 19 项漂移核对由 11 项扩至 26 项；新增第 21 项三源单一数据源）
+- 回归 **112 passed / 3 skipped**（新增 `test_verify_deck.py` 14 例、`test_arch_drift.py` 7 例；
+  `test_harness.py` 由「0 个 `def test_`（pytest 假绿）」改为 21 个可发现用例）
+- 双树同步：`packages/vet-med-ppt-team/` 与根目录逐字节一致
+
+### 已知瑕疵（如实登记，未修）
+
+1. `config/harness.yaml#stages.4.name` 仍含「（v3.3.0）」版本串——去化需连带改 architecture.md
+   镜像块与 `test_arch_drift.py`，收益/风险不划算，留待后续。
+2. **V3（取色比对）与 C5（数字来源）仍未实现**——V3 需模板 `clrScheme` 外部数据，
+   C5 的正则误报率高；已在 `course-profile-defaults.md#4.5` 显式登记为「无机器实现」，
+   并在 `.learnings/FEATURE_REQUESTS.md` 追加缺口条目（含误报原因分析）。
+3. 三源核验仍是**自证循环**：代码只查 `sources[].ok` 是否被写成 true，不验证来源真实存在。
+4. 单次 PPT 口径无 1.5 课时档（见 ①），已给出处置规则而非自造数值。
+
+---
+
 ## [v3.15.0] - 2026-10-22
 
 ### 概述（FEAT-001：死配置判据由文本搜索升级为 AST · 含一次判据局限的实证标注）

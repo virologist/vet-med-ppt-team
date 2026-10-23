@@ -88,6 +88,24 @@ maxTurns: 50
 > 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
 > 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
 
+**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
+——回传只给**落盘路径 + ≤800 字摘要**，全文不进对话；上限见 `budgets.max_artifact_bytes`。
+跨成员问题一律经主理人中转（检索单落 `<RUN_DIR>/_search_requests/` 由主理人分派，不得直接找其他成员）。
+
+**合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
+
+```json
+{"agent_id":"visual-slide-designer","task_id":"T-20261023-01","phase":"闸3","status":"success",
+ "confidence":"依据：抽样 6/22 页（27%）逐页复核，几何红灯页 3 处全部复查；落盘 /RUN_DIR/_search_requests/visual-slide-designer_01_病理对照.md",
+ "deliverable_summary":"落盘 /RUN_DIR/_search_requests/visual-slide-designer_01_病理对照.md；抽样 6 页（27%），几何红灯 3 处已修 2 / 拆页 1，检索单 4 条待严真奥补查"}
+```
+
+❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
+→ 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
+
+- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项（如检索单未补查）就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
+
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`
 - `config/visual-rules.yaml`（视觉规范）

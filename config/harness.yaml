@@ -8,7 +8,7 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.15.0"
+version: "3.16.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -20,6 +20,11 @@ stages:
   2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", next: 3}
   3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: 4}
   4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", next: null}
+# v3.16.0 澄清（只加注释，不改任何语义/成员数组）：
+#   读本段时容易误判"ppt-producer 漏配"——它**不占 stage 位**：
+#   v3.0.0 起不再常驻 spawn，改**按需跨闸调用**（L3 批量 / 门禁异常 / 台账重建，
+#   见 members.ppt-producer.spawn 与 routing.L3）。刻意不把它写进 stages.*.members，
+#   否则会改变 stage 成员集合与 L2/L3 spawn 计划的语义。
 
 # ── 成员注册表：职责、工具白名单、降级通道 ────────────────────
 # 工具白名单说明：WorkBuddy 专家包**不支持** agent frontmatter 的 tools 字段
@@ -53,7 +58,9 @@ members:
     fallback: "script_pipeline"   # 门禁本质是脚本，成员不可用时由 harness gate 直跑
   verifier:
     duty: "独立验证（V 层）：终检独立复算、裁判口径第二签、挂账审判"
-    tools_whitelist: ["Read", "Bash", "Grep", "Glob"]
+    # v3.16.0 修自相矛盾：writes_allowed=true 但 whitelist 里没有 Write（能写却没工具）→ 补 Write。
+    #   边界不变：只允许写**验证报告**，禁改课件（改课件属 ppt-producer / Loop B 工作副本纪律）。
+    tools_whitelist: ["Read", "Write", "Bash", "Grep", "Glob"]
     writes_allowed: true          # 只允许写验证报告，不得改课件
     spawn: "按需（闸4 必调 + 口径变更时）"
     fallback: "script_pipeline"   # 无成员时退化为 harness gate + verify-artifact 组合
@@ -83,9 +90,13 @@ budgets:
   max_rework_rounds_per_stage: 2
   max_stage_minutes: 20            # 单阶段挂钟上限（超时 → 上报，不等死）
   max_artifact_bytes: 60000        # 单个成员产物字节上限；超限强制"只传路径+摘要"
-  # v3.3.0：闸4.5 三源核验预算
-  three_source_sample_rate: 0.1    # 抽检 10% cases
-  three_source_pass_threshold: 0.8 # 通过率 ≥80% 达标（domain_config.yaml#three_source_check.pass_threshold）
+  # v3.16.0 删除（防双重声明静默失效）：此处曾有 three_source_sample_rate /
+  #   three_source_pass_threshold 两键，与 domain_config.yaml#three_source_check 同值重复声明，
+  #   而真正被代码消费的只有后者（verify_deck.py#_load_three_source_thresholds 读它）——
+  #   调参者改本文件会以为生效，实际不变。
+  #   ⇒ 三源阈值唯一源 = config/domain_config.yaml#three_source_check，此处不再重复声明。
+  #   查询入口仍在：`harness.py budget --kind three_source_sample|three_source_pass`，
+  #   其 executed_by 指向真实执行者（verify_deck.py），config_source 指向 domain_config.yaml。
 
 # ── 快照策略（v3.3.1 治理批新增：痛点①备份膨胀的对症段）────────
 # 缘由（2026-10-14 诊断实测）：snapshot.py 自 Batch 2 就绪但 .snapshots/ 从未初始化，
@@ -122,12 +133,21 @@ context:
     - budget
     - next_action
     - compaction
+    # v3.16.0 联动登记：quality_history（每轮 P0/P1/P2 质量快照，供"连续 N 轮无质量进展"
+    #   收敛判据消费——见 loop_b.budgets.no_progress_threshold）。
+    #   ⚠ 白名单外的键会被 `state set` 静默拒绝（cmd_state:305），新增状态键必须同步登记此处，
+    #     否则写入失败且无提示；loopB_state.json 不走本白名单，但主理人把快照镜像到
+    #     task_state.json 时依赖本项。
+    - quality_history
 
 # ── 可观测性 ────────────────────────────────────────────────
 observability:
   trace_file: ".workbuddy/harness_trace.jsonl"   # 追加式 JSONL，每事件一行
+  # v3.16.0：登记 no_progress（连续 N 轮无质量进展，见 loop_b.budgets.no_progress_threshold）。
+  #   注：本清单当前无校验器强制（属登记性声明），事件由 _loop_dispatch(continue) 写出。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
-                 "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded", "error"]
+                 "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
+                 "error", "no_progress"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
@@ -183,9 +203,14 @@ loop_b:
     max_rounds: 8
     max_items_per_round: 5        # v3.8.0 N3：每轮条目上限（小批是让用户真正读完的关键）
     retrieval_budget_per_round: 30
+    # v3.16.0：此前本键**零命中**（scripts/ 下无任何读取者，配了但无执行者）→
+    #   现由 harness.py#_loop_dispatch(continue) 消费：每轮结束记 P0/P1/P2 快照，
+    #   连续 N 轮 P0+P1 合计未下降即触发终止建议（exit 1 + trace 事件 no_progress）。
     no_progress_threshold: 2
     max_rework_per_item: 2
-  termination: ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
+  # v3.16.0：补质量维度终止原因（原五类全是工作量/交互维度，机器检不出"缺陷数已不再下降"）
+  termination: ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成",
+                "用户取消", "连续 N 轮无质量进展"]
   # v3.10.0：用户已确认的接单默认（覆盖须在 intake 显式记录并置 confirmed）
   defaults:
     profile_ref: "references/course-profile-defaults.md"   # 受众四层 / 课时映射 / 范围 / 验收矩阵

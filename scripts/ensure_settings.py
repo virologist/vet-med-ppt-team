@@ -37,6 +37,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   18 死配置巡检（v3.12.0）                            → config/ 里的键在 scripts/ 中无读取者【提示·不阻断】
   19 回退阈值漂移巡检（v3.14.0）                      → _FALLBACK 与 visual-rules.yaml 不一致【只读】★新
   20 跨成员交接落盘契约巡检（v3.14.0）                → 交接指令未给载体（issues/落盘/中转/禁直连）【只读】★新
+  21 三源阈值双重声明防线（v3.16.0）                  → harness.yaml#budgets 重复声明 + budget check 运行时值 ≠ domain_config【只读】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -56,9 +57,21 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT = os.path.expanduser(
+# v3.16.0 修（由独立测试工程师对抗性验证抓出，属**假绿陷阱**）：
+#   此处原先硬编码真实安装包的绝对路径。后果是——把包复制到 /tmp 做回归/反例验证时，
+#   运行 `python3 scripts/ensure_settings.py`（**不带参数**）会静默体检**真实包**，
+#   而不是当前所在的副本：于是"改坏副本 → 跑体检 → 报全绿"，得到的是**假绿**。
+#   这正是本项目最忌的失败形态（护栏看起来在、实际没设防），且它专坑最需要它的场景——
+#   即"验证副本"这件事本身。
+# 改法：以脚本自身位置推导包根（<包>/scripts/ensure_settings.py → <包>），
+#   复制到任何位置都能正确体检那一份；仅当推导结果不像一个包时才回退旧硬编码路径。
+_SELF_PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LEGACY_DEFAULT = os.path.expanduser(
     "~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team"
 )
+DEFAULT = (_SELF_PKG if os.path.exists(
+    os.path.join(_SELF_PKG, ".codebuddy-plugin", "plugin.json"))
+    else _LEGACY_DEFAULT)
 
 # 两侧清单：WorkBuddy 读 codebuddy，Claude Code 读 claude
 MANIFESTS = [
@@ -97,7 +110,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 20  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
+N = 21  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -349,9 +362,13 @@ def check_regression(expert_dir):
             failed.append((name, "超时 >180s"))
             continue
         last = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
-        # 部分套件（如 test_snapshot）不打印总结行，回退显示退出码，避免输出空槽
-        tail = last[-1] if last else f"rc={p.returncode}"
-        tails.append(f"{name}={tail[:20]}")
+        # v3.16.0 修：此前优先显示 stdout 末行文本，而部分套件的末行是 JSON 的收尾大括号，
+        #   于是输出变成 `test_extract_assets.py=}` —— rc 判定是对的，显示却像解析异常，会误导排查。
+        #   改为**优先显示 rc**（这才是有信息量的那个值），仅在 rc≠0 且末行非空时才附末尾片段。
+        tail = f"rc={p.returncode}"
+        if p.returncode and last:
+            tail += f" / {last[-1][:20]}"
+        tails.append(f"{name}={tail}")
         if p.returncode != 0:
             failed.append((name, tail))
     if failed:
@@ -1033,6 +1050,7 @@ def check_dead_config_keys(expert_dir):
 
 def check_fallback_drift(expert_dir):
     """v3.14.0：`_FALLBACK` 回退阈值 vs `visual-rules.yaml` 漂移巡检（第 19 项）。
+    v3.16.0 扩：覆盖新增的双页数表 / 默认口径 / 主框容量 / severity 分级 / checks 建议级段。
 
     背景：`_FALLBACK` 是 verify_deck 在 yaml 不可读时的**受控逃生舱**
     （须显式设 `VERIFY_ALLOW_FALLBACK=1` 才启用）。它的风险不在"当前值错"
@@ -1088,8 +1106,13 @@ def check_fallback_drift(expert_dir):
         ("note_min_pt", yget(("font", "note_min_pt")), "font.note_min_pt"),
         ("max_colors_per_slide", yget(("density", "max_colors_per_slide")), "density.max_colors_per_slide"),
         ("max_chars_per_slide", yget(("density", "max_chars_per_slide")), "density.max_chars_per_slide"),
+        # v3.16.0：主框密度（v3.5.0 配了却无代码读取者，本批首次 wiring → 必须纳入漂移巡检）
+        ("max_body_chars_per_slide", yget(("density", "max_body_chars_per_slide")),
+         "density.max_body_chars_per_slide"),
         ("overlap_ratio", yget(("geometry", "overlap_ratio")), "geometry.overlap_ratio"),
         ("p2_note_coverage", yget(("gate", "p2_note_coverage")), "gate.p2_note_coverage"),
+        # v3.16.0：默认页数口径（字符串；走下面的等值比较分支）
+        ("page_caliber_default", rules.get("page_caliber_default"), "page_caliber_default"),
     ]
     drift = []
     for fk, yv, ypath in pairs:
@@ -1106,14 +1129,50 @@ def check_fallback_drift(expert_dir):
         if not same:
             drift.append(f"{fk}: _FALLBACK={fv!r} ≠ yaml={yv!r}（{ypath}）")
 
-    # hours_page_range 单独比
-    y_hpr = rules.get("hours_page_range")
-    f_hpr = fb.get("hours_page_range")
-    if isinstance(y_hpr, dict) and isinstance(f_hpr, dict):
-        for k, v in y_hpr.items():
-            fv = f_hpr.get(k, f_hpr.get(float(k)))
-            if fv is None or list(fv) != list(v):
-                drift.append(f"hours_page_range[{k}]: _FALLBACK={fv!r} ≠ yaml={v!r}")
+    # hours_page_range（口径 A）与 hours_page_range_single_ppt（口径 B，v3.16.0）分别比
+    for tbl in ("hours_page_range", "hours_page_range_single_ppt"):
+        y_hpr = rules.get(tbl)
+        f_hpr = fb.get(tbl)
+        if isinstance(y_hpr, dict) and isinstance(f_hpr, dict):
+            for k, v in y_hpr.items():
+                fv = f_hpr.get(k, f_hpr.get(float(k)))
+                if fv is None or list(fv) != list(v):
+                    drift.append(f"{tbl}[{k}]: _FALLBACK={fv!r} ≠ yaml={v!r}")
+        elif isinstance(y_hpr, dict) and not isinstance(f_hpr, dict):
+            drift.append(f"{tbl}: _FALLBACK 缺该表（yaml 已配 {len(y_hpr)} 档）")
+
+    # v3.16.0：severity 分级列表 —— 新增问题类型若只在 yaml 登记、忘了进 _FALLBACK，
+    #           yaml 不可读时该类型会掉出所有分级统计（静默失效，比报错更危险）。
+    y_sev = rules.get("severity") or {}
+    f_sev = fb.get("severity") or {}
+    for lv in ("P0", "P1", "P2"):
+        if isinstance(y_sev.get(lv), list):
+            if list(f_sev.get(lv, [])) != list(y_sev[lv]):
+                drift.append(f"severity.{lv}: _FALLBACK={f_sev.get(lv)!r} ≠ yaml={y_sev[lv]!r}")
+
+    # v3.16.0：checks 建议级段（嵌套：bool/数值混排）→ 递归逐叶比对
+    def _diff_nested(fv, yv, path, out):
+        """递归比对两个结构；只比叶子值，路径用于定位该同步哪一项。"""
+        if isinstance(yv, dict):
+            if not isinstance(fv, dict):
+                out.append(f"checks.{path or '<根>'}: _FALLBACK={fv!r} ≠ yaml={yv!r}")
+                return
+            for k, v in yv.items():
+                _diff_nested(fv.get(k), v, f"{path}.{k}" if path else str(k), out)
+        elif isinstance(yv, list):
+            if list(fv or []) != list(yv):
+                out.append(f"checks.{path}: _FALLBACK={fv!r} ≠ yaml={yv!r}")
+        else:
+            try:
+                same = abs(float(fv) - float(yv)) < 1e-9
+            except (TypeError, ValueError):
+                same = fv == yv
+            if not same:
+                out.append(f"checks.{path}: _FALLBACK={fv!r} ≠ yaml={yv!r}")
+
+    y_chk = rules.get("checks") or {}
+    if isinstance(y_chk, dict) and y_chk:
+        _diff_nested(fb.get("checks") or {}, y_chk, "", drift)
 
     if drift:
         print(f"[19/{N}] ⚠ 回退阈值与 yaml 漂移 {len(drift)} 项"
@@ -1123,9 +1182,131 @@ def check_fallback_drift(expert_dir):
         print("     → 处置：同步 verify_deck.py 的 `_FALLBACK`（受控逃生舱，"
               "仅 VERIFY_ALLOW_FALLBACK=1 时启用）；勿只改 yaml 不改回退值")
         return 1
-    n = len(pairs) + (len(y_hpr) if isinstance(y_hpr, dict) else 0)
+    # v3.16.0：核对项数改为实算（新增标量 2 项 + 口径 B 4 档 + severity 3 级 + checks 叶子数）
+    n = len(pairs)
+    for tbl in ("hours_page_range", "hours_page_range_single_ppt"):
+        t = rules.get(tbl)
+        n += len(t) if isinstance(t, dict) else 0
+    n += sum(1 for lv in ("P0", "P1", "P2") if isinstance(y_sev.get(lv), list))
+
+    def _count_leaves(node):
+        if isinstance(node, dict):
+            return sum(_count_leaves(v) for v in node.values())
+        if isinstance(node, list):
+            return sum(_count_leaves(v) for v in node)
+        return 1
+
+    n += _count_leaves(y_chk) if isinstance(y_chk, dict) else 0
     print(f"[19/{N}] ✓ 回退阈值无漂移（_FALLBACK 与 visual-rules.yaml 逐项一致，"
-          f"核对 {n} 项）")
+          f"核对 {n} 项：标量 {len(pairs)} · 双口径页数表 {sum(len(rules.get(t) or {}) for t in ('hours_page_range', 'hours_page_range_single_ppt'))} 档 · "
+          f"severity {sum(1 for lv in ('P0', 'P1', 'P2') if isinstance(y_sev.get(lv), list))} 级 · "
+          f"checks {_count_leaves(y_chk) if isinstance(y_chk, dict) else 0} 叶）")
+    return 0
+
+
+def check_three_source_single_source(expert_dir):
+    """v3.16.0：第 21 项 —— 三源阈值「双重声明」防线（防复发）。
+
+    背景：v3.16.0 删掉了 `harness.yaml#budgets` 里的 three_source_sample_rate /
+    three_source_pass_threshold——它们与 `domain_config.yaml#three_source_check` **同值重复声明**，
+    而真实执行者 `verify_deck.py#_load_three_source_thresholds()` 只读后者，
+    于是「改 harness.yaml 侧」会**完全静默失效**（同一份阈值两个地方写着一样的值，
+    谁改都不会报错，只有一处真生效）。删完若不留防线，下次有人"顺手加回来"就会复发。
+
+    本项两道防线，缺一不可（各自堵的漏洞不同）：
+      ① **静态同名比对**：`budgets` 的键里若出现 `three_source_<子键>`（归一化后同名）→ 阻断。
+         归一化（去非字母数字 + 小写）是为了让 `three_source_pass_threshold` /
+         `threeSourcePassThreshold` / `THREE_SOURCE_pass-threshold` 这类变体也躲不掉。
+      ② **运行时值断言**：真跑 `harness.py budget check --kind three_source_pass`，
+         断言 (a) value == domain_config.yaml#three_source_check.pass_threshold，
+                (b) config_source 指向 domain_config.yaml#three_source_check。
+         这条补的是第 18 项（死配置/AST 判据）的已知盲区——**静态分析发现不了
+         "代码读了 fallback 而没读配置"**：AST 能看到 `cfg.get("x")` 存在，看不出运行时取到的是哪一路。
+         只有实跑并把返回值与配置值对齐，才能证明"配置真的被消费了"。
+
+    阻断级别：判据确定（键名等值 + 数值等值），假阳性为零 → 阻断。
+    """
+    har = os.path.join(expert_dir, "config", "harness.yaml")
+    dom = os.path.join(expert_dir, "config", "domain_config.yaml")
+    hpy = os.path.join(expert_dir, "scripts", "harness.py")
+    if not (os.path.exists(har) and os.path.exists(dom)):
+        print(f"[21/{N}] – 缺 harness.yaml 或 domain_config.yaml，跳过")
+        return 0
+    try:
+        import yaml
+        budgets = (yaml.safe_load(open(har, encoding="utf-8")) or {}).get("budgets") or {}
+        tsc = (yaml.safe_load(open(dom, encoding="utf-8")) or {}).get("three_source_check") or {}
+    except Exception as e:
+        print(f"[21/{N}] ⚠ 读取失败：{e}")
+        return 1
+
+    def _norm(k):
+        return "".join(ch for ch in str(k).lower() if ch.isalnum())
+
+    problems = []
+
+    # ① 静态：归一化同名检测
+    if isinstance(budgets, dict) and isinstance(tsc, dict):
+        norm_b = {_norm(k): k for k in budgets}
+        for t in tsc:
+            for cand in (f"three_source_{t}", str(t)):
+                hit = norm_b.get(_norm(cand))
+                if hit is not None:
+                    problems.append(
+                        f"harness.yaml#budgets.{hit} 与 domain_config.yaml#three_source_check.{t} "
+                        f"重复声明；三源阈值唯一源是 domain_config.yaml，删 harness.yaml 侧")
+                    break
+    if problems:
+        print(f"[21/{N}] 🔴 三源阈值双重声明 {len(problems)} 处——改 harness.yaml 侧会静默失效")
+        for p_ in problems:
+            print(f"     {p_}")
+        print("     → 处置：删掉 harness.yaml#budgets 里的 three_source_* 键；"
+              "值要改就改 config/domain_config.yaml#three_source_check（并由 verify_deck 消费）")
+        return 1
+
+    # ② 运行时断言：configuration 值必须真的从 domain_config 取出来
+    if not os.path.exists(hpy):
+        print(f"[21/{N}] ⚠ 静态比对通过，但缺 scripts/harness.py，无法做运行时断言")
+        return 1
+    checks = [("three_source_pass", "pass_threshold"),
+              ("three_source_sample", "sample_rate")]
+    runtime_bad = []
+    for kind, key in checks:
+        try:
+            p = subprocess.run([sys.executable, hpy, "budget", "check", "--kind", kind],
+                               capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            runtime_bad.append(f"`budget check --kind {kind}` 运行失败：{e}")
+            continue
+        try:
+            out = json.loads((p.stdout or "").strip().splitlines()[-1])
+        except Exception:
+            runtime_bad.append(f"`budget check --kind {kind}` 输出非 JSON（stdout="
+                               f"{(p.stdout or '')[:60]!r}）")
+            continue
+        val, src = out.get("value"), str(out.get("config_source", ""))
+        want = tsc.get(key)
+        if key not in tsc:
+            runtime_bad.append(f"domain_config.yaml#three_source_check 缺 `{key}` "
+                               f"（运行时无从对齐）")
+        elif float(val) != float(want):
+            runtime_bad.append(f"`{kind}` 运行时值 {val!r} ≠ domain_config.yaml"
+                               f"#three_source_check.{key}={want!r}（配置改了没生效 / 读进 fallback）")
+        elif "domain_config.yaml#three_source_check" not in src:
+            runtime_bad.append(f"`{kind}` 的 config_source={src!r} 未指向 domain_config.yaml"
+                               f"#three_source_check（阈值可能来自别处）")
+    if runtime_bad:
+        print(f"[21/{N}] 🔴 三源阈值运行时断言失败 {len(runtime_bad)} 项"
+              f"（第 18 项静态判据查不出的那类：读了 fallback 而没读配置）")
+        for r_ in runtime_bad:
+            print(f"     {r_}")
+        print("     → 处置：让 verify_deck.py#_load_three_source_thresholds 真从 "
+              "domain_config.yaml#three_source_check 取值，并确认 fallback 未被实际消费")
+        return 1
+
+    shown = "、".join(f"{k}={tsc.get(v)}" for k, v in checks if v in tsc) or "无可用阈值"
+    print(f"[21/{N}] ✓ 三源阈值单一数据源（harness.yaml 无重复声明；"
+          f"budget check 运行时值…… {shown} 与 domain_config.yaml#three_source_check 一致）")
     return 0
 
 
@@ -1262,6 +1443,8 @@ def main():
     rc |= check_fallback_drift(path)
     # v3.14.0：跨成员交接落盘契约巡检（防「交XX」不写路径复现）
     rc |= check_handoff_paths(path)
+    # v3.16.0：三源阈值双重声明防线（防重复声明复发 + 运行时值断言补 AST 盲区）
+    rc |= check_three_source_single_source(path)
 
     print()
     if rc == 0:

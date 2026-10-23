@@ -51,6 +51,10 @@ domains:
 
 # ── 病种模块映射（替代 case_extract.DISEASE_MAP） ─────────────
 # 格式：<domain-id> → {<module>: <中文名>}
+# v3.16.0 注释级澄清（**不新增数据键**，避免又产生一个无人消费的配置键）：
+#   本段只是"编号 → 中文名"的单值映射，按病种查**导航/条目**请走
+#   references/poultry-disease-index.md（24 条禽病导航索引 + 8 种实验室诊断方法）。
+#   刻意不写 index_ref: ——那会被体检第 18 项（AST 真实读取点）判为"配了无人读"。
 disease_modules:
   animal-medicine:
     M4A1: "禽流感"
@@ -95,6 +99,10 @@ disease_modules:
   tcm-vet: {}
 
 # ── 三源核验配置（Q6 ≥80% 阈值） ────────────────────────────
+# v3.16.0：**本段是三源阈值的唯一源**。harness.yaml#budgets 里的 three_source_sample_rate /
+#   three_source_pass_threshold 已删除（曾与本段重复声明，改那边不改行为 → 静默失效）。
+#   消费方：scripts/verify_deck.py#_load_three_source_thresholds()（执行者）、
+#           scripts/harness.py#_load_three_source_thresholds()（查询者，budget --kind three_source_*）。
 three_source_check:
   enabled: true
   sample_rate: 0.1            # 抽检 10%
