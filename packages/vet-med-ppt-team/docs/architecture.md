@@ -41,7 +41,7 @@
 
 <!-- STAGE_MIRROR_BEGIN -->
 stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
-stage 1 | 闸2 设计（蓝图∥证据） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
+stage 1 | 闸2 设计（证据先行→蓝图·串行） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: no
 stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
 stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
 stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes

@@ -1726,8 +1726,17 @@ def _exempt_line_set(lines, hy):
       ④ frontmatter 注释行：YAML frontmatter 内以 # 开头的注释行（变更说明）。
     """
     ex = set()
+    # v3.17.0 批次 B 修复（**声明层≠执行层**实测）：
+    #   `exempt_markers` / `exempt_headings` / `profile_ref_patterns` 三组键在
+    #   config/hygiene-words.yaml 里**嵌在 `scan:` 之下**，而本函数此前从**顶层**取
+    #   （只有 `frontmatter_comment_exempt` 一处正确写了 `hy.get("scan")`）。
+    #   ⇒ 三组豁免**从未生效**：哨兵块围起来的行照样报、引用域档案路径的行照样报，
+    #     体检第 23 项因此长期虚高，且"围哨兵就能豁免"这条契约是**假的**。
+    #   修法：以 `scan` 为唯一读取位置（与 yaml 实际结构、与函数注释的 #scan 一致），
+    #     兼容顶层写法回退一次（不静默吞错：两者都缺时该组豁免即为空集合，会照常报出）。
+    _scan = hy.get("scan") or {}
     # ① 哨兵块
-    for mk in (hy.get("exempt_markers") or []):
+    for mk in (_scan.get("exempt_markers") or hy.get("exempt_markers") or []):
         b, e = mk.get("begin"), mk.get("end")
         if not b or not e:
             continue
@@ -1742,7 +1751,7 @@ def _exempt_line_set(lines, hy):
                 if e in ln:
                     inblk = False
     # ② 章节级
-    pats = [p.get("pattern") for p in (hy.get("exempt_headings") or [])
+    pats = [p.get("pattern") for p in (_scan.get("exempt_headings") or hy.get("exempt_headings") or [])
             if isinstance(p, dict) and p.get("pattern")]
     if pats:
         heads = []
@@ -1760,7 +1769,7 @@ def _exempt_line_set(lines, hy):
                     break
             ex.update(range(i, end))
     # ③ 行级（引用域档案）
-    refs = [p for p in (hy.get("profile_ref_patterns") or []) if p]
+    refs = [p for p in (_scan.get("profile_ref_patterns") or hy.get("profile_ref_patterns") or []) if p]
     if refs:
         for i, ln in enumerate(lines):
             if any(p in ln for p in refs):

@@ -110,7 +110,9 @@ maxTurns: 50
 
 ## 默认模板的三条硬约束（v3.10.0 · 制作前必读）
 
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 默认模板：`/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx`
+<!-- DOMAIN_EXAMPLE_END -->
 （指纹 `5fa78154`，实测见 `references/default-template-profile.md`）。**违反任一条即返工**：
 
 1. **版式零占位符**——两个版式（`空白`、`1_标题和内容`）的 `placeholders` 均为空。
@@ -144,7 +146,9 @@ maxTurns: 50
 ```json
 {"agent_id":"ppt-producer","task_id":"T-20261023-01","phase":"闸4","status":"success",
  "confidence":"依据：scripts/verify_deck.py --level all 复算退出码 0，落盘 /OUT/gate_report.json；P0=0/P1=2/P2 覆盖率 85%",
+<!-- DOMAIN_EXAMPLE_BEGIN -->
  "deliverable_summary":"落盘 /OUT/禽流感.pptx（22 页，备份 /OUT/禽流感_备份_20261023_1015.pptx）+ /OUT/gate_report.json；verify_deck 复算 P0=0 / P1=2 / P2 覆盖率 85%，自引入 0（基线 P0=2）"}
+<!-- DOMAIN_EXAMPLE_END -->
 ```
 
 ❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`

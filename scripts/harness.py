@@ -50,8 +50,9 @@ v3.6.0（2026-10-17 迭代实战治理批）：
   + OOXML 病例 13–14（GEO-003 空间冲突 / API-001 属性名凭记忆猜测）——登记未实现
 
 v3.7.0（2026-10-17 诊断颗粒度升级批）：
-  + 七维精准诊断双路由（量规唯一源=下游 skill teaching-ppt-studio/
-    references/seven-dimension-rubric.md，本团只引路径不复制——防双源漂移）
+  + 七维精准诊断双路由（**历史记录**：当时量规唯一源=下游 skill teaching-ppt-studio/
+    references/seven-dimension-rubric.md，本团只引路径不复制——防双源漂移。
+    ⚠ 该口径已于 v3.17.0 作废，量规已内化进本包，见下方 v3.17.0 段）
   + 三级修复路由（大修/中修/细节修，按侵入性）与既有 A/B/C 三轨（按手段）正交
   + config/domain_config.yaml#ai_literacy 落维⑦ AI 融合与数智素养
   ⚠ 本批未改本文件任何逻辑；v3.5–v3.7 的变更全部落在 references/ 与 config/。
@@ -86,8 +87,14 @@ v3.17.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
   + F6 质量收敛判据：loop continue 落 quality_history（**报告优先**：
     --verify-json <verify_deck 报告> > --p0/--p1/--p2 手工自报；来源写进快照的
     source 字段与 trace，报告缺字段即报错不静默取 0）；
-    连续 no_progress_threshold 轮 P0+P1 未下降 → exit 1 + trace 事件 no_progress +
-    终止建议。终止原因改读 harness.yaml#loop_b.termination（唯一源）。
+    连续 no_progress_threshold 轮 P0+P1+P2 合计未下降 → exit 1 + trace 事件 no_progress +
+    终止建议（v3.17.0 B3-4：P2 已纳入——否则"只补备注覆盖率"这一有效推进会被误杀）。
+    终止原因改读 harness.yaml#loop_b.termination（唯一源）。
+  + 七维量规唯一源**收敛到包内**（治双副本漂移）：唯一执行源=包内
+    references/seven-dimension-rubric.md；下游 skill teaching-ppt-studio 的同名副本
+    **仅作上游对照源**，不一致时**一律以包内为准**。下游副本**不删除**（不在本包管辖范围，
+    删除会造成引用方悬空）——收敛靠「声明 + 指向」实现。逐行 diff 结论见该文件顶部
+    「差异摘要」段（下游 148 行 → 包内 208 行，本包为超集）。
 
 本脚本把"提示词里的纪律"下沉为"代码里的约束"，全部参数读 config/harness.yaml（禁硬编码）。
 它只做确定性事务（路径解析 / 状态校验 / 计数 / 日志 / 进程调用），
@@ -120,6 +127,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request    # v3.17.0 B3-3：textbook/regulation 存在性核验的联网通道
 from datetime import datetime
 from pathlib import Path
 
@@ -408,6 +416,7 @@ def cmd_preflight(args):
     cfg, ok = load_cfg()
     members = cfg.get("members", {})
     fb = cfg.get("fallback", {})
+    w = wkspace(args)
     report = {"ts": now_iso(), "team": args.team, "members": {}, "verdict": "ok"}
 
     reg = {}
@@ -443,6 +452,23 @@ def cmd_preflight(args):
         report["advice"] = (f"成员 {bad} 不可用或已被静默降级。按 harness.yaml#fallback.on_unavailable="
                             f"{fb.get('on_unavailable')} 处置：spawn 通用子代理并在任务包开头注入该成员 MD 全文；"
                             f"同一成员最多尝试 {fb.get('max_spawn_attempts')} 次，超限即上报主理人，不得无限重试。")
+    # v3.17.0 B3-2：preflight 事件（此前 yaml 声明了它却零产出）+ 对**已发生的降级**
+    #   逐个补 degrade 事件——"成员被平台回落成 general-purpose"就是静默降级的本体，
+    #   preflight 是机器唯一能抓到它的时点（抓到即留痕，不靠人自觉申报）。
+    _trace(w, cfg, "preflight", "team-lead",
+           {"team": args.team, "verdict": report["verdict"],
+            "members": {m: v.get("status") for m, v in report["members"].items()},
+            "degraded": bad})
+    for mid in bad:
+        spec = members.get(mid) or {}
+        item = report["members"][mid]
+        _trace(w, cfg, "degrade", mid,
+               {"member_id": mid, "degrade_channel": spec.get("fallback"),
+                "reason": ("成员 MD 缺失" if item.get("status") == "missing_md"
+                           else f"平台登记 agentType={item.get('agent_type')!r} ≠ 成员 id"
+                                f"（成员人格/红线未注入 = 静默降级）"),
+                "detected_by": "preflight", "task_id": getattr(args, "task_id", "") or "",
+                "disclosure_required": bool(fb.get("require_disclosure", True))})
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if bad else 0
 
@@ -452,19 +478,43 @@ def cmd_route(args):
     """确定性路由：复杂度 → spawn 计划（不再靠主理人临场判断）。
 
     v3.17.0：新增 `--domain <域id>` —— 追加**域坍缩**字段并落盘坍缩产物。
-      ⚠ **默认行为零变化**：不传 --domain 时，本函数的输出与改造前**逐字节一致**
-        （追加字段全部在 `if domain_id:` 分支内，plan 的键序不变）。
+      ⚠ **除新增 `spawn_policy` 键外默认行为零变化**：不传 --domain 时，
+        追加字段全部在 `if domain_id:` 分支内，plan 的键序不变。
+        （`spawn_policy` 是 v3.17.0 批次 B Task#7 的增量，见下。）
       ⚠ **选哪个域是语义判断**——脚本不做关键词选域；域由主理人（LLM）读
         `domain list` 菜单后显式指定。传了不存在的域 id → **显式报错**，
         绝不静默回落默认域（动物医学）。
+
+    v3.17.0 批次 B（Task#7）：**spawn 伪 ID 防线**。
+      缘由：`config/harness.yaml#routing.L1/L3` 的 `spawn` 曾是含中文括号的
+      说明字符串（如 "pedagogy-architect|dvm-content-expert（按需1-2名）"），
+      不是成员 ID 数组——下游若按成员 ID 遍历 spawn 计划，拿到的是**无法解析的伪 ID**。
+      修法（三处同时生效，缺一即复发）：
+        ① 配置层：spawn 元素改为真 ID 数组；说明语义移到同级 `spawn_policy` 键；
+        ② **本函数（执行层）**：spawn 元素逐一对照 `members` 注册表校验，
+           命中伪 ID → **显式报错退出（exit 2）**，绝不静默透传；
+        ③ 回归层：scripts/test_harness.py 断言四档 spawn 元素全是合法成员 ID。
+      ⚠ `spawn_policy` 一并输出到 plan——它是**人读语义**，主理人据此决定
+        「按需 1-2 名」到底取哪几个；不输出等于把语义丢在 yaml 里没人看。
     """
     cfg, _ = load_cfg()
     r = cfg.get("routing", {}).get(args.level)
     if not r:
         print(f"用法错误：未知复杂度 {args.level}", file=sys.stderr)
         return 2
+    # ── spawn 成员 ID 校验（Task#7：伪 ID 不得静默透传）──────────────
+    valid_ids = set((cfg.get("members") or {}).keys())
+    spawn = r.get("spawn") or []
+    bad = [s for s in spawn if s not in valid_ids]
+    if bad:
+        print(f"⛔ {args.level}.spawn 含非法成员 ID：{bad}\n"
+              f"   合法成员 ID（config/harness.yaml#members 的键）：{sorted(valid_ids)}\n"
+              f"   → spawn 元素**只能是成员 ID 本身**；说明性文字请放同级 `spawn_policy` 键"
+              f"（如「按需1-2名」），不得塞进 spawn 数组元素。", file=sys.stderr)
+        return 2
     plan = {"level": args.level, "team_create": r.get("team_create"),
-            "spawn": r.get("spawn"), "confirm_gates": r.get("confirm_gates"),
+            "spawn": spawn, "spawn_policy": r.get("spawn_policy"),
+            "confirm_gates": r.get("confirm_gates"),
             "red_team": r.get("red_team", False),
             "budgets": cfg.get("budgets", {}),
             "handoff_mode": cfg.get("context", {}).get("handoff_mode")}
@@ -501,6 +551,18 @@ def cmd_route(args):
                                  else "待确认，未生效（须经 `collapse confirm` 确认后域人格方可生效）")
         plan["collapse_confirmation_required"] = bool(c.get("require_user_confirmation", True))
         plan["selection_rationale_status"] = payload.get("selection_rationale_status")
+    # v3.17.0 B3-2：team_create 事件（yaml 声明了它却零产出）。
+    #   路由判出"本任务要建队"是建队的**决策时点**——机器唯一知道
+    #   "这次任务是否真的建队、派了哪些人"的地方。L0 不建队 → 不写事件
+    #   （写了就是假事件：声明了却没建队，正是本任务要治的病）。
+    if r.get("team_create"):
+        _trace(wkspace(args), cfg, "team_create", "team-lead",
+               {"level": args.level, "spawn": spawn,
+                "spawn_policy": r.get("spawn_policy"),
+                "confirm_gates": r.get("confirm_gates"),
+                "red_team": bool(r.get("red_team", False)),
+                "task_id": getattr(args, "task_id", "") or "",
+                "domain": plan.get("domain")})
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
 
@@ -1156,6 +1218,134 @@ def _trace(w, cfg, event, actor, detail):
     return rec
 
 
+# ── v3.17.0 B3-2：声明层≠执行层的 trace 事件补产 ──────────────────────
+# 立项理由（不是"锦上添花"）：config/harness.yaml#observability.trace_events 声明了
+# 12 个事件，实测只有 5 个有代码产出（gate / stage_enter / stage_exit /
+# budget_exceeded / no_progress），另外 7 个是**纯声明**。
+# 后果是立项级的：harness.yaml#fallback.require_disclosure=true 写着"降级必须在
+# 交付物与 trace 中显式声明"，而 degrade 事件**没有任何代码产出**——
+# ⇒ 降级是否发生、是否被声明，在 trace 里根本查不到。
+# 这恰恰是 v2.2.0 建立整个 harness 层的原始理由（"静默降级无人察觉"）被自己重犯。
+#
+# 处置原则：**事件名沿用 yaml 声明的原名**（不改声明去迁就代码），写入点沿用
+# 既有 `_trace()` 风格（追加式 JSONL，一行一事件），不另起一套日志。
+#
+# 各事件的产出点（谁在什么时候知道这件事）：
+#   spawn        ← cmd_spawn（spawn 成功时）
+#   spawn_failed ← cmd_spawn --failed（spawn 失败/不可用时）
+#   degrade      ← cmd_spawn --failed（降级到 fallback 通道时）+ cmd_preflight
+#                  （检出成员已被平台回落成通用子代理时——这正是"静默降级"本体）
+#   member_return← cmd_member_return（成员回传登记）
+#   preflight    ← cmd_preflight（开工前可用性预检）
+#   team_create  ← cmd_route（路由判出需要建队时）
+#   error        ← 各命令的异常出口（_trace_error）
+
+# trace 事件名 → yaml 声明的全集（用于自检：声明了却没产出点 = 仍是纯声明）
+TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
+                         "member_return", "gate", "stage_enter", "stage_exit",
+                         "budget_exceeded", "error", "no_progress")
+
+
+def _trace_error(w, cfg, event, actor, detail):
+    """写一条 error 事件——**运行期异常的统一出口**。
+
+    为什么单列：此前 harness 的异常一律向上抛（栈打到 stderr 就没了），
+    trace 里查不到"哪一步炸了"。error 事件是 yaml 声明了 12 个事件之一，
+    此前同样零产出。
+    """
+    return _trace(w, cfg, event or "error", actor, detail)
+
+
+def _fallback_channels(cfg):
+    """取 fallback.degrade_modes 的通道名（general-purpose+persona / script_pipeline）。"""
+    modes = (cfg.get("fallback") or {}).get("degrade_modes") or {}
+    return list(modes.keys())
+
+
+def cmd_member_return(args):
+    """登记成员回传（写 trace 事件 member_return）。
+
+    v3.17.0 B3-2 新增。此前回传**零 trace 产出**——成员交了什么、在哪个阶段、
+    产物落在哪，全都只存在于主理人的对话里，事后不可审计。
+    本命令把回传落成结构化事件：成员 id / task_id / status / 产物路径。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    members = cfg.get("members") or {}
+    if args.agent not in members:
+        print(f"⚠ agent={args.agent!r} 不在 members 表（{list(members.keys())}）"
+              f"——仍记录（可能是外部 agent）", file=sys.stderr)
+    detail = {
+        "task_id": args.task_id,
+        "stage": getattr(args, "stage", None),
+        "status": args.status,
+        "artifact": args.artifact or "",
+        "phase": getattr(args, "phase", "") or "",
+    }
+    if args.issues:
+        detail["issues"] = args.issues
+    if args.warnings:
+        detail["warnings"] = args.warnings
+    rec = _trace(w, cfg, "member_return", args.agent, detail)
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_spawn_failed(args):
+    """登记 spawn 失败（写 trace 事件 spawn_failed，可选连带 degrade）。
+
+    v3.17.0 B3-2 新增。spawn 失败此前只有主理人一句口头说明，trace 里查不到
+    "试了几次、为什么不行、最后走了哪条降级通道"。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    fb = cfg.get("fallback") or {}
+    max_attempts = int(fb.get("max_spawn_attempts", 2))
+    attempt = int(getattr(args, "attempt", 1) or 1)
+    detail = {
+        "task_id": args.task_id,
+        "stage": getattr(args, "stage", None),
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "reason": args.reason or "",
+        "exhausted": attempt >= max_attempts,
+    }
+    rec = _trace(w, cfg, "spawn_failed", args.agent, detail)
+    if attempt >= max_attempts:
+        print(f"⚠ 该成员已尝试 {attempt}/{max_attempts} 次——按 harness.yaml#fallback."
+              f"max_spawn_attempts 处置（降级或上报主理人），不得无限重试。", file=sys.stderr)
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_degrade(args):
+    """登记成员降级（写 trace 事件 degrade：成员 id / 降级通道 / 原因）。
+
+    v3.17.0 B3-2 新增。**这是 fallback.require_disclosure 的执行者**——
+    此前该声明的消费者只有人（靠自觉在交付物里写"已降级"），机器无从查证。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    fb = cfg.get("fallback") or {}
+    modes = (fb.get("degrade_modes") or {})
+    channel = args.channel or ""
+    if channel and channel not in modes:
+        print(f"⚠ 降级通道 {channel!r} 不在 harness.yaml#fallback.degrade_modes "
+              f"（{list(modes.keys())}）——仍记录（便于事后发现自造通道）", file=sys.stderr)
+    detail = {
+        "task_id": args.task_id,
+        "stage": getattr(args, "stage", None),
+        "member_id": args.agent,
+        "degrade_channel": channel,
+        "reason": args.reason or "",
+        "disclosure_required": bool(fb.get("require_disclosure", True)),
+        "fallback_on_unavailable": fb.get("on_unavailable"),
+    }
+    rec = _trace(w, cfg, "degrade", args.agent, detail)
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_trace(args):
     cfg, _ = load_cfg()
     w = wkspace(args)
@@ -1228,9 +1418,26 @@ def cmd_trace(args):
         max_react = budgets_cfg.get("max_react_rounds_total", 15)
         spawn_count = sum(v for k, v in by_actor.items() if k)
         usage_pct = round(spawn_count / max_spawns * 100, 1) if max_spawns else 0
+        # v3.17.0 B3-2：**声明的事件 vs 实际产出**（治"声明层≠执行层"）
+        #   yaml#observability.trace_events 声明了哪些事件、trace 里实际出现了哪些，
+        #   两者的差集就是"声明了却没发生"——这个差集此前**没有任何机器视图**，
+        #   只能靠人读 CHANGELOG 的已知瑕疵 #5 才知道 7 个事件零产出。
+        declared = list((cfg.get("observability") or {}).get("trace_events") or [])
+        observed = set(by_event.keys())
+        declared_missing = [e for e in declared if e not in observed]
         out = {"events_total": len(ev), "by_event": by_event, "by_actor": by_actor,
                "stage_seconds": {k: v for k, v in spans.items()},
                "stage_seconds_status": "未启用 stage 追踪（需显式发 stage_enter/exit 事件）" if not spans else "ok",
+               "declared_events": declared,
+               "declared_events_observed": [e for e in declared if e in observed],
+               "declared_events_missing": declared_missing,
+               "declared_events_missing_hint": (
+                   f"声明了但本次 trace 未出现 {len(declared_missing)} 个事件：{declared_missing}"
+                   if declared_missing else "ok（声明的事件全部有产出）"),
+               "undeclared_events": sorted(observed - set(declared)),
+               "undeclared_events_hint": (
+                   "trace 里出现了未在 yaml#observability.trace_events 声明的事件"
+                   f"（{sorted(observed - set(declared))}）——要么补登记，要么删产出点"),
                "dead_event_count": dead_event_count,
                "dead_event_hint": f"{dead_event_count} 条 event='event' 死值（trace log 漏写 --event）" if dead_event_count else "ok",
                "missing_actors": sorted(missing_actors),
@@ -1785,6 +1992,284 @@ def collect_pending_pmids(cases, tsc=None):
     return out
 
 
+def _net_fetch(url, spec, want_json=False):
+    """带重试/退避/限速的联网抓取（v3.17.0 B3-3：textbook/regulation 存在性核验用）。
+
+    纪律（与 pubmed 通道一致）：
+      · 超时 / 重试次数 / 退避基数 / 限速间隔**全部从 yaml 读**，代码不内置 —— 内置兜底
+        = 又一份"看起来生效其实没生效"的声明（本包宪法）。
+      · 失败**不静默**：返回 (None, 错误串)，由调用方决定退 format_fallback 还是
+        判 network_error（fail-closed），绝不假装"没查到 = 不存在"（未命中 ≠ 证伪）。
+
+    Args:
+        url: 完整 URL（已由调用方按 yaml 模板拼好）
+        spec: yaml#source_verification.<kind> 全段（取 timeout/retry/backoff/rate_limit）
+        want_json: True = 解析为 JSON 返回 dict；False = 返回原始 bytes
+
+    Returns:
+        (data, err)：成功时 err=None；失败时 data=None 且 err 为可读原因
+    """
+    import time as _t
+    import json as _json
+
+    timeout = float(spec.get("timeout_seconds") or 25)
+    max_retries = int(spec.get("max_retries") or 2)
+    backoff_base = float(spec.get("backoff_base") or 3.0)
+    backoff_cap = float(spec.get("backoff_cap") or 20.0)
+    rate_sleep = float(spec.get("rate_limit_sleep") or 0)
+
+    last_err = None
+    for attempt in range(max_retries + 1):
+        if rate_sleep and attempt > 0:
+            _t.sleep(rate_sleep)          # 实测 opac.nlc.cn 连发即被限速 ⇒ 请求间必须睡
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0 (harness-three-source-verify)"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+            if want_json:
+                return _json.loads(raw.decode("utf-8", "replace")), None
+            return raw, None
+        except Exception as e:            # 网络类失败：退避后重试，不做语义判定
+            last_err = f"{type(e).__name__}: {e}"
+            if attempt < max_retries:
+                _t.sleep(min(backoff_base * (2 ** attempt), backoff_cap))
+    return None, last_err
+
+
+def _verify_isbn_checksum(ref, res, rules, tiers):
+    """ISBN 校验位（确定性结构校验）——**仅格式合规**，不代表书存在。"""
+    rx, err = _compile_rule(rules.get("isbn_candidate"), "isbn_candidate")
+    if rx is None:
+        res["reason"] = f"ISBN 校验不可用：{err}"
+        return res
+    norm = re.sub(r"[^0-9Xx]", "", ref)
+    m = rx.search(norm)
+    if not m:
+        res["reason"] = f"未找到 ISBN 号：{ref!r}"
+        return res
+    code = m.group(0)
+    if isbn_checksum_ok(code):
+        res["tier"] = TIER_FORMAT
+        res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
+        res["reason"] = f"ISBN 校验位通过：{code}（**仅格式合规，未验证存在性**）"
+    else:
+        res["reason"] = f"ISBN 校验位不通过：{code}"
+    return res
+
+
+def _verify_gb_number_format(ref, res, rules, tiers):
+    """国标/公告编号格式（确定性结构校验）——**仅格式合规**，不代表标准存在。"""
+    rx, err = _compile_rule(rules.get("gb_number"), "gb_number")
+    rx2, err2 = _compile_rule(rules.get("announcement_no"), "announcement_no")
+    if rx is None and rx2 is None:
+        res["reason"] = f"国标编号校验不可用：{err or err2}"
+        return res
+    if (rx and rx.search(ref)) or (rx2 and rx2.search(ref)):
+        res["tier"] = TIER_FORMAT
+        res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
+        res["reason"] = f"编号格式合规：{ref!r}（**仅格式合规，未验证存在性**）"
+    else:
+        res["reason"] = f"国标/公告编号格式不合规：{ref!r}"
+    return res
+
+
+def _verify_isbn_online(ref, res, spec, rules, tiers, tsc):
+    """textbook 存在性核验（v3.17.0 B3-3 实现）：按 yaml 的 endpoints 逐个实查。
+
+    判定纪律（**不能核验的字段不得计入已验证**）：
+      · 任一端点**命中** → 存在性已验证（该 ISBN 在该书目库中存在）
+      · 两端点**均未命中** → 判「不可核验」+ 显式告警，**不判证伪**
+        （未命中只说明"这两个库覆盖里没有"，不等于"这本书不存在"——
+         实测 OpenLibrary 对中文教材覆盖稀疏，国图才覆盖中文书目）
+      · 网络失败 → 退 format_fallback（校验位），仍不计入已验证 + 显式告警
+    """
+    rx, err = _compile_rule(rules.get("isbn_candidate"), "isbn_candidate")
+    if rx is None:
+        res["reason"] = f"ISBN 候选正则不可用：{err}"
+        return res
+    norm = re.sub(r"[^0-9Xx]", "", ref)
+    m = rx.search(norm)
+    if not m:
+        res["reason"] = f"未找到 ISBN 号：{ref!r}（无法联网核验）"
+        return res
+    code = m.group(0)
+
+    endpoints = spec.get("endpoints") or []
+    if not endpoints:
+        res["reason"] = "yaml#source_verification.textbook.endpoints 为空（无法联网核验）"
+        return _verify_isbn_checksum(ref, res, rules, tiers)
+
+    hits, misses, neterr = [], [], []
+    for ep in endpoints:
+        url_tpl = ep.get("url") or ""
+        if "{isbn}" not in url_tpl:
+            misses.append(f"{ep.get('id')}: url 模板缺 {{isbn}} 占位")
+            continue
+        url = url_tpl.replace("{isbn}", code)
+        if str(ep.get("method") or "GET").upper() != "GET":
+            misses.append(f"{ep.get('id')}: 暂只支持 GET")
+            continue
+        want_json = bool(ep.get("json_hit_path"))
+        data, e = _net_fetch(url, spec, want_json=want_json)
+        if e is not None:
+            neterr.append(f"{ep.get('id')}: {e}")
+            continue
+        # 命中判据：JSON 端点看 json_hit_path 数值；HTML 端点看"未命中固定文案"
+        if want_json:
+            path = str(ep.get("json_hit_path") or "")
+            cur = data
+            for part in path.split("."):
+                cur = (cur or {}).get(part) if isinstance(cur, dict) else None
+            try:
+                val = float(cur or 0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val >= float(ep.get("json_hit_min") or 1):
+                hits.append(ep.get("id"))
+            else:
+                misses.append(ep.get("id"))
+        else:
+            blob = data or b""
+            absent = str(ep.get("absent_marker") or "")
+            min_bytes = int(ep.get("min_hit_bytes") or 0)
+            text = blob.decode("utf-8", "replace")
+            # 二级判据（实测）：命中页显著大于未命中页；未命中页含固定文案
+            if absent and absent not in text and len(blob) >= min_bytes:
+                hits.append(ep.get("id"))
+            else:
+                misses.append(ep.get("id"))
+
+    if hits:
+        res["tier"] = TIER_EXISTENCE
+        res["tier_label"] = tiers.get(TIER_EXISTENCE) or "存在性已验证"
+        res["verified_by"] = hits
+        res["reason"] = (f"ISBN:{code} 联网实查命中端点 {hits}（存在性已验证；"
+                         f"未命中端点 {misses or '无'}）")
+        return res
+
+    if neterr and not misses:
+        # 全部端点网络失败 → 退格式校验（仍不计入已验证），fail-closed 不谎报
+        res["network_error"] = True
+        out = _verify_isbn_checksum(ref, res, rules, tiers)
+        out["reason"] = (f"联网核验失败（{'; '.join(neterr)}）——退回格式校验；"
+                         f"**不计入已验证**")
+        return out
+
+    # 均未命中：不判证伪（覆盖不足 ≠ 书不存在）
+    res["tier"] = TIER_UNVERIFIABLE
+    res["tier_label"] = tiers.get(TIER_UNVERIFIABLE) or "不可核验"
+    res["reason"] = (f"ISBN:{code} 在 {misses} 均未命中——**不判证伪**"
+                     f"（未命中只说明这些库覆盖里没有，不等于书不存在）"
+                     f"；网络异常：{'; '.join(neterr) or '无'}")
+    return res
+
+
+def _verify_gb_online(ref, res, spec, rules, tiers, tsc):
+    """regulation 存在性核验（v3.17.0 B3-3 实现）：查全国标准信息公共服务平台。
+
+    实测语义（**必须按实测实现，不得想当然**）：
+      · 检索按**标准号前缀**匹配，不是"号-年"精确匹配：查「GB 10648」会同时返回
+        GB 10648-1999[废止] 与 GB 10648-2013[现行]
+      · 返回的 C_STD_CODE 夹 `<sacinfo>` 标记，比对前须剥
+      · 只覆盖国家标准（GB/GB-T）；行业标准（NY/T 等）与公告号实测 total=0
+        ⇒ 非国标号不走此端点，退格式校验并显式登记为「人工核验项」
+
+    判定：
+      · 命中且号+年份完全一致 → 存在性已验证（附 STATE/发布日期/实施日期）
+      · 命中但只同号不同年 → 仅格式合规 + 告警（该号存在，但此年份版本未登记）
+      · STATE 为废止/被代替 → 仍判存在，但置 state_warning（引用已废止标准是真错误）
+      · 网络失败 / 非国标 → 退 gb_number_format（不计入已验证）
+    """
+    endpoint = spec.get("endpoint") or ""
+    if not endpoint:
+        res["reason"] = "yaml#source_verification.regulation.endpoint 缺失"
+        return _verify_gb_number_format(ref, res, rules, tiers)
+
+    rx, err = _compile_rule(rules.get("gb_number"), "gb_number")
+    if rx is None:
+        res["reason"] = f"国标编号正则不可用：{err}"
+        return res
+    m = rx.search(ref)
+    if not m:
+        # 非 GB 国标号（行业标准 NY/T、SN/T，或公告号）→ 该端点**不覆盖**（实测 total=0），
+        # 判「不可核验」并显式登记为人工核验项；不得拿"格式不合规"误导——
+        # 它格式是合规的，只是本端点查不到（实测特性，非编号错误）。
+        out = _verify_gb_number_format(ref, res, rules, tiers)
+        ann_rx, _ = _compile_rule(rules.get("announcement_no"), "announcement_no")
+        is_ann = bool(ann_rx and ann_rx.search(ref))
+        note = "公告号" if is_ann else "非 GB 国标号（行业标准/其它编号体系）"
+        if out.get("tier") == TIER_FORMAT:
+            out["reason"] += (f"；⚠ {note}——国标平台不覆盖，"
+                              f"**列入人工核验项**（不等于编号错误）")
+        else:
+            out["tier"] = TIER_UNVERIFIABLE
+            out["tier_label"] = tiers.get(TIER_UNVERIFIABLE) or "不可核验"
+            out["reason"] = (f"{note}：{ref!r}——国标平台不覆盖（实测 total=0），"
+                             f"**列入人工核验项**")
+        return out
+    std_no = m.group(0)
+
+    import urllib.parse as _up
+    q = _up.quote(std_no)
+    url = f"{endpoint}?{spec.get('query_param') or 'searchText'}={q}" \
+          f"&current=1&size={int(spec.get('page_size') or 10)}"
+    data, e = _net_fetch(url, spec, want_json=True)
+    if e is not None:
+        res["network_error"] = True
+        out = _verify_gb_number_format(ref, res, rules, tiers)
+        out["reason"] = (f"国标平台联网失败（{e}）——退回格式校验；**不计入已验证**")
+        return out
+
+    rows = (data or {}).get("rows") or []
+    try:
+        total = float((data or {}).get("total") or 0)
+    except (TypeError, ValueError):
+        total = 0.0
+    if total < float(spec.get("json_hit_min") or 1) or not rows:
+        out = _verify_gb_number_format(ref, res, rules, tiers)
+        if out.get("tier") == TIER_FORMAT:
+            out["reason"] += f"；国标平台未登记 {std_no}（人工核验项）"
+        return out
+
+    # 剥 <sacinfo> 标记后比对"号+年份完全一致"
+    strip_rx = spec.get("strip_markers") or "<sacinfo>|</sacinfo>"
+    def _norm_code(s):
+        s = re.sub(strip_rx, "", str(s or ""))
+        return re.sub(r"[\s\-—]", "", s).upper()
+
+    want = _norm_code(std_no)
+    exact = None
+    for r in rows:
+        if _norm_code(r.get(spec.get("field_code") or "C_STD_CODE")) == want:
+            exact = r
+            break
+
+    if exact is None:
+        res["tier"] = TIER_FORMAT
+        res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
+        codes = [_norm_code(r.get(spec.get("field_code") or "C_STD_CODE")) for r in rows]
+        res["reason"] = (f"国标平台命中同号不同年：{std_no} 未完全匹配，命中 {codes}"
+                         f"——**仅格式合规**（该号存在，此年份版本未登记）")
+        return res
+
+    state = str(exact.get(spec.get("field_state") or "STATE") or "").strip()
+    res["tier"] = TIER_EXISTENCE
+    res["tier_label"] = tiers.get(TIER_EXISTENCE) or "存在性已验证"
+    res["verified_by"] = ["std_samr_gov_cn"]
+    res["std_state"] = state
+    res["std_name"] = exact.get(spec.get("field_name") or "C_C_NAME")
+    res["std_issue_date"] = exact.get(spec.get("field_issue_date") or "ISSUE_DATE")
+    res["std_act_date"] = exact.get(spec.get("field_act_date") or "ACT_DATE")
+    res["reason"] = (f"国标平台命中 {std_no}（STATE={state}｜"
+                     f"{res['std_name']}｜实施 {res['std_act_date']}）")
+    if state and state not in ("现行", "即将实施"):
+        # 引用已废止/被代替标准是真错误——此前格式校验完全查不出来
+        res["state_warning"] = True
+        res["reason"] += f"；⚠ **该标准已 {state}——引用它是真错误**"
+    return res
+
+
 def classify_source(src, tsc=None, online=None):
     """给**单条来源**定档 → {kind, ref, tier, tier_label, reason, refuted, network_error}。
 
@@ -1841,38 +2326,19 @@ def classify_source(src, tsc=None, online=None):
             res["reason"] = f"PMID:{pmid} 联网核验失败（网络/端点异常，未取得结论）"
         return res
 
+    if mode == "isbn_online":
+        # v3.17.0 B3-3：由"仅格式合规"升级为"可实查存在性"；失败退 format_fallback
+        return _verify_isbn_online(ref, res, spec, rules, tiers, tsc)
+
+    if mode == "gb_online":
+        # v3.17.0 B3-3：由"仅格式合规"升级为"可实查存在性 + 现行状态"；失败退 format_fallback
+        return _verify_gb_online(ref, res, spec, rules, tiers, tsc)
+
     if mode == "isbn_checksum":
-        rx, err = _compile_rule(rules.get("isbn_candidate"), "isbn_candidate")
-        if rx is None:
-            res["reason"] = f"ISBN 校验不可用：{err}"
-            return res
-        norm = re.sub(r"[^0-9Xx]", "", ref)
-        m = rx.search(norm)
-        if not m:
-            res["reason"] = f"未找到 ISBN 号：{ref!r}"
-            return res
-        code = m.group(0)
-        if isbn_checksum_ok(code):
-            res["tier"] = TIER_FORMAT
-            res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
-            res["reason"] = f"ISBN 校验位通过：{code}（**仅格式合规，未验证存在性**）"
-        else:
-            res["reason"] = f"ISBN 校验位不通过：{code}"
-        return res
+        return _verify_isbn_checksum(ref, res, rules, tiers)
 
     if mode == "gb_number_format":
-        rx, err = _compile_rule(rules.get("gb_number"), "gb_number")
-        rx2, err2 = _compile_rule(rules.get("announcement_no"), "announcement_no")
-        if rx is None and rx2 is None:
-            res["reason"] = f"国标编号校验不可用：{err or err2}"
-            return res
-        if (rx and rx.search(ref)) or (rx2 and rx2.search(ref)):
-            res["tier"] = TIER_FORMAT
-            res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
-            res["reason"] = f"编号格式合规：{ref!r}（**仅格式合规，未验证存在性**）"
-        else:
-            res["reason"] = f"国标/公告编号格式不合规：{ref!r}"
-        return res
+        return _verify_gb_number_format(ref, res, rules, tiers)
 
     res["reason"] = f"kind={kind} 的核验方式 mode={mode!r} 未实现——判「不可核验」"
     return res
@@ -2671,8 +3137,11 @@ def _loop_quality_snapshot(st, rnd, p0, p1, p2, source="", extra=None):
     优先）或 "manual"（成员/主理人自报，未经交叉核验）。**必须写进快照**：
     只知道数字不知道来源，就等于无法判断这个数能不能信（本包"工具自报不算数"纪律）。
     """
+    # v3.17.0 B3-4：p0p1p2 与 p0p1 并存 —— 收敛判据改看三者合计（见
+    #   _loop_no_progress_streak）；保留 p0p1 供既有报表/旧快照兼容消费。
     snap = {"round": int(rnd), "p0": int(p0), "p1": int(p1), "p2": int(p2),
-            "p0p1": int(p0) + int(p1), "ts": now_iso()}
+            "p0p1": int(p0) + int(p1),
+            "p0p1p2": int(p0) + int(p1) + int(p2), "ts": now_iso()}
     if source:
         snap["source"] = source
     if extra:
@@ -2800,17 +3269,35 @@ def _load_quality_from_verify_json(path, expect_deck=None):
 
 
 def _loop_no_progress_streak(hist):
-    """连续多少轮 P0+P1 合计「未下降」（相邻两轮逐一比较，遇下降即归零）。
+    """连续多少轮 P0+P1+P2 合计「未下降」（相邻两轮逐一比较，遇下降即归零）。
 
     语义：比较次数 = len(hist)-1；连续 N 次"没变好"即触发（N 取自 no_progress_threshold）。
     只有 1 条快照时无从比较 → 返回 0（宁可不判，也不凭空触发）。
+
+    v3.17.0 B3-4：**P2 纳入判据**（此前只比 p0p1）。
+      缺陷场景（实测可构造）：一轮只把「备注覆盖率」补达标（P2 阻断解除，
+      p2: 1 → 0），P0/P1 一个没动 ⇒ 旧判据看 p0p1 持平 → 判「无进展」并终止，
+      而**质量实际在推进**（P2 门禁从阻断变通过）。这是把"有效推进"误杀为"空转"。
+      方向说明（**不可搞反**）：P0/P1/P2 在本包口径里**同向**——都是"缺陷/
+      阻断计数"，**越少越好**；P2 阻断的语义是「备注覆盖率**未达标**」
+      （1=未达标/阻断，0=达标），不是"覆盖率百分比"本身，故可直接相加。
+      若将来把 p2 改成"覆盖率百分比（越高越好）"，本函数必须同步改向，
+      不能简单相加。
+
+    向后兼容：旧快照可能没有 p0p1p2 键 → 用 p0p1 + p2 现算（p2 缺失按 0）。
     """
     hist = [h for h in (hist or []) if isinstance(h, dict)]
     if len(hist) < 2:
         return 0
+
+    def _total(h):
+        if h.get("p0p1p2") is not None:
+            return int(h["p0p1p2"])
+        return int(h.get("p0p1", 0)) + int(h.get("p2", 0) or 0)
+
     streak = 0
     for prev, cur in zip(hist, hist[1:]):
-        if int(cur.get("p0p1", 0)) >= int(prev.get("p0p1", 0)):
+        if _total(cur) >= _total(prev):
             streak += 1
         else:
             streak = 0
@@ -3457,6 +3944,9 @@ def cmd_doctor(args):
         ("budget",     "预算计数（spawn/react/rework）",             "action",  "--kind/--n",  "0/1/2", "harness.py budget check --kind spawn"),
         ("trace",      "执行日志 JSONL（log/report）",                "action",  "--event/--actor/--detail", "0/2", "harness.py trace report"),
         ("spawn",      "v3.4.0：显式记录某成员 spawn（带 token 估算）",  "--agent", "--task-id/--input-bytes/--output-bytes", "0/1/2", "harness.py spawn --agent dvm-content-expert --task-id t1 --input-bytes 1200 --output-bytes 800"),
+        ("member-return", "v3.17.0 B3-2：登记成员回传（写 trace member_return）", "--agent", "--task-id/--stage/--status/--artifact", "0", "harness.py member-return --agent dvm-content-expert --task-id t1 --stage 2 --status success --artifact out/blueprint.md"),
+        ("spawn-failed", "v3.17.0 B3-2：登记 spawn 失败（写 trace spawn_failed）", "--agent", "--task-id/--attempt/--reason", "0", "harness.py spawn-failed --agent pedagogy-architect --task-id t1 --attempt 1 --reason '平台返回 not available'"),
+        ("degrade",    "v3.17.0 B3-2：登记成员降级（写 trace degrade）", "--agent", "--task-id/--channel/--reason", "0", "harness.py degrade --agent pedagogy-architect --task-id t1 --channel general-purpose+persona --reason 'spawn 2 次均 not available'"),
         ("stage",      "v3.4.1：显式发 stage_enter/exit（填 stage_seconds）", "--action/--stage", "--task-id/--note", "0/2", "harness.py stage --action enter --stage 1"),
         ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
         ("verify-artifact", "核验成员自报落盘（反自评失真硬校验）",    "--path",  "--expect-bytes/--min-bytes", "0/1", "harness.py verify-artifact --path x.md --expect-bytes 1200"),
@@ -3492,6 +3982,17 @@ def cmd_spawn(args):
     """v3.4.0 R5：主理人/脚本可显式 spawn 某 agent 写 trace。
     解决：trace 之前只能在 gate/lint/template_audit 三处自动写，4 成员（dvm/pedagogy/
     visual/verifier）零事件。spawn 子命令让"主理人调了 dvm"这件事有 trace。
+
+    v3.17.0 B3-2：补写 yaml 声明的 `spawn` 事件。
+      此前本命令只写 `agent_spawn`——而 harness.yaml#observability.trace_events 声明的
+      12 个事件里**没有** agent_spawn、有的却是 `spawn` ⇒ 声明层与执行层错位
+      （同一型病：声明了却没产出点 / 产出了却没声明）。
+      处置：写两条——
+        · `spawn`      = **yaml 声明的事件名**，detail 含成员 id / 任务 id / 阶段
+                         （新增断言据此判定"声明的事件真有产出"）；
+        · `agent_spawn` = 保留给既有文档与既有 trace（references/iron-rules.md#B3、
+                         agents/…-team-lead.md 的闸动作序列都点名它），**不删**
+                         ——删事件名会让既有文档立刻变成假引用。
     """
     cfg, _ = load_cfg()
     w = wkspace(args)
@@ -3507,7 +4008,8 @@ def cmd_spawn(args):
     }
     if detail["input_chars"] or detail["output_chars"]:
         detail["approx_tokens"] = round((detail["input_chars"] + detail["output_chars"]) / 4)
-    rec = _trace(w, cfg, "agent_spawn", args.agent, detail)
+    rec = _trace(w, cfg, "spawn", args.agent, detail)
+    _trace(w, cfg, "agent_spawn", args.agent, detail)      # 兼容既有文档/既有 trace
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
 
@@ -3790,6 +4292,8 @@ def main():
 
     p = sub.add_parser("preflight", help="开工前成员可用性与静默降级预检")
     p.add_argument("--team", default="", help="团队名（读 ~/.workbuddy/teams/<team>/config.json）")
+    p.add_argument("--task-id", dest="task_id", default="",
+                   help="任务 id（写入 preflight / degrade 事件，便于事后对账）")
     _ws(p)
     p.set_defaults(func=cmd_preflight)
 
@@ -3874,6 +4378,47 @@ def main():
     p.add_argument("--output-bytes", type=int, default=0, help="输出 token 估算（按 1 token ≈ 4 chars）")
     _ws(p)
     p.set_defaults(func=cmd_spawn)
+
+    # ── v3.17.0 B3-2：补齐 yaml 声明却无产出点的 trace 事件入口 ────────
+    # 立项理由：config/harness.yaml#observability.trace_events 声明 12 个事件，
+    #   实测 7 个零产出（含 degrade / member_return / spawn_failed / error）——
+    #   其中 degrade 是 fallback.require_disclosure 的唯一执行者，缺它 =
+    #   "降级是否发生、是否声明"在 trace 里查不到（v2.2.0 建 harness 的原始理由被自己重犯）。
+    p = sub.add_parser("member-return",
+                       help="v3.17.0 B3-2：登记成员回传（写 trace 事件 member_return）")
+    p.add_argument("--agent", required=True, help="回传成员 id")
+    p.add_argument("--task-id", dest="task_id", default="", help="任务 id")
+    p.add_argument("--stage", type=int, default=None, help="阶段号（0-4）")
+    p.add_argument("--status", default="", help="回传状态（success/partial/failed/blocked）")
+    p.add_argument("--artifact", default="", help="产物落盘路径")
+    p.add_argument("--phase", default="", help="阶段标识")
+    p.add_argument("--issues", default="", help="阻塞/缺口摘要")
+    p.add_argument("--warnings", default="", help="警告摘要")
+    _ws(p)
+    p.set_defaults(func=cmd_member_return)
+
+    p = sub.add_parser("spawn-failed",
+                       help="v3.17.0 B3-2：登记 spawn 失败（写 trace 事件 spawn_failed）")
+    p.add_argument("--agent", required=True, help="成员 id")
+    p.add_argument("--task-id", dest="task_id", default="", help="任务 id")
+    p.add_argument("--stage", type=int, default=None, help="阶段号（0-4）")
+    p.add_argument("--attempt", type=int, default=1, help="第几次尝试（对照 fallback.max_spawn_attempts）")
+    p.add_argument("--reason", default="", help="失败原因（必填语义：不可用/平台回落/超时…）")
+    _ws(p)
+    p.set_defaults(func=cmd_spawn_failed)
+
+    p = sub.add_parser("degrade",
+                       help="v3.17.0 B3-2：登记成员降级（写 trace 事件 degrade——"
+                            "fallback.require_disclosure 的执行者）")
+    p.add_argument("--agent", required=True, help="被降级的成员 id")
+    p.add_argument("--task-id", dest="task_id", default="", help="任务 id")
+    p.add_argument("--stage", type=int, default=None, help="阶段号（0-4）")
+    p.add_argument("--channel", default="",
+                   help="降级通道（general-purpose+persona / script_pipeline，"
+                        "取自 harness.yaml#fallback.degrade_modes）")
+    p.add_argument("--reason", default="", help="降级原因（必填语义）")
+    _ws(p)
+    p.set_defaults(func=cmd_degrade)
 
     # v3.4.1 R11：stage 子命令——编排循环显式发 stage_enter/exit，填补 stage_seconds
     p = sub.add_parser("stage", help="v3.4.1：显式发 stage_enter/stage_exit（填 trace report 的 stage_seconds）")
@@ -3994,7 +4539,41 @@ def main():
     p.set_defaults(func=cmd_loop)
 
     a = ap.parse_args()
-    sys.exit(a.func(a))
+    sys.exit(run_command(a))
+
+
+def run_command(a):
+    """执行子命令并统一处理运行期异常 → 写 trace 事件 error。
+
+    v3.17.0 B3-2 新增（**error 事件**是 yaml 声明的 12 个事件里最后一个零产出的）。
+      此前 harness 抛异常 = 栈打到 stderr 就没了，trace 里查不到"哪一步炸了"
+      ⇒ 编排现场无法复盘。现在统一在此捕获：写一条 error 事件（带子命令名、
+      argv、异常类型与消息），再按既有语义返回退出码 4（运行错误——非课件质量，
+      不得当作红灯打回成员，见 harness.yaml#gate_exit_codes）。
+
+    抽成独立函数（而不是内联在 main 里）的原因：**可测**——
+    异常路径若只在 __main__ 里，就没有任何测试能覆盖它（这正是本包反复吃亏的
+    "不可达路径"型缺陷）。
+    """
+    try:
+        return a.func(a)
+    except SystemExit:
+        raise
+    except BaseException as e:
+        try:
+            cfg, _ = load_cfg()
+            w = wkspace(a)
+            fn = getattr(a, "func", None)
+            _trace_error(w, cfg, "error", "harness",
+                         {"command": getattr(fn, "__name__", "?") if fn else "?",
+                          "argv": sys.argv[1:], "exception": type(e).__name__,
+                          "message": str(e)[:500]})
+        except Exception:
+            pass    # trace 写失败不得掩盖原始异常
+        import traceback as _tb
+        print(f"⛔ harness 运行异常：{type(e).__name__}: {e}", file=sys.stderr)
+        _tb.print_exc()
+        return 4
 
 
 if __name__ == "__main__":

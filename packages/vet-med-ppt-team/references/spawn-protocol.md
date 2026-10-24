@@ -76,20 +76,79 @@
    ```bash
    EXPERT_DIR=~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
    RUN_DIR=<workspace>/.harness-runs/<task_id>
-   python3 "$EXPERT_DIR/scripts/assemble_spawn_prompt.py" \
+   python3 "$EXPERT_DIR/scripts/assemble_domain_prompt.py" \
      --member <member-id> --phase <阶段号> --task-id <task_id> \
      --task-file <任务包文件> --run-dir "$RUN_DIR" --check-task-package \
+     --collapse-artifact "$RUN_DIR/_collapse/collapse_<task_id>_<域id>.json" \
      --out "$RUN_DIR/spawn__<member-id>.md"
    ```
-   脚本确定性完成：成员 MD 全文注入 + **`config/visual-rules.yaml` / `references/*.md` / `scripts/*.py` 绝对路径清单**（本团无 skills 目录，这些就是成员的资源根，必须显式下发）+ 白名单校验（非 `plugin.json` 成员 exit 2）+ 任务包**四要素**校验（缺 exit 4；**第五要素 `acceptance_criteria` 脚本暂不校验**，见 §一 注）+ 落盘契约。
+   脚本确定性完成：成员 MD 全文注入 + **域上下文注入**（见下 §2.1）+ **`config/visual-rules.yaml` / `references/*.md` / `scripts/*.py` 绝对路径清单**（本团无 skills 目录，这些就是成员的资源根，必须显式下发）+ 白名单校验（非 `plugin.json` 成员 exit 2）+ 任务包**四要素**校验（缺 exit 4；**第五要素 `acceptance_criteria` 脚本暂不校验**，见 §一 注）+ 落盘契约。
+
+   > **为什么用 `assemble_domain_prompt.py` 而不是 `assemble_spawn_prompt.py`**（v3.17.0 批次 B 实测）：
+   > 后者是**联邦 shim**，转调 shared-core 的装配实现（本包内另有一份快照 `vendor/shared-core/assemble_spawn_prompt.py`）；
+   > 而 shared-core 的实现**从不读 `_collapse/` 目录、也不读 `config/domain-profiles.yaml`**——
+   > 2026-10-24 端到端实测：坍缩产物已 `status=confirmed / effective=true`，
+   > 装配产物中域人格关键词命中数仍是 **0**。
+   > 本包**不修改 shared-core**（影响另外 4 个包，需另案上提），
+   > 而是在包内新增 `scripts/assemble_domain_prompt.py` 做**基础装配 + 域上下文注入 + frontmatter 键补偿**。
+   > `scripts/assemble_spawn_prompt.py` 保留为**基础装配入口**（不带域上下文），仅供不需要域人格的场合。
+
 2. **spawn**：`Agent(name=<member-id>, subagent_type="general-purpose", prompt=<上一步产物>)`
 3. **收产出**：以落盘文件 `<RUN_DIR>/<task_id>__<member-id>.md` 为准，SendMessage 仅作摘要通知。文件缺失 = 未交付。
 
-> ⚠️ 本团成员实测可能**无 Write 权限**（仅有 Bash/Read/Grep/Glob/Web 系）。落盘契约已内置回退：无 Write 时用 Bash heredoc 写文件。主理人下发时不要假设成员能 Write。
+> ⚠️ 本团成员实测可能**无 Write 权限**（仅有 Bash/Read/Grep/Web 系）。落盘契约已内置回退：无 Write 时用 Bash heredoc 写文件。主理人下发时不要假设成员能 Write。
+
+### 2.1 域上下文注入（v3.17.0 批次 B · P0 强制）
+
+**域人格进 prompt 的唯一合法路径** = 装配器注入。装配产物中「角色定义」段**之后**、「任务包」段**之前**
+会多出一段：
+
+```
+==================== 域上下文（v3.17.0 坍缩产物注入） ====================
+【生效状态】✅ 域人格已生效（status=confirmed / effective=true）
+【所属域】<域 id>（<域中文名>）
+【坍缩产物】<产物绝对路径>
+【一、域人格】… 【八、知识锚点】
+==================== 域上下文结束 ====================
+```
+
+内容源 = **坍缩产物 JSON**（`role_persona` / `content_axes` / `evidence_hierarchy` /
+`image_channel` / `safety_redlines` / `knowledge_bases` / `terminology` / `knowledge_anchor`），
+域档案 `config/domain-profiles.yaml` 补缺并提供**通用兜底**段。
+
+**参数**：
+
+| 参数 | 说明 |
+|---|---|
+| `--collapse-artifact <路径>` | 显式指定坍缩产物路径（**推荐**）；缺省时按 `--run-dir` / `--workspace` 自动发现 `_collapse/` 下产物 |
+| `--domain-profile <路径>` | 域档案路径（默认本包 `config/domain-profiles.yaml`） |
+| `--run-dir <路径>` | 本轮运行目录（同时用于产出落盘契约与坍缩产物自动发现） |
+| `--workspace <路径>` | 工作区（用于 `<workspace>/.harness-runs/*/_collapse/` 自动发现） |
+
+**安全语义（不满足即不注入，绝不静默按已确认处理）**：
+
+| 情形 | 装配产物中的表现 |
+|---|---|
+| 坍缩产物 `status=confirmed` **且** `effective=true` | 完整八段域上下文注入 |
+| 坍缩产物未确认（`status != confirmed` 或 `effective != true`） | **不注入**域人格 + 显式警告「⚠️ 域人格未生效（未确认）」 |
+| 域档案读不到 / 档案中无该域 | **不注入**域人格 + 「⚠️ 域档案不可用——**本条按通用兜底处理**」+ 通用兜底人设 |
+| 无坍缩产物 | **不注入**域人格 + 「⚠️ 未找到坍缩产物」+ 通用兜底人设 |
+| 成员在该域的绑定为 `domain_neutral` | 不注入域人格 + 「ℹ️ 本成员在本域为 `domain_neutral`」 |
+
+> ❌ **严禁**在缺域档案时静默回落某个**具体域**（尤其不得回落 animal-medicine）——那是"看起来能用、实际跑偏"。
+> 通用兜底只给"内容权威"这一档通用身份与通用证据轴，**不含**任何域专有信息。
+
+**回归守卫**：`python3 -m pytest scripts/test_spawn_injection.py -q`
+（覆盖：正文逐字节一致 / frontmatter 三键 / 已确认注入 / 未确认拒注入 / 兜底标注 / 端到端 route→confirm→装配）。
+
 
 ### 严禁
 
 - ❌ 不跑装配脚本直接 spawn
+- ❌ **域未确认就 spawn 内容专家**（坍缩产物 `status != confirmed` 或 `effective != true` 时，
+  装配器会拒绝注入域人格并打警告——此时 spawn 出去的是"无域上下文的通用内容权威"，
+  等于让成员冒充专家）
+- ❌ 缺域档案时**静默回落某个具体域**（尤其不得回落 animal-medicine）——只允许带标注的通用兜底
 - ❌ 成员横向直连（实测发生跨团队串台）。跨成员信息流经主理人中转
 - ❌ 以"成员自称完成"替代文件校验——与本团「反自评失真」红线一致，完成声明必须引用可验证计数（落盘文件存在 + verify_deck 原始 P0/P1/P2 计数），禁止"归零/100%"表述
 

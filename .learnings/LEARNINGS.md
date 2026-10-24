@@ -119,3 +119,31 @@ v3.12.0 修 Loop 状态的并发写缺陷时，我做了 `git stash` 对照实�
 - Last-Seen: 2026-10-22
 
 ---
+## [LRN-20261024-001] best_practice
+
+**Logged**: 2026-10-24T20:40:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: docs
+
+### Summary
+「机制已实现」不等于「机制已接入消费端」——v3.17.0 坍缩机制建了完整状态机却零消费者
+
+### Details
+v3.17.0 新增「专家团动态坍缩」：route --domain 落盘 → collapse confirm → 域人格生效。
+状态机部分正确（pending→confirmed→effective 全通），但装配链
+（shared-core/assemble_spawn_prompt.py）从不读 _collapse/ 目录，
+端到端实测：坍缩已 confirmed/effective，注入产物中域人格关键词命中 = 0。
+即：**产出侧写完了，消费侧没接线**。
+
+### Suggested Action
+凡新增「产出物→消费端」的机制，必须跑一次端到端实测断言**消费端产物里真的出现了该内容**，
+不能只看产出侧的状态位。判据：机制类改动一律配"端到端断言"而非"单元测试"。
+
+### Metadata
+- Source: conversation
+- Related Files: scripts/assemble_spawn_prompt.py, config/domain-profiles.yaml, config/harness.yaml
+- Tags: mechanism-wiring, end-to-end-assert, collapsed-expert
+- See Also: ERR-20261022-001
+
+---

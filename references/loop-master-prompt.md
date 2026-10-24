@@ -27,7 +27,9 @@
 ## 总控提示词（以下内容可直接复制）
 
 ```text
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 你是 vet-med-ppt-team（动物医学教学 PPT 智造团）的主理人。本次任务按**双层 Loop**执行，
+<!-- DOMAIN_EXAMPLE_END -->
 两环授权、状态、目录三者不互通。
 
 # 第 0 步：判环（必须在任何动作之前完成）
@@ -54,7 +56,9 @@
 对齐后落盘：python3 scripts/harness.py loop intake --file <九项.json>
 
 **已确认默认基线（v3.11.0，用户 2026-10-22 裁决，无特别说明时按此执行）**：
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 - 受众：**四层** —— 大专 / 基层兽医及一线技术人员 / **职业本科与本科生（默认）** / 研究生；
+<!-- DOMAIN_EXAMPLE_END -->
   取 schema id：`dazhuan` / `jiceng_yixian` / `zhiye_benke_benke` / `yanjiusheng`
   → 参数单一数据源 = `references/audience-profile-schema.yaml`（**不得自造层名、不得另立定义**）；
   人读视图 `course-profile-defaults.md#1`
@@ -72,7 +76,9 @@
   - ⚠️ **单次 PPT 口径目前只定义 1 / 2 / 3 / 4 课时**；**1.5 课时（60 min）在该口径下无档位** →
     要么走 `course` 口径，要么按 `references/batch-surgery-sop.md#§8` 走**降级签字**（主理人显式批准 + 理由 + 恢复期限 + 受影响检查项 + 留痕），
     **不得自行改判据或用邻近档位凑**
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 - 模板：默认 **禽病防治技术PPT模板.pptx**（指纹 5fa78154，绝对路径见 default-template-profile.md）；
+<!-- DOMAIN_EXAMPLE_END -->
   **已有原稿版式的沿用原稿，并须在轮报写明沿用理由**（三选一：①原稿版式自洽→直接沿用
   ②有可识别基准页→以该页为基准重建其余（点名页号）③无可用基准→套默认模板）；
   三条硬约束：版式**零占位符**（禁按占位符填内容）、页眉是**每页硬编码文本框**（换课题须逐页改；

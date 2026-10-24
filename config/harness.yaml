@@ -18,11 +18,15 @@ version: "3.17.0"
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
 # 只认整数 0-4；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
 stages:
-  0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", next: 1}
-  1: {name: "闸2 设计（蓝图∥证据）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", next: 2}
-  2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", next: 3}
-  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", next: 4}
-  4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", next: null}
+  0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", parallel: no, next: 1}
+  # v3.17.0 批次 B：stage 1 由 parallel: yes 改 **no**（伪并行修正）——
+  #   蓝图（pedagogy-architect）的「二八难点清单」依赖证据包（dvm-content-expert）的
+  #   「易误解」标注，两侧**存在真实数据依赖**、边界并不互斥。原声明"并行、任务边界互斥"
+  #   与事实相反：并行后蓝图方必然回问，每次多一轮往返。改串行：证据先行 → 蓝图。
+  1: {name: "闸2 设计（证据先行→蓝图·串行）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", parallel: no, next: 2}
+  2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", parallel: yes, next: 3}
+  3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", parallel: no, next: 4}
+  4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", parallel: yes, next: null}
 # v3.16.0 澄清（只加注释，不改任何语义/成员数组）：
 #   读本段时容易误判"ppt-producer 漏配"——它**不占 stage 位**：
 #   v3.0.0 起不再常驻 spawn，改**按需跨闸调用**（L3 批量 / 门禁异常 / 台账重建，
@@ -69,11 +73,18 @@ members:
     fallback: "script_pipeline"   # 无成员时退化为 harness gate + verify-artifact 组合
 
 # ── 复杂度分级 → spawn 计划（v3.0.0：默认计划不含 ppt-producer，含 verifier）──
+# v3.17.0（批次 B · Task#7）：`spawn` 的元素**一律是合法成员 ID**（取值域 = 本文件
+#   `members` 的键）。此前 L1/L3 把「按需1-2名」「批量/台账」这类**说明文字塞进了
+#   数组元素**（"pedagogy-architect|dvm-content-expert（按需1-2名）"、
+#   "ppt-producer（批量/台账）"）——下游若按成员 ID 遍历 spawn 计划，拿到的是
+#   **无法解析的伪 ID**（成员 ID 永不含中文括号/竖线/中文）。
+#   ⇒ 说明语义一律移到同级 `spawn_policy` 键（人读、不参与 ID 解析）；
+#     `scripts/harness.py#cmd_route` 另加**运行时校验**（伪 ID 直接报错退出，不静默透传）。
 routing:
-  L0: {team_create: false, spawn: [],                                    confirm_gates: 1}
-  L1: {team_create: true,  spawn: ["pedagogy-architect|dvm-content-expert（按需1-2名）"], confirm_gates: 2}
-  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2}
-  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier", "ppt-producer（批量/台账）"], confirm_gates: 2, red_team: true}
+  L0: {team_create: false, spawn: [], confirm_gates: 1, spawn_policy: "不建团、不 spawn（单点直办）"}
+  L1: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert"], confirm_gates: 2, spawn_policy: "按需1-2名（主理人按任务性质取舍，从上述候选中挑）"}
+  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2, spawn_policy: "全员常驻（ppt-producer 不常驻——门禁类按需跨闸调用，见 members.ppt-producer.spawn）"}
+  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier", "ppt-producer"], confirm_gates: 2, red_team: true, spawn_policy: "全员常驻；ppt-producer 仅在批量制作/台账重建场景加入"}
 
 # ── 降级协议（v2.2.0 新增：成员不可调度时不再整链阻断）──────────
 fallback:
@@ -203,6 +214,21 @@ observability:
   trace_file: ".workbuddy/harness_trace.jsonl"   # 追加式 JSONL，每事件一行
   # v3.16.0：登记 no_progress（连续 N 轮无质量进展，见 loop_b.budgets.no_progress_threshold）。
   #   注：本清单当前无校验器强制（属登记性声明），事件由 _loop_dispatch(continue) 写出。
+  # v3.17.0 B3-2（本轮实测修正）：此前本清单声明 12 个事件，实测**只有 5 个有代码产出**
+  #   （gate / stage_enter / stage_exit / budget_exceeded / no_progress），7 个是纯声明——
+  #   其中 degrade 缺席的代价是**立项级**的：同文件 fallback.require_disclosure=true
+  #   声明"降级必须在交付物与 trace 中显式声明"，而 degrade 无产出 ⇒
+  #   "降级是否发生、是否被声明"在 trace 里根本查不到（v2.2.0 建 harness 层的原始理由被自己重犯）。
+  #   ⇒ 本轮为 12 个事件**逐个补上代码产出点**（见 scripts/harness.py 的产出点注释）：
+  #     team_create   ← route（路由判出要建队时）
+  #     preflight     ← preflight（开工前可用性预检）
+  #     spawn         ← spawn（spawn 成功）
+  #     spawn_failed  ← spawn-failed（spawn 失败/不可用）
+  #     degrade       ← degrade + preflight（检出平台已回落成通用子代理时）
+  #     member_return ← member-return（成员回传登记）
+  #     error         ← main() 顶层异常出口（此前异常只打栈、trace 里查不到）
+  #   ⛔ 事件名是**声明与代码的契约**：改这里的名字 = 同时改产出点，否则
+  #     `trace report` 的 declared_events_missing / undeclared_events 会立刻报出来。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
                  "error", "no_progress"]

@@ -193,10 +193,102 @@ three_source_check:
       #   否则封禁时每条 PMID 都要赔 2+4+8 秒退避，整批清单拖到无法忍受。
       #   被中止的条数**显式告警**，上层按 network_error 计数 → fail-closed。
       abort_batch_on_rate_limit: true
+    # ── textbook（ISBN）：v3.17.0 B3-3 **接入真实存在性端点** ────────
+    # 立项依据（CHANGELOG 已知瑕疵 #1）：此前 textbook 只有 isbn_checksum
+    #   （校验位算法），**永远只到「仅格式合规」档**——校验位能证明"这串数字
+    #   算得通"，不能证明"真有这本书"。
+    #
+    # v3.17.0 实测接入两个**现查可达**的端点（均已实际发请求验证，证据见 CHANGELOG）：
+    #   ① 国家图书馆联合目录（opac.nlc.cn）——中文书目权威源，按 ISBN 字段精确检索
+    #      （find_code=ISB）；命中即"该 ISBN 在国家图书馆书目库中存在"。
+    #      ⚠ 实测特性：**命中页比未命中页大约多 30KB**（多出书目记录块），
+    #        且未命中页含固定文案「数据库里没有这条请求记录」→ 代码据此判定命中。
+    #      ⚠ 该端点有速率限制：连续请求会返回空响应（实测连发即被限）。
+    #        故 rate_limit_sleep 取 1.5s（保守），网络失败判 network_error（fail-closed）。
+    #   ② OpenLibrary search API（openlibrary.org）——按 isbn: 精确查，
+    #      返回 numFound + 书名/出版年。⚠ 实测**中文书覆盖稀疏**
+    #      （3 个真实中文兽医学教材 ISBN 只 1 个命中；3 个随机伪造 ISBN 全不命中，
+    #        即**无假阳性**）→ 作为**第二端点**，命中即可证实存在；
+    #        未命中**不构成证伪**（覆盖不足 ≠ 书不存在）。
+    #
+    # ⚠ 判定纪律（**不能核验的字段不得计入已验证**）：
+    #   · 任一端点**命中** → 存在性已验证（existence_verified）
+    #   · 两端点**均未命中** → 判「不可核验」并显式告警（**不判证伪**：
+    #     未命中只说明"这两个库的覆盖里没有"，不等于"这本书不存在"）
+    #   · 网络失败 → network_error（fail-closed，不计入已验证）
     textbook:
-      mode: "isbn_checksum"      # ISBN 校验位算法（格式合规 ≠ 存在）
+      mode: "isbn_online"         # v3.17.0 B3-3：由"仅格式合规"升级为"可实查存在性"
+      format_fallback: "isbn_checksum"   # 联网失败时退回格式校验（仍不计入已验证）
+      timeout_seconds: 25
+      rate_limit_sleep: 1.5       # 实测 opac.nlc.cn 连发即限速 ⇒ 保守取 1.5s
+      max_retries: 2
+      backoff_base: 3.0
+      backoff_cap: 20.0
+      endpoints:
+        - id: "nlc_opac"
+          label: "国家图书馆联合目录（按 ISBN 精确检索）"
+          url: "http://opac.nlc.cn/F/?func=find-b&find_code=ISB&request={isbn}&local_base=NLC01"
+          method: "GET"
+          # 命中判据（实测）：未命中页含此固定文案；命中页不含
+          absent_marker: "数据库里没有这条请求记录"
+          # 命中时页长显著大于未命中页（实测 60KB vs 30KB）——作二级判据
+          min_hit_bytes: 45000
+        - id: "openlibrary"
+          label: "OpenLibrary Search API（按 ISBN 精确检索）"
+          url: "https://openlibrary.org/search.json?q=isbn:{isbn}&fields=isbn,title,publish_year,publisher&limit=1"
+          method: "GET"
+          json_hit_path: "numFound"    # >0 即命中
+          json_hit_min: 1
+
+    # ── regulation（GB 国标号 / 公告号）：v3.17.0 B3-3 **接入真实端点** ──
+    # 立项依据（CHANGELOG 已知瑕疵 #1）：此前 regulation 只有 gb_number_format
+    #   （编号格式正则），**永远只到「仅格式合规」档**。
+    #
+    # v3.17.0 实测接入**全国标准信息公共服务平台**（std.samr.gov.cn，市场监管总局）：
+    #   endpoint = /gb/search/gbQueryPage?searchText={标准号}&current=1&size=N
+    #   返回 JSON：{total, rows:[{C_STD_CODE, C_C_NAME, STATE, ISSUE_DATE, ACT_DATE}]}
+    #   ⇒ **可核验的字段（本包只把确实拿到的字段计入已验证）**：
+    #     · 该标准号**是否存在**（total/rows 命中）
+    #     · **现行状态**（STATE：现行 / 废止 / 被代替 / 即将实施）——这是本包
+    #       此前完全拿不到的关键字段：引用一条**已废止**的标准是真错误，
+    #       此前格式校验完全查不出来。
+    #     · 标准名称（C_C_NAME）、发布日期（ISSUE_DATE）、实施日期（ACT_DATE）
+    #   ⚠ 实测特性（**必须按实测语义实现，不得想当然**）：
+    #     · 检索是**按标准号前缀**匹配的，不是按"号-年"精确匹配：
+    #       查「GB 17574-1998」→ 命中 GB/T 17574-1998（现行）；
+    #       查「GB 10648-2008」→ total=0（该平台只登记了 10648-1999[废止]
+    #       与 10648-2013[现行]）；查「GB 10648」→ 两条全返（含废止态）。
+    #     ⇒ 代码据此判定：**按标准号命中即存在**；再从命中行里找**号+年份完全
+    #       一致**的那条，取其 STATE/日期；若只有同号不同年，则按"该号存在、
+    #       但此年份版本未登记"处理（判 format_only + 显式告警，不谎报"完全一致"）。
+    #     · 返回的 C_STD_CODE 夹着 <sacinfo> 标记（如 `<sacinfo>GB</sacinfo>/T
+    #       <sacinfo>17574-1998</sacinfo>`）→ 代码须先剥标记再比对。
+    #   ⚠ 覆盖边界（**实测确认，不得夸大**）：该端点只覆盖**国家标准（GB/GB-T）**，
+    #     **不覆盖**行业标准（NY/T 等，实测查 NY/T 1167-2006 → total=0）
+    #     与**公告号**（实测查公告 → total=0）。故：
+    #     · 公告号（公告X号）仍走格式校验档 + 显式登记"人工核验项"（见下）。
     regulation:
-      mode: "gb_number_format"   # 国标编号 / 公告号格式（格式合规 ≠ 存在）
+      mode: "gb_online"           # v3.17.0 B3-3：由"仅格式合规"升级为"可实查存在性+状态"
+      format_fallback: "gb_number_format"   # 联网失败/非国标号时退回格式校验
+      timeout_seconds: 25
+      rate_limit_sleep: 1.0
+      max_retries: 2
+      backoff_base: 3.0
+      backoff_cap: 20.0
+      endpoint: "https://std.samr.gov.cn/gb/search/gbQueryPage"
+      query_param: "searchText"    # 标准号检索参数（实测唯一有效名）
+      page_size: 10
+      # 命中判据（实测）：JSON 的 total > 0 且 rows 非空
+      json_hit_path: "total"
+      json_hit_min: 1
+      # 从命中行取的字段（**只把确实拿到的字段计入已验证**）
+      field_code: "C_STD_CODE"     # 标准号（含 <sacinfo> 标记，代码须剥）
+      field_name: "C_C_NAME"       # 标准名称
+      field_state: "STATE"         # 现行/废止/被代替/即将实施
+      field_issue_date: "ISSUE_DATE"
+      field_act_date: "ACT_DATE"
+      # 命中后判定"号+年份完全一致"时，比对用的标记剥离正则
+      strip_markers: "<sacinfo>|</sacinfo>"
 
   # ── 格式校验规则（确定性结构校验：校验位算法 + 编号格式）─────────
   # 正则落 yaml，代码只读取与执行（禁硬编码）；yaml 缺失 → 该 kind 判「不可核验」并告警，
@@ -218,7 +310,7 @@ gates:
 
 # ── AI 融合教学维（v3.7.0 新增，七维诊断维⑦的配置化） ────────
 # 消费方：pedagogy-architect（蓝图检查 AI 元素）/ verifier（维⑦抽检）
-# 量规唯一源：下游 skill teaching-ppt-studio/references/seven-dimension-rubric.md
+# 量规唯一源：包内 references/seven-dimension-rubric.md（v3.17.0 内化；下游 skill 同名副本如有则以包内为准）
 # 定位：建议维（P2），按课型权重浮动，不阻断不强制——AI 教学元素是增强项不是及格线
 ai_literacy:
   checklist:                      # 对应 rubric 维⑦ 的 I1-I5

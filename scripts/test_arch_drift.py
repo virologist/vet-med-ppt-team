@@ -104,6 +104,26 @@ def _parse_row(text):
             "gate": gate, "parallel": parallel}
 
 
+def _want_parallel(y):
+    """stage 的并行标记期望值：**yaml 显式声明优先**，未声明才按成员数推导。
+
+    v3.17.0 批次 B 修正：原判据恒为 `len(members) > 1 ? yes : no`——
+    即"多人必并行"，这在语义上**否定了"多人串行"的合法性**，而闸2 恰恰是
+    多人串行（蓝图依赖证据包的「易误解」标注，存在真实数据依赖，见
+    config/harness.yaml#stages[1] 注释）。旧判据会让"如实声明为串行"变成测试失败，
+    逼人去改事实而不是改声明——正是本包最忌的"声明服从推导"。
+
+    改为：yaml#stages[n].parallel 是唯一源；缺该键时退回按成员数推导（向后兼容）。
+    """
+    # ⚠ 不可写 `y.get("parallel", "") or ""` —— YAML 的 `no` 解析成 Python False，
+    #   `False or ""` 会得到空串，把显式声明误判成"未声明"（布尔陷阱）。
+    raw = y.get("parallel")
+    v = str(raw).strip().lower() if raw is not None else ""
+    if v in ("yes", "no", "true", "false"):
+        return "yes" if v in ("yes", "true") else "no"
+    return "yes" if len(y.get("members") or []) > 1 else "no"
+
+
 # ── 历史沿革豁免区（可判定标记，不靠关键词猜测）──────────────────
 def _exempt_line_numbers(lines):
     """算出豁免行号集合。
@@ -304,9 +324,10 @@ class TestStageMirror(_Base):
                              f"stage {sid} 成员与 yaml 不一致")
             self.assertEqual(row["gate"], str(y.get("gate", "")).strip(),
                              f"stage {sid} gate 与 yaml 不一致")
-            want = "yes" if len(y.get("members") or []) > 1 else "no"
+            want = _want_parallel(y)
             self.assertEqual(row["parallel"], want,
-                             f"stage {sid} 并行标记与 yaml#members 数量不符（≥2 人才并行）")
+                             f"stage {sid} 并行标记与 yaml#stages[{sid}].parallel 不一致"
+                             f"（yaml 未声明时按成员数推导：≥2 人才并行）")
 
     def test_T3_stage_members_registered(self):
         unknown = set()
@@ -440,9 +461,10 @@ class TestGuardedDocs(_GuardBase):
                                  f"{rel} stage {sid} 成员与 yaml 不一致")
                 self.assertEqual(row["gate"], str(y.get("gate", "")).strip(),
                                  f"{rel} stage {sid} gate 与 yaml 不一致")
-                want = "yes" if len(y.get("members") or []) > 1 else "no"
+                want = _want_parallel(y)
                 self.assertEqual(row["parallel"], want,
-                                 f"{rel} stage {sid} 并行标记与 yaml 成员数不符（≥2 人才并行）")
+                                 f"{rel} stage {sid} 并行标记与 yaml#stages[{sid}].parallel 不一致"
+                                 f"（yaml 未声明时按成员数推导：≥2 人才并行）")
 
     def test_T10_no_legacy_wording_outside_history(self):
         terms = list(self.guard.get("legacy_wording") or [])

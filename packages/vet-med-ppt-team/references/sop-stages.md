@@ -8,7 +8,7 @@
      config/harness.yaml#stages 逐项比对——改 yaml#stages 必须同步本块，由守卫强制、不靠自觉。 -->
 <!-- STAGE_MIRROR_BEGIN -->
 stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
-stage 1 | 闸2 设计（蓝图∥证据） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
+stage 1 | 闸2 设计（证据先行→蓝图·串行） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: no
 stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
 stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
 stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
@@ -43,7 +43,9 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
    ① 逐条对照历史产出，标注 `已覆盖 / 部分覆盖 / 未覆盖`，附产出位置（页号或文件路径）
    ② 给三路径请用户选择：**A 验收现状**（出具验收证据收工）／**B 局部补强**（只做未覆盖与部分覆盖项）／**C 换方向深化**（在既有基础上做不同方向的增量）
    ③ 用户选 C 时，进入闸 2 的**方向裁决**（列方向 → 用户按强/中/弱分档 → 按档投入），不得默认"全方向重做"
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 6. 涉及传染病、病原操作、公共卫生敏感内容时额外确认边界：只讲原理与诊断思路，不提供超纲操作细节。
+<!-- DOMAIN_EXAMPLE_END -->
 7. **输出**【闸1｜任务冻结】并请用户确认 → **确认门 1/2**。
 
 ---
@@ -52,7 +54,13 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 
 输入：闸 1 确认结论。
 
-1. 同一 TeamCreate 后同一消息里 spawn **苏学法**（蓝图）与 **严真奥**（证据缺口清单），并行、任务边界互斥。
+1. **串行**（v3.17.0 批次 B 修正）：先 spawn **严真奥**（证据缺口清单）→ 拿到证据包后再
+   spawn **苏学法**（蓝图）。
+   **为什么不再是并行**：原写"并行、任务边界互斥"是错的——苏学法的**二八难点清单**
+   明确依赖严真奥证据包里的「易误解」标注（见 `agents/pedagogy-architect.md`
+   难点判定来源），两侧**存在真实数据依赖**，边界并不互斥。伪并行的代价是
+   苏学法拿不到"易误解"标注而**必然回问**主理人，每次多一轮往返
+   （`agents/vet-med-ppt-team-team-lead.md` 规定的"经主理人中转"路径被强制触发）。
 2. 主理人汇编为【闸2｜教学蓝图】：受众与约束摘要 / 三层目标 / 流程与分钟级时间预算 / MECE 知识框架与页数区间 / 案例与形成性评价 / 证据缺口 / **二八难点清单** / 风险与待选项。
 3. 页数区间由**苏学法在设计期锁定**（不得留给制作阶段试错；09-26 实战中"课时适配"反复返工 4 轮）。
 3.1 **方案颗粒度四坐标（v3.5.0 新增，闸 2 交付物的验收项）**：任何增补/改造方案不得只交"内容清单"（加哪些页/哪些点）。

@@ -81,5 +81,7 @@ $PY theme_fingerprint.py <课件根目录> --recursive --json 盘点.json
 
 - 图表页 T2 迁移 = 只保形状外壳，图表数据可能失效 → 一律标 R-SHARED-CHART 建议手工
 - 数学公式（OMML）、SmartArt、3D 模型未专项测试，出现即走 T3 + 人工目检
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 - 跨学科模板（微生物/宠物）迁移属 Batch 5 范围，当前 domain 字段先占位
+<!-- DOMAIN_EXAMPLE_END -->
 - 密码保护/只读推荐的课件直接拒绝处理（python-pptx 无法打开）

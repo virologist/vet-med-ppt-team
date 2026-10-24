@@ -8,7 +8,7 @@
      config/harness.yaml#stages 逐项比对——改 yaml#stages 必须同步本块，由守卫强制、不靠自觉。 -->
 <!-- STAGE_MIRROR_BEGIN -->
 stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
-stage 1 | 闸2 设计（蓝图∥证据） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
+stage 1 | 闸2 设计（证据先行→蓝图·串行） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: no
 stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
 stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
 stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
@@ -93,7 +93,7 @@ $H gate --deck <课件.pptx> --hours <N> --level P0|all
 
 ⚠️ **WorkBuddy 专家包不支持在 agent frontmatter 声明 `tools:` 字段**（2026-09-30 实测确认，已回退 v2.2.0 的相关改动）。
 最小权限的正确实现是：
-1. **人设装配**：`assemble_spawn_prompt.py --member <ID> --task-file <绝对路径> --check-task-package`（把成员 MD 全文 + 资源绝对路径确定性注入）
+1. **人设装配**：`assemble_domain_prompt.py --member <ID> --task-file <绝对路径> --check-task-package --collapse-artifact <坍缩产物路径>`（把成员 MD 全文 + **域上下文** + 资源绝对路径确定性注入；详见 `references/spawn-protocol.md#二`）
 2. **任务包约束**：在 `objective / output_format / constraints / task_boundary` 四要素里写清"不做什么"
 3. `config/harness.yaml#members[*].tools_whitelist` 是**主理人的编排意图声明**，供 preflight 与人工核对，不是平台强制
 

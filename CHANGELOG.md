@@ -6,6 +6,143 @@
 
 ---
 
+## [v3.17.0+批次B] - 2026-10-25（v3.17.0 发布后从零复核的修复批次）
+
+> **为什么不是 v3.18.0**：本批次是对 v3.17.0 的**发布后从零复核**发现的缺陷修复，
+> 版本号未升（内容与 v3.17.0 同线），单独成段以便追溯。下次正式发布时合并升版。
+
+### 批次 B 背景
+
+v3.17.0 发布后按同一 11 维度基准做**第三次独立复核**（不沿用历史结论）。复核发现
+**2 个 v3.17.0 CHANGELOG 未登记的 P0 缺口** + 若干 P1/P2，用户裁决 4 点后执行本批次。
+执行过程中 3 个并行子代理因 Token Plan 配额耗尽（429）中断，剩余工作由主理人接手完成。
+
+### ① 【P0】坍缩产物接入装配链（域人格此前**从未进入成员 prompt**）
+
+- **实测证据**：`route --domain computing` → `collapse confirm` 全通（status=confirmed /
+  effective=true），但 `assemble_spawn_prompt.py` 装配出的 33578 字符产物中，域人格关键词
+  命中数 = **0**（"软件工程内容权威"/"事件循环"/"asyncio" 全部 0）。
+- **根因**：本包 `scripts/assemble_spawn_prompt.py` 是 shim，转调 `shared-core`；
+  后者**不读 `_collapse/`、也不读 `config/domain-profiles.yaml`**。
+- **修法（按裁决①：先本包内实现，不上提共享件）**：新增 `scripts/assemble_domain_prompt.py`
+  （本包装配层，in-process 调 core 后做三步后处理：稳健切分 → frontmatter 键补偿 →
+  插入域上下文段）。**`shared-core/` 零改动**（已 md5 + Grep 核验）。
+- **修复后实测**：域人格「软件工程内容权威」0→1、「事件循环」0→3、content_axes 首项 0→1、
+  frontmatter 三键（name/description/maxTurns）全回填、撕裂残留 0。
+- **遗留**：旧 shim 入口仍不带域上下文（文档已改指新脚本）；shared-core 的两处缺陷
+  （不读 `_collapse/`、`split("---",2)` 丢键）**另外 4 个包仍带**，待另案上提。
+
+### ② 【P0】dvm-content-expert.md frontmatter 被装配器撕裂
+
+- **根因**：`shared-core` 的 `parse_frontmatter` 用 `md_text.split("---", 2)`，而该文件
+  frontmatter 注释里含**行内 `---` 字面量** → 切分提前截断，丢失 description/profession/
+  displayName，正文开头混入半截注释。逐个复验 6 份成员 MD，**仅此 1 份受影响**。
+- **修法**：注释措辞去掉行内字面量 + 本包装配层用加固正则
+  `\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)`（**带 `re.DOTALL`**）自行切分。
+  ⚠ 主理人最初给的正则 `^---\n(.*?)\n---\n` **缺 DOTALL，6/6 全部失配**——由执行成员实测纠错。
+
+### ③ 【P0】三源核验：textbook/regulation 由「仅格式合规」升级为「可实查存在性」
+
+- **立项**：CHANGELOG 已知瑕疵 #1（此前两类源只有确定性结构校验，永远只到格式档）。
+- **⚠ 本批次发现并修复一处引入性回归**：前序工作只改了 `config/domain_config.yaml`
+  （textbook.mode → `isbn_online`、regulation.mode → `gb_online`），**代码侧无对应分支**
+  ⇒ 两类源落到「mode 未实现 → 不可核验」，**比改之前的「仅格式合规」更差**（实测：
+  真实 ISBN 与 GB 号均判 unverifiable）。
+- **修法**：`harness.py` 新增 `_verify_isbn_online` / `_verify_gb_online` 两个分支 +
+  `_net_fetch`（超时/重试/退避/限速全从 yaml 读）。
+- **端点现查证据（主理人实测，不凭记忆）**：
+  | 端点 | 实测结果 |
+  |---|---|
+  | 国图 OPAC `opac.nlc.cn` | 可达；伪造号 34076 bytes 且含未命中文案；题名检索自取真实 ISBN `9787559120946` 回填 → 64481 bytes 且无未命中文案（判据成立） |
+  | OpenLibrary | 可达；`numFound` 有效；校验位不过的号不命中（无假阳性） |
+  | 全国标准信息公共服务平台 `std.samr.gov.cn` | 可达；`GB 10648-2013` → 现行；`GB 10648` → 两条（含 1999[废止]）；`NY/T 1167-2006` → total=0（**不覆盖行业标准**） |
+- **新增能力**：引用**已废止/被代替**的标准现在能被抓出（`state_warning`）——
+  此前格式校验完全查不出来。
+- **诚实边界**：非 GB 国标号（NY/T、公告号）该平台不覆盖 → 判「不可核验」并显式登记
+  **人工核验项**，且不得用"格式不合规"误导（NY/T 格式合规，只是查不到）。
+- **守卫**：新增 `scripts/test_three_source_online.py`（8 用例）。**根因守卫 T1**
+  断言「yaml 声明的 mode 必须有代码分支」——变异测试证明有效（改 mode 后 4 用例变红）。
+
+### ④ 【P1】质量收敛判据纳入 P2
+
+- **缺陷**：`_loop_no_progress_streak` 只比 `p0p1` ⇒ 一轮只把备注覆盖率补达标
+  （p2: 1→0）而 P0/P1 不动时，被误判「无进展」并**终止**（终止不可逆）。
+- **修法**：改比 `p0+p1+p2` 合计（三者**同向**：都是缺陷/阻断计数，越少越好；
+  P2 语义是「备注覆盖率**未达标**」而非覆盖率百分比，故可直接相加——已写入函数注释，
+  若将来改口径必须同步改向）。快照新增 `p0p1p2` 键，保留 `p0p1` 兼容旧报表。
+- **守卫**：新增 `scripts/test_no_progress_p2.py`（7 用例，含方向与向后兼容）。
+
+### ⑤ 【P1】闸2 伪并行修正（声明服从事实）
+
+- **缺陷**：4 处镜像块 + 文档声明「闸2 并行、任务边界互斥」，但 pedagogy 的二八难点清单
+  **明确依赖** dvm 证据包的「易误解」标注 —— 边界不互斥，并行必然回问，每次多一轮往返。
+- **修法**：改 `parallel: no` + 名称「闸2 设计（证据先行→蓝图·串行）」，同步
+  `config/harness.yaml#stages[1]` 与 4 处 STAGE_MIRROR 块 + `sop-stages.md` 说明。
+- **⚠ 连带修一处测试缺陷**：`test_arch_drift.py` 原判据恒为
+  `len(members) > 1 ? yes : no`（"多人必并行"），**否定了"多人串行"的合法性**——
+  会让"如实声明串行"变成测试失败，逼人改事实而非改声明。改为**读 yaml 显式
+  `parallel` 字段**（yaml 成唯一源，缺键才推导）。
+  ⚠ 修时踩到布尔陷阱：YAML 的 `no` 解析为 `False`，`False or ""` 得空串会把显式声明
+  误判成"未声明" —— 已修并写进注释。
+
+### ⑥ 【P1】用户指定 PDF/URL 接单通道（维度 11）
+
+- `references/task-intake-checklist.md` 增**第 10 项**（B 类，落盘 `intake.user_sources`）
+- `config/domain-profiles.yaml` 三域各增 `user_supplied_sources` 策略段
+- `agents/dvm-content-expert.md` 新增「外部指定源处理纪律」（定位通道 / 可复查定位 /
+  三源口径（**不能充抵两条独立来源**）/ 冲突并列不自行抹平 / 取不到标 `[待核实]` /
+  许可不因"是用户给的"而豁免）—— 补齐域档案第 384 行引用的锚点（此前**悬空**）。
+
+### ⑦ 【P1】机构权威源端点补全（维度 11）
+
+`domain-profiles.yaml` 新增 `institutional_endpoints`：MSD 兽医手册 / WOAH 陆生法典 /
+WOAH 陆生手册 / WOAH 技术疾病卡 / FAO 动物卫生 / WHO 人畜共患，各带 endpoint +
+检索式模板 + 用途说明；并同步修正文件头「本文件不含 URL」的诚实声明（否则声明与内容矛盾）。
+⚠ WHO 一处深链实测 404 → **未登记**（不编造）。
+
+### ⑧ 【P1】七维量规唯一源收敛 + routing.L1 伪 ID 修正
+
+- 量规：**包内 `references/seven-dimension-rubric.md` 为执行源**（与 `dependency-manifest.yaml`
+  一致），改两处 agent MD 的"唯一执行源在下游 skill"表述。
+  ⚠ 另行发现：`scripts/check_external_deps.py` **只做存在性探测、无内容比对**，
+  而 manifest 承诺登记 drift（`drift_checked_at`/`upstream`）⇒ **无执行者**（第 5 个
+  声明层≠执行层缺口），已交 docs 组处置。
+- routing.L1：`spawn` 由伪 ID 字符串改为真 ID 数组，`"按需1-2名"` 语义移到 `spawn_policy`。
+
+### ⑨ 【P1】域绑定残留全量处置（用户裁决④）
+
+**41 处 → 0 处**。处置中发现并修复：
+- **【关键】第 7 个「声明层≠执行层」缺陷**：`config/hygiene-words.yaml` 把
+  `exempt_markers` / `exempt_headings` / `profile_ref_patterns` 嵌在 `scan:` 之下，
+  而 `ensure_settings.py` 从**顶层**取（只有 `frontmatter_comment_exempt` 一处写对了）
+  ⇒ **哨兵块、章节豁免、域档案引用行豁免三组机制从未生效**，体检第 23 项长期虚高，
+  且"围哨兵就能豁免"这条契约是**假的**。已修（以 `scan` 为唯一读取位置，兼容顶层回退）。
+- 处置方式分三类（逐条判定，不批量替换）：
+  ① **正当举例** → 行级哨兵块（21 行）；
+  ② **表格行**（插注释会打断表格渲染）→ 改写为域中立表述（6 处）；
+  ③ **人设/标题** → 域中立化（4 处：pedagogy description、team-lead 标题与导语等）。
+
+### 已知欠账（本批次未完成，诚实登记）
+
+1. **`references/course-profile-defaults.md` 未下沉**：其受众四层与深度标尺**整体取自**
+   教育部《动物医学专业教学标准》，属 animal-medicine 域专属。正确处置是下沉为域档案的
+   受众分层字段（各域一份）。本批次以 `exclude_files` 登记排除，reason 明确写
+   **「待下沉，不谎报为按设计专有」**——这是欠账，不是豁免理由。
+2. **shared-core 两处缺陷未上提**：另外 4 个包仍带「不读 `_collapse/`」与
+   「`split("---",2)` 丢键」。按裁决①本轮不改共享件。
+3. **旧 shim 入口不带域上下文**：`scripts/assemble_spawn_prompt.py` 仍可被沿旧习惯调用，
+   此时域人格不生效（文档已改指新脚本，但非强制）。
+4. **check_external_deps.py 的内容比对**（量规 drift 登记）本批次未完成。
+
+### 回归状态
+
+- `pytest scripts/`：**159 passed, 3 skipped**（非联网）+ `test_three_source_online.py`
+  **8 passed**（联网）= **167 passed**；基线 120 无回归。
+- `ensure_settings.py`：**23/23，rc=0**，结论「✅ 全部通过」。
+- 双副本：`packages/vet-med-ppt-team/` 与根目录 **0 差异**（rsync 后 `diff -rq` 校验）。
+
+---
+
 ## [v3.17.0] - 2026-10-24
 
 ### 概述（11 维度独立诊断整改：通用化重构 · 治「声明层 ≠ 执行层」与「规则存在 ≠ 规则生效」）
