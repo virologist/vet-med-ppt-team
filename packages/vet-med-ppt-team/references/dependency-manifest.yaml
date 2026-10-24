@@ -14,7 +14,7 @@
 #   defaultInitPrompt/tags/quickPrompts/plugin）、Team 专用字段（members）。
 #   **其中不存在任何「依赖声明」字段**（dependencies / requires / skillDependencies / pluginDependencies 均无）。
 #   因此**不向 plugin.json 写入平台不识别的键**——改为在本表登记 + 由
-#   `references/check_external_deps.py` 做可执行检查。
+#   `scripts/check_external_deps.py` 做可执行检查。
 
 schema_id: vet-med-ppt-team.external-dependencies
 schema_version: "1.0.0"
@@ -54,12 +54,18 @@ dependencies:
       外部副本与包内版本不一致时，**以包内版本为准**，并登记差异（写入报告的
       rubric_ref.drift_checked_at / upstream 字段）。**不得**因为外部副本更新就静默改包内量规。
 
-# 可执行检查（由 references/check_external_deps.py 消费本表）
+# 可执行检查（由 scripts/check_external_deps.py 消费本表）
 checker:
-  path: "references/check_external_deps.py"
-  invocation: "python3 references/check_external_deps.py"
+  # v3.17.0 修正：本脚本已从 references/ 归位 scripts/（包内惯例：scripts/ 放可执行脚本；
+  #   references/ 下的 .py 会被体检第 17 项漏扫、回归套件也未必收录）。
+  #   归位后此处若仍写 references/… 就成了**悬空引用**——独立测试实测该路径按文档执行会 EXIT=2。
+  path: "scripts/check_external_deps.py"
+  invocation: "python3 scripts/check_external_deps.py"
   default_exit_code: 0        # 默认不阻断（缺失不阻断本包使用）
   strict_flag: "--strict"     # 显式严格模式：缺失时 exit 1（供 CI/发布流程可选启用）
   json_flag: "--json"
   env_override: "VETPPT_SKILLS_ROOT"   # 覆盖探针根目录（供反例测试与多安装布局）
-  integration_status: "待并入体检第 23 项（**跨批需求**：scripts/ensure_settings.py 由另一批维护，本批不改）"
+  # v3.17.0 修正：原文写「待并入体检第 23 项」——**该集成从未发生**，且第 23 项现为
+  #   域绑定残留巡检（非依赖检查）。写失效承诺比不写更糟（它会让人以为已有门禁）。
+  #   如实登记当前实况：**未并入体检**，依赖检查是**独立可执行脚本**，需手动或由 CI 调用。
+  integration_status: "**未并入体检**（v3.17.0 如实登记）。本检查为独立可执行脚本：python3 scripts/check_external_deps.py（默认不阻断，--strict 才 exit 1）。体检第 23 项现为「域绑定残留巡检」，与此无关——勿再写「待并入第 23 项」。若将来要并入体检，须新开一项并同步改本行。"

@@ -858,7 +858,14 @@ def check_dangling_script_ref(expert_dir):
     known_external = {"registry_rebuild.py", "repair_p0_v200.py"}
 
     import re as _re
-    pat = _re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.py)`")
+    # v3.17.0 补强：原正则只匹配**裸文件名**（`name.py`），
+    #   于是**带路径的引用**（`references/xxx.py` / `scripts/xxx.py`）完全不被扫到——
+    #   独立测试实测：把本包脚本从 references/ 归位 scripts/ 后，文档里残留的
+    #   `references/check_external_deps.py` 是**悬空引用**（按文档执行 EXIT=2），
+    #   而本检查却报「✓ 无悬空脚本引用」。**为拦截这类缺陷而建的检查，看不见同类缺陷。**
+    #   改法：同时匹配带相对路径的引用，并按「相对包根是否存在」判定。
+    pat_bare = _re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.py)`")
+    pat_path = _re.compile(r"`((?![/~])[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z0-9_.-]+)+\.py)`")
     dangling = []
     for sub in ("agents", "references"):
         d = os.path.join(expert_dir, sub)
@@ -872,10 +879,16 @@ def check_dangling_script_ref(expert_dir):
                 txt = open(fp, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            for m in set(pat.findall(txt)):
+            # ① 裸文件名：沿用原判据（本地 scripts/ 有，或已登记为外部依赖）
+            for m in set(pat_bare.findall(txt)):
                 if m in local or m in known_external:
                     continue
                 dangling.append(f"{sub}/{name} 引用 `{m}`（包内 scripts/ 无此文件）")
+            # ② 带相对路径的引用：按「相对包根是否存在」判定（v3.17.0 新增）
+            for rel in set(pat_path.findall(txt)):
+                if os.path.exists(os.path.join(expert_dir, rel)):
+                    continue
+                dangling.append(f"{sub}/{name} 引用 `{rel}`（相对包根不存在该文件）")
 
     if dangling:
         print(f"[17/{N}] ⚠ 悬空脚本引用 {len(dangling)} 处")

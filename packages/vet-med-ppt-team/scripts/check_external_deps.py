@@ -10,10 +10,10 @@
 #
 # 归属：外部依赖登记表的消费方；登记表 = references/dependency-manifest.yaml（SSOT）
 # 用法：
-#   python3 references/check_external_deps.py            # 默认不阻断，缺失 exit 0
-#   python3 references/check_external_deps.py --strict   # 严格模式：缺失 exit 1
-#   python3 references/check_external_deps.py --json     # 机器可读输出
-#   VETPPT_SKILLS_ROOT=/tmp/empty python3 references/check_external_deps.py   # 覆盖探针根（反例测试用）
+#   python3 scripts/check_external_deps.py            # 默认不阻断，缺失 exit 0
+#   python3 scripts/check_external_deps.py --strict   # 严格模式：缺失 exit 1
+#   python3 scripts/check_external_deps.py --json     # 机器可读输出
+#   VETPPT_SKILLS_ROOT=/tmp/empty python3 scripts/check_external_deps.py   # 覆盖探针根（反例测试用）
 #
 # 注意：本脚本刻意**不放在 scripts/**——scripts/ 由另一批次维护，本批不改他文件。
 #       待体检第 23 项落地后，可由 ensure_settings.py 调用本模块（跨批需求，见
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps({
-            "checker": "references/check_external_deps.py",
+            "checker": "scripts/check_external_deps.py",
             "dependencies": results,
             "missing_count": missing,
             "blocking": False,

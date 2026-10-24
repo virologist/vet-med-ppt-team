@@ -129,19 +129,19 @@ WorkBuddy 内置 11 个插件的清单顶层键也均无依赖字段；
    （内化自 `teaching-ppt-studio` v2.6.0 的同名文件，已去领域化；上游副本仅作比对更新用）
 2. **登记**：`references/dependency-manifest.yaml` —— 外部依赖的包内 SSOT
    （逐条写明用途 / 探针路径 / 探针文件 / 内化兜底 / 缺失文案 / 是否阻断）
-3. **显式化**：`references/check_external_deps.py` —— 可执行检查
+3. **显式化**：`scripts/check_external_deps.py` —— 可执行检查
 
 ### 4.3 可执行检查
 
 ```bash
 # 默认不阻断（缺失只影响「与上游比对更新」，不影响本包使用）
-python3 references/check_external_deps.py
+python3 scripts/check_external_deps.py
 
 # 严格模式：缺失 exit 1（供 CI / 发布流程显式启用）
-python3 references/check_external_deps.py --strict
+python3 scripts/check_external_deps.py --strict
 
 # 机器可读输出
-python3 references/check_external_deps.py --json
+python3 scripts/check_external_deps.py --json
 ```
 
 缺失时的实际输出（**必须真打出来，不许假装依赖存在**）：
@@ -156,7 +156,7 @@ python3 references/check_external_deps.py --json
 体检第 23 项由 `scripts/ensure_settings.py` 维护（属另一批次）。
 落地方式（主理人派单时可直接照抄）：
 
-- 在体检中调用 `references/check_external_deps.py` 的 `main([])`，或直接以子进程方式执行
+- 在体检中调用 `scripts/check_external_deps.py` 的 `main([])`，或直接以子进程方式执行
 - **必须按「提示级·不阻断」接入**（与第 18 项死配置巡检同级）——依赖缺失**不阻断**发布
 - **假阳性为零**：只认 `references/dependency-manifest.yaml` 里登记的依赖，
   **不做目录名猜测**、不扫全盘 skills 目录

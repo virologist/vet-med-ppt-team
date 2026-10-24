@@ -142,7 +142,8 @@ name/description/maxTurns 全部失效 → 包里的签名内容专家在一个�
 ### 工程状态
 
 - 版本**五处**同步 **3.17.0**
-- 体检 **23/23 全绿**（新增第 22 项闸3映射守卫、第 23 项域绑定残留巡检）
+- 体检 **23/23 通过**（21 项 ✓ + 2 项提示级 ℹ：第 18 项「85 个配置键无读取者」属人读型登记、
+  第 23 项「40 处域绑定残留」属待下沉清单——**两项均提示不阻断**；独立测试判此表述比「全绿」准确）
 - 回归 **120 passed / 3 skipped**；`test_loop_state.py` **33 → 74 例**（v3.16.0 招牌特性此前**零覆盖**）
 - 双树逐字节一致（`packages/vet-med-ppt-team/` ← 用户实际加载的那份，`marketplace.json` 的 source 指向它）
 
@@ -155,11 +156,43 @@ name/description/maxTurns 全部失效 → 包里的签名内容专家在一个�
 3. **`domain` 的选域仍是 LLM 决策**（脚本不自动选域）——这是分工宪法的要求，不是能力缺失；
    但意味着选域质量依赖主理人判断，无机器兜底。
 4. **闸2 仍是伪并行**（dvm 证据与 pedagogy 蓝图存在双向数据依赖，却声明「边界互斥」）——本版只记录未改。
-5. **9 个声明的 trace 事件仍无代码产出**（`preflight`/`degrade`/`member_return` 等），
-   `require_disclosure: true` 的消费者仍是人不是代码。
-6. **坍缩产物默认写在包根 `.harness-runs/`**（已 gitignore，不入版本库/不进第二副本），
+5. **7 个声明的 trace 事件仍无代码产出**（`team_create`/`preflight`/`spawn`/`spawn_failed`/
+   `degrade`/`member_return`/`error`；yaml 声明 12 个，`gate`/`stage_enter`/`stage_exit`/
+   `budget_exceeded`/`no_progress` 已有产出），`require_disclosure: true` 的消费者仍是人不是代码。
+   *（原写「9 个」，独立测试实测为 7 个——静态扫描漏了 `cmd_stage` 的 f-string 动态事件名
+   `stage_{action}`。方向对、数字错，已按实测修正。）*
+
+6. **第 23 项检出 40 处域绑定残留尚未处置**——集中在 `agents/pedagogy-architect.md`
+   （禽/禽流感/新城疫/鸡/病原）、`references/course-profile-defaults.md`（兽医×6、法氏囊）等。
+   属**提示级**（不阻断），需逐条判定「应下沉到 `config/domain-profiles.yaml`」还是
+   「正当的兽医域专属内容」；本版只做检出，未做处置。
+7. **坍缩产物默认写在包根 `.harness-runs/`**（已 gitignore，不入版本库/不进第二副本），
    但更干净的形态是落在工作区而非已安装的包目录。
-7. **V3（取色比对）与 C5（数字来源）仍未实现**；三源仍是部分自证（pubmed 有实查，另两类无）。
+8. **V3（取色比对）与 C5（数字来源）仍未实现**；三源仍是部分自证（pubmed 有实查，另两类无）。
+
+### 独立测试（P3）发现并已在本版修掉的 7 项
+
+独立测试员冷眼复核 27 项，**0 阻断**，发现 9 项——其中 7 项已在 v3.17.0 内修掉：
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| F1 | 高 | `dependency-manifest.yaml` 的 `checker.path` 仍写 `references/check_external_deps.py`（脚本已归位 `scripts/`）→ **悬空引用**，按文档执行 EXIT=2 | 已改为 `scripts/…`；并**补强体检第 17 项**（见下） |
+| F2 | 高 | `integration_status` 写「待并入体检第 23 项」——**该集成从未发生**，且第 23 项现为域绑定残留巡检 | 改为如实登记「**未并入体检**」，并写明「勿再写『待并入第 23 项』」 |
+| F3 | 高 | 版本一致性有**第 6 处**未同步：`harness.py` argparse 描述仍 `v3.4.2` | 已改 3.17.0 |
+| F4 | 中 | `result-envelope.yaml`（+50 行）与 `domain_config.yaml`（+92 行）的 `version:` 键仍停 3.12.0 / 3.3.0 | 已更新为 3.17.0 |
+| F5 | 中 | 第 23 项的 40 处域绑定残留**未被 CHANGELOG 登记** | 已登记为已知瑕疵 #6（含具体文件与词例） |
+| F6 | 中 | 包根残留本轮自跑的坍缩产物 `.harness-runs/`（已 gitignore，但第二副本无此目录 → 运行时层不一致） | 已清除 |
+| F7 | 中 | `.workbuddy/harness_trace.jsonl` **被 git 跟踪**，含 8 行用户本机绝对路径 → 随分发包泄漏本地目录结构 | 已从版本库移除（两树）并加 `.gitignore` |
+
+**F1 暴露的更深一层（已修）**：体检第 17 项「悬空脚本引用」的正则只匹配**裸文件名**
+（`` `name.py` ``），**带相对路径的引用**（`references/xxx.py`）完全不被扫到——
+所以它既看不见 F1，也看不见我自己修完 F1 后 `spawn-protages.md` 里残留的同款悬空引用。
+**为拦截这类缺陷而建的检查，看不见同类缺陷。** 现正则同时匹配带路径的引用并按
+「相对包根是否存在」判定；补强后**当场又抓出一处此前隐藏的悬空引用**（`spawn-protocol.md:132` 等 5 处）。
+
+**F8/F9**：CHANGELOG 原写「体检 23/23 全绿」不精确（实为 21 ✓ + 2 ℹ）、
+已知瑕疵 #5 的 trace 事件数「9 个」夸大（实测 7 个）——两处均已按实测修正。
+**方向对、数字错**的两类失准，正是本轮要治的病。
 
 ---
 
