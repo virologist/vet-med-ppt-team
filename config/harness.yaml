@@ -8,7 +8,10 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-version: "3.16.0"
+# ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
+#   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
+#   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
+version: "3.17.0"
 
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
@@ -139,6 +142,61 @@ context:
     #     否则写入失败且无提示；loopB_state.json 不走本白名单，但主理人把快照镜像到
     #     task_state.json 时依赖本项。
     - quality_history
+    # v3.17.0 联动登记：collapse（域坍缩产物 + 确认状态）。
+    #   ⚠ 白名单外的键写入会被 `state set` **静默拒绝**（cmd_state 的 allowed 检查），
+    #     新增状态键必须同步登记此处，否则写入失败且无提示。
+    #   结构见 harness.yaml#collapse 与 scripts/harness.py#cmd_collapse。
+    - collapse
+
+# ── 闸1 冻结清单（用户逐条确认后才生效）─────────────────────────
+# 背景（v3.17.0 实测缺口，非假设）：闸1 是 `user_confirm` 门（stages.0.gate），
+#   但此前**没有任何机器可读的地方列出"闸1 到底冻结了哪几项"**——
+#   确认对象散落在 references/course-profile-defaults.md 与 task-intake-checklist.md 的散文里，
+#   于是「选哪些专家 / 哪个域」从未被提交用户确认也无人察觉。
+# 本清单把闸1 的冻结项**显式化**，供主理人逐条提交、供机器核对"是否该确认的都确认了"。
+gate1_freeze:
+  - id: audience
+    label: "受众（分层与深度档位）"
+    required: true
+    source: "references/course-profile-defaults.md#1"
+  - id: hours
+    label: "课时（时长与页数口径）"
+    required: true
+    source: "references/course-profile-defaults.md#2"
+  - id: template
+    label: "模板（版式指纹与硬约束）"
+    required: true
+    source: "references/default-template-profile.md"
+  - id: scope
+    label: "处理范围（逐页六查）"
+    required: true
+    source: "references/course-profile-defaults.md#3"
+  - id: acceptance
+    label: "验收标准（内容 5 条 + 视觉 7 条 + 差异化阈值）"
+    required: true
+    source: "references/course-profile-defaults.md#4"
+  # ── v3.17.0 新增第 6 项：**选哪些专家 / 哪个域**此前从未提交用户确认 ──
+  - id: collapsed_team_config
+    label: "已坍缩的专家团配置（域 id + 角色人格 + 选型理由）"
+    required: true
+    source: "config/domain-profiles.yaml + 坍缩产物（route --domain 落盘 → collapse confirm）"
+    note: "未确认前域人格**不生效**（脚本只组装、落盘待确认态，不注入人格）"
+
+# ── 坍缩（把「用哪个域 / 哪些专家」坍缩成一份可确认的专家团配置）────
+# 规格原文：「坍缩结果须**主动输出**并与我对齐、**经确认后生效**」。
+#   本节把"待确认 → 已确认"的状态机与落盘位置写死成配置，脚本只执行不判断。
+collapse:
+  enabled: true
+  profile_file: "config/domain-profiles.yaml"     # 域档案唯一数据源（域之间只差档案、不差代码）
+  artifact_dir: "_collapse"                        # 相对 RUN_DIR（与 _search_requests/ 同级同风格）
+  artifact_name_template: "collapse_{task_id}_{domain_id}.json"   # 带域 id：同一任务可并存多个域的坍缩产物，互不覆盖
+  pending_status: "pending_confirmation"           # 未确认态：域人格**不生效**
+  confirmed_status: "confirmed"                    # 已确认态：可生效
+  require_user_confirmation: true                  # 硬承诺：未确认不得生效
+  # 确认命令（人读，执行方 = 主理人；**沉默不构成确认**）
+  confirm_command: "python3 scripts/harness.py collapse confirm --id <域id> --task-id <task_id> --workspace <工作空间>"
+  # 选型理由由**主理人（LLM）**填写，脚本不猜——未填时坍缩产物标记为待补
+  rationale_filled_by: "team-lead"
 
 # ── 可观测性 ────────────────────────────────────────────────
 observability:

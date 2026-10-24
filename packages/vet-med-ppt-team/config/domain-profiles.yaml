@@ -1,0 +1,466 @@
+# domain-profiles.yaml — 内容域档案（唯一数据源，v3.17.0 新建）
+# ══════════════════════════════════════════════════════════════════════
+# 为什么要有这个文件（2026-10-24 批次 A 实测问题，非假设）：
+#   本专家包的实际能力是「一套可复用于**任意教学/培训主题**的 PPT 诊断与优化工作流」，
+#   但**兽医绑定被写死在了角色身份里**：
+#     · agents/dvm-content-expert.md 的 profession = 「动物医学内容专家」
+#     · 其知识路由表 7 个库全部是《禽病》《猪病》《牛羊病》《伴侣动物疾病》…
+#     · 其检索式示例全部是鸡/鸭/IBDV/DHAV
+#   换主题（如「Python 入门」）时，该成员的身份声明与知识路由表**整体失效**，
+#   而包内无第二个内容角色可接手。
+#
+# 本文件把「一个域长什么样」变成**声明式数据**，代码只组装不判断：
+#   · 域之间**只差档案、不差代码**——新增一个域 = 加一段 yaml，不改任何 .py
+#   · 域的**选择**（用户主题 → 哪个域）是**语义判断，由主理人（LLM）做**；
+#     本文件里的 `match_hints` 是**给 LLM 看的选域菜单**，
+#     ⚠ 脚本**严禁**用 match_hints / 关键词 / 正则去自动选域（分工宪法）。
+#
+# 消费方：
+#   · scripts/harness.py#cmd_domain（domain list / domain show）
+#   · scripts/harness.py#cmd_route（route --domain <id>：追加域字段 + 坍缩产物落盘）
+#   · scripts/harness.py#cmd_collapse（坍缩产物落盘 / 确认 / 查询）
+#   · agents/dvm-content-expert.md（**只引用路径**，不复制内容——防双源漂移）
+#   · scripts/ensure_settings.py#check_domain_binding_residue（第 23 项残留巡检）
+#
+# 与 config/domain_config.yaml 的分工（两者不是一回事，勿混）：
+#   domain_config.yaml   = **病例库/学科模块**域（animal-medicine/microbiology/pet/tcm-vet），
+#                          服务 case_extract.py 的 DISEASE_MAP 与三源核验源配置
+#   本文件                = **内容域档案**（内容专家的人格/证据轴/检索通道/术语/红线）
+#   → id 命名有意与前者对齐（animal-medicine 两边同名），便于跨表引用；
+#     但**语义不同**：前者是"病例从哪来"，本文件是"这个域的内容专家该怎么干活"。
+#
+# 诚实声明（v3.17.0 首批）：
+#   · 示例域（computing / business-training）的机构源只写**确知的机构名**（W3C/IEEE/ISO 等），
+#     **不编造具体标准号、URL、阈值、统计数字**——凡未确知的写 null 或"待补"并注明。
+#   · 本文件不含任何 URL（除 Europe PMC 公开 API 端点，该端点由既有 agent MD 原样迁入），
+#     所有链接型事实一律现查。
+
+version: "3.17.0"
+
+# ── 默认域 ────────────────────────────────────────────────────────────
+# 默认域 = 保持现状（动物医学）。**不智能猜测**：非兽医主题必须由主理人显式指定 --domain。
+# 理由见 references/course-profile-defaults.md#0-ter。
+default_domain: "animal-medicine"
+
+# ── 通用兜底（域档案缺失 / 未坍缩时使用）──────────────────────────────
+# ⚠ **不得静默回落某个具体域**（尤其不得回落动物医学域）——域档案读不到就显式报错。
+fallback:
+  # 域档案缺失时的处置：显式报错（由 harness.py 执行），不猜、不回落
+  on_profile_missing: "abort_with_error"
+  # 未坍缩（无域档案）时内容专家使用的**通用**人设——不含任何域专有信息
+  generic_persona:
+    title: "内容权威"
+    background: "具备该主题一线实践与教学双重经验的领域专家"
+    stance: "证据等级不明的内容不上课件"
+    duty_boundary: "只做内容核验、证据检索与分级、术语规范；不做教学设计、不做版式设计"
+  # 未坍缩时使用的**通用**证据轴（两条轴独立，见下）
+  generic_evidence_hierarchy:
+    institutional:
+      - "该主题的官方机构 / 主管机关 / 平台官方文档（须现查现行版本）"
+    literature:
+      - "同行评议研究与高质量综述（须给可核验出处）"
+  # 未坍缩时使用的**通用**红线（任何域都成立的底线）
+  generic_safety_redlines:
+    - "任何涉及生物安全、伦理争议、法律合规边界的内容一律上报主理人，不得自行处理"
+    - "不确定就是不确定：查不到就说查不到，置信度低就标低，宁可留白不可编造"
+
+# ══════════════════════════════════════════════════════════════════════
+# 域档案清单
+# ══════════════════════════════════════════════════════════════════════
+# 每段一个域，字段语义见下方 domains[].<字段> 的注释（**每个字段都有明确含义**）：
+#   id                 域标识（kebab-case）；路由、坍缩落盘、追溯都用它
+#   display_name       域中文名；报告与文档里显示用
+#   match_hints        **给主理人（LLM）看的选域线索**——⚠ 只给人看，脚本不得据此匹配
+#   role_persona       内容角色人格注入（称号/背景/立场/职责边界）
+#   content_axes       该域的内容轴（知识覆盖方向）
+#   evidence_hierarchy 来源优先级（**两条独立轴**：institutional 机构权威 / literature 文献权威）
+#   image_channel      该域的配图通道与检索式模板
+#   knowledge_bases    该域的**文本型**知识库路由（与 image_channel 并列，二者不混）
+#   terminology        该域的术语规范要点
+#   safety_redlines    该域的拒收 / 高风险红线
+#   knowledge_anchor   该域的**包内**知识锚点（可为 null = 无包内锚点，需联网现查）
+#   member_bindings    该域对各成员的**人格绑定方式**（谁吃域人格、谁与域无关）
+domains:
+
+  # ────────────────────────────────────────────────────────────────────
+  # 域 1：动物医学（原包能力完整迁入——含鸡/鸭/IBDV/DHAV 等全部具体例子）
+  # ────────────────────────────────────────────────────────────────────
+  - id: animal-medicine
+    display_name: "动物医学（兽医临床与疫病防控）"
+
+    # 选域线索——**给人（LLM）看的菜单**。脚本禁止据此自动选域。
+    match_hints:
+      - "主题词：兽医 / 动物医学 / 禽病 / 猪病 / 牛羊病 / 宠物疾病 / 疫病防控 / 诊断技术 / 养殖场管理"
+      - "课程名形态：《××病防治技术》《动物医学××》《禽病防治》《××病学》"
+      - "内容涉及：物种（禽/猪/牛羊/犬猫等）、致病机制、诊断与鉴别、疫苗与用药、群体疫病防控"
+      - "⚠ 本域之外的任何主题（编程、合规、通用管理…）**不得**选本域"
+
+    # 内容角色人格注入（坍缩产物引用此处，**不在 agent MD 里复制**）
+    role_persona:
+      title: "动物医学内容权威"
+      background: "临床与预防兽医双背景的老兽医"
+      stance: "证据等级不明的内容不上课件"
+      duties:
+        - "供给经核验的动物医学知识（疾病机制/诊断/防控），是团队的反幻觉防火墙"
+        - "对课件中的科学性错误直接指出并给正确表述"
+      duty_boundary: "只做内容核验、证据检索与分级、术语规范；不做教学设计、不做版式设计"
+
+    # 内容轴（知识覆盖方向）——坍缩产物按此组织知识缺口清单
+    content_axes:
+      - "病原学与致病机制"
+      - "流行病学与群体流行特征"
+      - "病理变化与临床症状"
+      - "实验室诊断与鉴别诊断"
+      - "免疫与防控（疫苗、生物安全）"
+      - "兽药使用与合规（处方、休药期、食品安全）"
+      - "养殖生产链路（育种/饲养/营养/禽舍环境/设施装备）的现场偏差与隐性判断点"
+      - "兽医公共卫生（人畜共患、跨界传播）"
+
+    # 来源优先级——**两条独立轴**，不可合成一张平铺序数表
+    evidence_hierarchy:
+      institutional:
+        - "现行法规与官方指南（须联网核验现行版本，标注国家/地区与生效年份）"
+        - "WOAH / FAO / WHO 等国际组织规范"
+        - "MSD Veterinary Manual（默克兽医手册）"
+      literature:
+        - "同行评议综述与高质量原始研究"
+        - "权威教材"
+      axes_note: "institutional = **谁说了算**（机构/法规效力）；literature = **证据强度排序**。两轴独立：机构源给出权威性，文献轴给出时效与强度；两者冲突时按 institutional 优先，并按「证据冲突并列原则」呈现双方，不由成员自行抹平。"
+      time_layers:
+        - "诊疗数据 / 流行病学 / 疫苗毒株 / 禁药信息 → 近 5 年"
+        - "机制类 / 基础免疫学 → 近 10 年"
+        - "经典教材与官方指南 → 不受年限限制，但须核验现行版本"
+      dual_source_rule: "重要结论至少双源核验；**三源核验任务**中「三个来源至少两个能命中」才算核验通过"
+
+    # 配图通道与检索式模板（原来硬编码在 agent MD 第 86 行附近）
+    image_channel:
+      # 通道优先级（取图通道的稳定度排序）
+      channels:
+        - name: "Ima 知识库（见 knowledge_bases）"
+          role: "文本型知识核验优先"
+          status: "常失败；图片类命中率低"
+        - name: "Europe PMC 开放获取（OA）"
+          role: "图片主力——真实病理/病变/组织学图"
+          status: "稳定有效"
+          endpoint: "https://www.ebi.ac.uk/europepmc/webservices/rest/{PMCID}/supplementaryFiles"
+          license_rule: "仅取 CC-BY / 开放获取论文图片"
+        - name: "UpNote"
+          role: "仅个人笔记文本"
+          status: "无嵌入图片，不可指望取图"
+        - name: "联网（官方文件 / 指南）"
+          role: "法规、毒株、标准号等时效信息"
+          status: "有效"
+      # 检索式四要素（布尔检索式语法属 Europe PMC 通道；Ima 是「选库+语义召回」，勿把布尔式原样套进 Ima）
+      query_elements:
+        - "物种（必填）——漏物种会混进非目标宿主文献"
+        - "病原或主题（必填）——英文名全称 + 通用缩写"
+        - "部位或病变类型（必填）——器官名或病变词"
+        - "限定词（可选）——年份区间 / 地域 / 文献类型"
+      query_template: "物种 AND (\"病原英文全称\" OR 缩写) AND (靶器官或病变词) AND (限定词) AND 年份区间"
+      # 可照抄实例（**示例只是骨架**，具体病原名/缩写/靶器官以当次检索到的原文为准）
+      examples:
+        - query: "chicken AND (\"infectious bursal disease virus\" OR IBDV) AND (\"bursa of Fabricius\" OR \"bursal lesion\") AND (histopathology OR immunohistochemistry) AND 2020:2026"
+          target: "法氏囊大体/组织学图"
+          caption_hint: "实验条件：IBDV 感染病例 · 部位：法氏囊 · 临床意义：滤泡淋巴细胞坏死与萎缩 → 免疫抑制"
+        - query: "duck AND (\"duck hepatitis A virus\" OR DHAV) AND (liver OR hepatic) AND (histopathology OR \"gross lesion\") AND 2018:2026"
+          target: "雏鸭肝大体与组织学图"
+          caption_hint: "实验条件：DHAV 感染雏鸭 · 部位：肝 · 临床意义：肝肿大伴出血斑点，急性死亡"
+      caption_elements:
+        - "实验条件（如「感染 24h 后」）"
+        - "部位（如「A.肺叶」）"
+        - "临床意义"
+      forbidden_sources:
+        - "带水印论坛实拍图"
+        - "分辨率不足的放大图"
+        - "未标来源图"
+      image_science_ownership: "图片承载的科学准确性由内容专家核验；标注位置/字号/版式归视觉设计成员"
+      knowledge_channel_ref: "knowledge_bases（本域的**文本型**知识库路由，与本节图片通道并列，不混用）"
+
+    # 文本型知识库路由（**原 agent MD 第 47–53 行七库硬编码表原样迁入**）
+    # 库 ID 为既有账号内资源标识，非编造；调用时机为路由说明。
+    knowledge_bases:
+      - name: "《禽病》Avian Disease（主力库）"
+        id: "7372985916737739"
+        when: "所有禽类疾病主题"
+      - name: "《猪病》"
+        id: "7372995890793583"
+        when: "猪病主题"
+      - name: "《牛羊病》"
+        id: "7408748326814899"
+        when: "反刍动物疾病主题"
+      - name: "《伴侣动物疾病》"
+        id: "7408031432200206"
+        when: "犬猫等宠物疾病主题"
+      - name: "病毒学-免疫学-细胞学"
+        id: "7372987669968501"
+        when: "机制类、免疫类、疫苗类内容"
+      - name: "流感"
+        id: "7372987141486120"
+        when: "流感病毒深入专题"
+      - name: "动物疫病诊断技术（WOAH/FAO/WHO）"
+        id: "7408735592931220"
+        when: "诊断标准、采样送检、国际规范"
+    knowledge_bases_discipline:
+      - "每次任务只选 1–3 个最相关库；跨物种主题最多 3 库（**库选错比查询串写得糙影响更大**）"
+      - "查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四个维度，**不必写成布尔式**"
+      - "每次任务开始先做工具探针（ima-mcp / UpNote 可用性），探针结果记入 task_state.json，不得重复探测"
+
+    # 术语规范
+    terminology:
+      - "关键术语首次出现按「中文（English, Abbreviation）」标注"
+      - "同一课件术语前后一致"
+      - "缩写（IBV/ND/AI 等）首次出现给中文全称 + 一次解释"
+      - "近义概念须区分（如抗原漂移 vs 抗原转变），不得混用"
+      - "流行病学数字、疫情分布、诊疗建议必标适用时空范围"
+
+    # 红线（拒收 / 高风险）
+    safety_redlines:
+      - "高风险病原、病原培养、动物攻毒、样品运输：只提供与教学目标匹配的高层级知识、风险提醒与合规要求，**不提供具体操作参数**"
+      - "流感 GOF 类内容：直接拒绝并上报主理人"
+      - "药物内容：诊断依据、处方合规、耐药风险、休药期、食品安全、执业兽医责任缺一不可；不输出可直接替代临床处方的表述"
+      - "疫苗与防控政策：标注国家/地区与生效年份，不同国家策略差异要说明"
+
+    # 包内知识锚点（本域**有**包内锚点）
+    knowledge_anchor:
+      path: "references/poultry-disease-index.md"
+      note: "家禽疫病教学导航索引 + 实验室诊断方法对照表——先查此文件取物种/病原英文名与靶器官骨架，再进检索通道"
+
+    # 域人格绑定到哪些成员（**声明式**；脚本只读取，不判断"该不该绑"）
+    member_bindings:
+      - member: "dvm-content-expert"
+        binding: "persona_subject"      # 吃域人格注入（内容专家）
+        note: "内容专家 = 域人格承载者"
+      - member: "pedagogy-architect"
+        binding: "domain_neutral"       # 教学法与域无关
+        note: "教学设计方法论与域无关，域切换不影响其职责"
+      - member: "visual-slide-designer"
+        binding: "domain_neutral"
+        note: "版式与视觉规范与域无关，域切换不影响其职责"
+      - member: "ppt-producer"
+        binding: "domain_neutral"
+        note: "制作与门禁执行与域无关"
+      - member: "verifier"
+        binding: "domain_neutral"
+        note: "独立验证方法论与域无关；核验对象的科学性由内容专家负责"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 域 2：computing（示例域——证明「非兽医主题完全可用」）
+  # ────────────────────────────────────────────────────────────────────
+  - id: computing
+    display_name: "计算机与软件工程"
+
+    match_hints:
+      - "主题词：编程语言 / 算法与数据结构 / 前端 / 后端 / 数据库 / 系统设计 / DevOps / 测试工程 / 编译原理"
+      - "课程名形态：《Python 入门》《数据结构与算法》《Web 开发实践》《软件工程导论》"
+      - "内容涉及：语言特性、代码语义、版本差异、工具链、性能与工程实践"
+      - "⚠ 面向**教学**的编程主题；纯工程运维/数据分析另议"
+
+    role_persona:
+      title: "软件工程内容权威"
+      background: "有生产工程实践与一线教学经验的工程师"
+      stance: "能复现的才算数——不编造 API 行为、不凭记忆写版本特性"
+      duties:
+        - "供给经核验的工程知识（语言语义、机制原理、工具链用法），并标注版本适用性"
+        - "对课件中的代码错误与过时表述直接指出并给正确写法"
+      duty_boundary: "只做内容核验、证据检索与分级、术语规范；不做教学设计、不做版式设计"
+
+    content_axes:
+      - "语言语义与类型系统"
+      - "算法与复杂度分析"
+      - "数据结构选型"
+      - "工程实践与工具链（构建、版本管理、依赖）"
+      - "版本差异与兼容性"
+      - "测试与调试方法"
+      - "性能与资源模型"
+
+    evidence_hierarchy:
+      institutional:
+        - "语言与平台的**官方文档 / 语言规范 / 参考手册**（须现查对应版本）"
+        - "标准组织发布的规范（W3C / IEEE / ISO 等——**具体标准号一律现查，不得凭记忆写**）"
+        - "框架与库的官方文档、版本发布说明（release notes）"
+      literature:
+        - "同行评议论文与预印本"
+        - "高质量技术书籍（须注明版本与出版年）"
+      axes_note: "机构轴给「什么是规范/官方行为」，文献轴给「为什么这样设计、实证如何」。版本敏感内容以机构轴的**具体版本文档**为准。"
+      time_layers:
+        - "版本敏感事实（API、默认值、弃用项）→ 以该版本官方文档为准，现查现引"
+        - "算法复杂度等稳定结论 → 不受版本限制，但须给可核验出处"
+      dual_source_rule: "关键结论至少双源核验（官方文档 + 独立可核验来源）；两者不一致时并列呈现并标注版本差异"
+
+    image_channel:
+      channels:
+        - name: "官方文档与官方图示"
+          role: "架构图 / 流程图 / 行为示意"
+          status: "有效"
+        - name: "开源项目官方文档图示"
+          role: "工具界面与配置示意"
+          status: "有效（须标注版本）"
+        - name: "联网检索教材配图"
+          role: "补充示意"
+          status: "须核验授权与出处"
+      query_elements:
+        - "技术栈 / 组件名"
+        - "版本或标准（越具体越好）"
+        - "具体场景 / 概念 / API"
+      query_template: "<技术栈/组件> <版本> <场景或概念>"
+      examples:
+        - query: "asyncio 事件循环 任务调度 原理"
+          target: "事件循环调度机制示意图"
+          caption_hint: "运行环境：Python 版本 · 核心概念：任务调度 · 教学意义：为什么回调不会阻塞"
+        - query: "hash table 冲突解决 链地址 开放寻址 示意图"
+          target: "哈希表两种冲突解决方式对照图"
+          caption_hint: "运行环境：数据结构通用 · 核心概念：冲突解决 · 教学意义：空间/时间权衡"
+      caption_elements:
+        - "运行环境与版本"
+        - "图示/代码要点"
+        - "教学意义"
+      forbidden_sources:
+        - "无来源截图"
+        - "与所述版本不符的界面截图"
+        - "AI 生成图冒充真实工具界面或运行结果"
+      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库，**不得回落动物医学库**；走本节官方文档通道）"
+
+    knowledge_bases: []
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查官方文档」，**严禁**静默回落动物医学知识库"
+
+    terminology:
+      - "API / 缩写首次出现给全称"
+      - "命令、代码片段、配置项一律**逐字可复制**，不给伪代码冒充实操"
+      - "同一课件同一概念用同一名称；近义库名须区分"
+      - "版本敏感术语必须标注适用版本"
+
+    safety_redlines:
+      - "涉及认证授权、密钥、隐私的内容：只给高层原则与合规要求，**不给**可被直接用于未授权访问的操作步骤"
+      - "不给绕过访问控制、破解、攻击第三方系统的步骤"
+      - "不给未经官方文档确认的「隐藏后门/私有接口」用法"
+
+    knowledge_anchor:
+      path: null
+      note: "本域**无包内知识锚点**——需联网现查官方文档；本字段写 null 是如实登记，不是缺漏"
+
+    member_bindings:
+      - member: "dvm-content-expert"
+        binding: "persona_subject"
+        note: "内容专家 = 域人格承载者"
+      - member: "pedagogy-architect"
+        binding: "domain_neutral"
+        note: "教学设计方法论与域无关"
+      - member: "visual-slide-designer"
+        binding: "domain_neutral"
+        note: "版式与视觉规范与域无关"
+      - member: "ppt-producer"
+        binding: "domain_neutral"
+        note: "制作与门禁执行与域无关"
+      - member: "verifier"
+        binding: "domain_neutral"
+        note: "独立验证方法论与域无关"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 域 3：business-training（示例域）
+  # ────────────────────────────────────────────────────────────────────
+  - id: business-training
+    display_name: "企业培训与业务流程"
+
+    match_hints:
+      - "主题词：入职培训 / 合规 / 流程规范 / 销售与客服技能 / 管理与领导力 / 绩效面谈 / 职业素养"
+      - "课程名形态：《新员工入职必修》《合规红线解读》《客户服务流程规范》《管理者的第一年》"
+      - "内容涉及：岗位角色、流程环节、沟通协作、工具系统使用、情景演练"
+      - "⚠ 面向**企业内训**的主题；面向公众的科普另议"
+
+    role_persona:
+      title: "企业管理与流程内容权威"
+      background: "有企业一线管理与培训落地经验的从业者"
+      stance: "流程讲不清就是没懂——每条流程必须落到「谁做、做什么、做到什么程度」"
+      duties:
+        - "供给经核验的流程/合规/技能知识，并标注适用法域与生效时间"
+        - "对课件中不合规或不可执行的说法直接指出并给正确表述"
+      duty_boundary: "只做内容核验、证据检索与分级、术语规范；不做教学设计、不做版式设计"
+
+    content_axes:
+      - "流程与角色职责"
+      - "合规与监管要求"
+      - "沟通与协作规范"
+      - "工具与系统使用"
+      - "情景演练与案例"
+      - "学习评估与反馈"
+
+    evidence_hierarchy:
+      institutional:
+        - "行业主管部门发布的监管指引与合规要求（须标明**法域与生效时间**）"
+        - "行业规范与协会 / 标准组织指引（**具体条款号一律现查**）"
+        - "机构自有制度与流程文件（须标明适用范围与版本）"
+      literature:
+        - "同行评议研究"
+        - "实务方法论书籍（须注明出版年与适用场景）"
+      axes_note: "机构轴给「必须怎么做（效力来源）」，文献轴给「这样做为什么有效（实证）」。企业内训以机构轴为主、文献轴补充；法域不同则结论不可互推。"
+      time_layers:
+        - "监管要求 / 制度条款 → 现查现行版本，注明生效年份"
+        - "通用方法论 → 相对稳定，但案例与工具版本须现查"
+      dual_source_rule: "关键结论至少双源核验（制度原文 + 独立实务来源）；制度版本不一致时以现行版为准并注明"
+
+    image_channel:
+      channels:
+        - name: "机构自有流程图 / 制度原文配图"
+          role: "流程与角色关系示意"
+          status: "有效（须脱敏与授权）"
+        - name: "官方指引配图"
+          role: "监管/规范要点示意"
+          status: "有效"
+        - name: "联网检索案例配图"
+          role: "情景演练素材"
+          status: "须核验授权与出处"
+      query_elements:
+        - "行业 / 业务域"
+        - "流程环节"
+        - "角色 / 场景"
+      query_template: "<行业> <流程环节> <角色或场景>"
+      examples:
+        - query: "客户投诉 处理流程 首次响应 时限"
+          target: "投诉处理流程与角色分工图"
+          caption_hint: "适用场景：工单处理 · 关键节点：首次响应 · 教学意义：责任到岗时限到岗"
+        - query: "新员工 入职培训 合规要求 模块划分"
+          target: "入职培训模块地图"
+          caption_hint: "适用场景：入职首月 · 关键节点：合规必修 · 教学意义：先合规后业务"
+      caption_elements:
+        - "适用场景 / 业务域"
+        - "流程关键节点"
+        - "教学意义"
+      forbidden_sources:
+        - "含真实客户/员工个人信息的截图（未脱敏）"
+        - "无授权的他人内部资料"
+        - "与所述制度版本不符的流程图"
+      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库；走本节官方指引与制度原文通道）"
+
+    knowledge_bases: []
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查制度原文与官方指引」，**严禁**静默回落动物医学知识库"
+
+    terminology:
+      - "流程环节名与岗位名统一；同一概念不混用「制度名 / 俗称」"
+      - "首次出现的制度简称给全称与出处"
+      - "法域相关术语必须标注适用法域"
+
+    safety_redlines:
+      - "涉及法律 / 财税 / 用工的具体结论必须注明适用法域与生效时间；不确定即上报主理人"
+      - "不编造具体条款号、金额、时限、处罚标准"
+      - "涉及个人信息的案例必须脱敏；不得使用真实个人数据"
+
+    knowledge_anchor:
+      path: null
+      note: "本域**无包内知识锚点**——需联网现查制度原文与官方指引；本字段写 null 是如实登记，不是缺漏"
+
+    member_bindings:
+      - member: "dvm-content-expert"
+        binding: "persona_subject"
+        note: "内容专家 = 域人格承载者"
+      - member: "pedagogy-architect"
+        binding: "domain_neutral"
+        note: "教学设计方法论与域无关"
+      - member: "visual-slide-designer"
+        binding: "domain_neutral"
+        note: "版式与视觉规范与域无关"
+      - member: "ppt-producer"
+        binding: "domain_neutral"
+        note: "制作与门禁执行与域无关"
+      - member: "verifier"
+        binding: "domain_neutral"
+        note: "独立验证方法论与域无关"

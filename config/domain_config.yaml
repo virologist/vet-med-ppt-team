@@ -103,10 +103,29 @@ disease_modules:
 #   three_source_pass_threshold 已删除（曾与本段重复声明，改那边不改行为 → 静默失效）。
 #   消费方：scripts/verify_deck.py#_load_three_source_thresholds()（执行者）、
 #           scripts/harness.py#_load_three_source_thresholds()（查询者，budget --kind three_source_*）。
+#
+# v3.17.0（B2-1）：本段同时成为**三档判定语义**的唯一源。
+#   立项依据（独立诊断组实跑攻击复现）：闸4.5 此前只判 `src.ok is True` 这一个
+#   **自报布尔值**，无任何存在性校验——造 3 条来源（不存在的 PMID + 不存在的 ISBN
+#   + 不存在的 GB）把 ok 写成 true，闸4.5 输出 pass_rate=1.0 / verdict=pass / exit 0；
+#   交叉核验该 PMID 在 PubMed esearch count=0（根本不存在）。
+#   ⇒ 判据必须从"自报"改为"实查"，且**查得到不等于通过，查不到更不等于通过**。
+#
+# ⚠ v3.17.0 收尾（已知环境约束，非实现缺陷，**别当 bug 报**）：
+#   ① **批量清单跑不完是环境约束**：NCBI 对**无 key 的匿名访问**有 3 req/s 速率限制，
+#      连续批量请求会被 NCBI abuse 系统封禁（返回 Access Denied / 429，部分网络
+#      路径下表现为 SSL EOF）。代码侧已做：api_key 支持 + 限速可配 + 遇速率限制
+#      指数退避并**显式告警**（见 source_verification.pubmed 段）。
+#      ⇒ **跑存量清单必须分批 + 批间留间隔**；有 NCBI key（设环境变量 NCBI_API_KEY）
+#      可到 10 req/s，耗时约降为 1/3.5。
+#   ② 遇封禁/网络失败时闸4.5 判 `network_incomplete`（fail-closed，**不静默通过**），
+#      这不是误判，是"没查成 ≠ 查过"。处置：配 key 或放慢节奏重跑，不要改成放行。
 three_source_check:
   enabled: true
   sample_rate: 0.1            # 抽检 10%
   pass_threshold: 0.8          # 通过率 ≥80% 达标
+  # v3.17.0：抽检可复现（null=每次随机；填整数则固定种子，便于"存量核验清单"复跑同批案例）
+  sample_seed: null
   sources:
     - kind: pubmed
       label: "PubMed 检索（PMID）"
@@ -114,6 +133,79 @@ three_source_check:
       label: "教辅/规划教材（ISBN）"
     - kind: regulation
       label: "国标/公告（GB/公告号）"
+  # ⚠ v3.17.0 收尾：上面三行 label **现在被代码真读**（报告里显示来源类型名，
+  #   见 scripts/harness.py#_source_labels）——此前是"配了无人读"的死配置键
+  #   （体检第 18 项 INFO 提示）。改 label 会真实改变报告输出，不是装饰字段。
+
+  # ── 三档判定语义（唯一源）────────────────────────────────────────
+  # 每条来源按 kind 走各自核验方式，归入且仅归入三档之一：
+  #   existence_verified 存在性已验证 —— 联网实查命中（当前仅 pubmed 具备该能力）
+  #   format_only        仅格式合规   —— 校验位/编号格式通过，**未验证存在性**
+  #   unverifiable       不可核验     —— 无核验器 / 格式不过 / 联网失败
+  # 硬约束：判定**不读 src.ok / src.verified_at**——自报布尔值不构成证据。
+  tiers:
+    existence_verified: "存在性已验证"
+    format_only: "仅格式合规"
+    unverifiable: "不可核验"
+
+  # ── 每案例判定（"三源"的字面含义）──────────────────────────────
+  # ① required_kinds：三类来源必须**齐备**，且每类至少 1 条达到
+  #    「存在性已验证」或「仅格式合规」（格式不过的条目不算该类已提供）。
+  #    —— 直接堵死"只留 1 条来源也能 pass"的旁路。
+  # ② required_existence_verified：其中至少 N 条达到「存在性已验证」。
+  #    —— 这是"已验证"的唯一口径；「仅格式合规」**不计入**已验证。
+  required_kinds: ["pubmed", "textbook", "regulation"]
+  required_existence_verified: 1
+  # 联网核验失败（网络/端点异常）单独计数 + 显式告警；不得算作"已验证"，
+  # 且整轮不得判 pass（block=阻断；warn=只告警不阻断，但本版只用 block）。
+  network_failure_policy: "block"
+
+  # ── 各 kind 的核验方式（端点/时限/限速一律落 yaml，代码只执行）────
+  source_verification:
+    pubmed:
+      mode: "online_esearch"     # 真实存在性核验：PubMed esearch 按 uid 查
+      endpoint: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+      db: "pubmed"
+      timeout_seconds: 15
+      # ── 限速（可配）─────────────────────────────────────────────────
+      # NCBI 官方速率：**无 key 3 req/s，有 key 10 req/s**。本项是"每次请求后
+      # 固定 sleep"，默认 0.4s ≈ 2.5 req/s（留安全余量，**不得调慢**——调慢会
+      # 改变既有耗时预期）。有 key 时可用更快的节奏（见 rate_limit_sleep_with_key）。
+      rate_limit_sleep: 0.4
+      rate_limit_sleep_with_key: 0.11   # 有 key 时 ≈9 req/s（仍在 10 req/s 内）
+      # ── API key（**真值只从环境变量读，严禁写进包内任何文件**）──────
+      # yaml 里只放**环境变量名**；代码 os.environ.get(该名字)。
+      # 留空串 = 不用 key（按匿名 3 req/s 跑，批量清单易触发 NCBI 封禁）。
+      # 申请：https://account.ncbi.nlm.nih.gov/settings/  → API Key Management
+      api_key_env: "NCBI_API_KEY"
+      # ── 退避（遇速率限制时指数退避，**每次退避都显式告警**，不静默重试）──
+      # max_retries: 单个 PMID 的退避重试次数（0=不重试，直接记网络失败）
+      # backoff_base: 首次退避秒数；之后 ×2 指数增长
+      # backoff_cap: 单次退避上限秒数
+      # suspect_threshold: 连续多少次非 HTTP 类失败后判为"疑似触发速率限制"
+      #   （NCBI 封禁在部分网络路径下表现为 SSL EOF 而非 403，见下）
+      max_retries: 3
+      backoff_base: 2.0
+      backoff_cap: 30.0
+      suspect_threshold: 2
+      # abort_batch_on_rate_limit: 某条 PMID 因速率限制重试耗尽 = 端点/限速对整批
+      #   都不可用 → 中止本批剩余 PMID 的实查（不再发请求，剩余全记网络失败）。
+      #   否则封禁时每条 PMID 都要赔 2+4+8 秒退避，整批清单拖到无法忍受。
+      #   被中止的条数**显式告警**，上层按 network_error 计数 → fail-closed。
+      abort_batch_on_rate_limit: true
+    textbook:
+      mode: "isbn_checksum"      # ISBN 校验位算法（格式合规 ≠ 存在）
+    regulation:
+      mode: "gb_number_format"   # 国标编号 / 公告号格式（格式合规 ≠ 存在）
+
+  # ── 格式校验规则（确定性结构校验：校验位算法 + 编号格式）─────────
+  # 正则落 yaml，代码只读取与执行（禁硬编码）；yaml 缺失 → 该 kind 判「不可核验」并告警，
+  # 不用内置正则兜底（内置兜底 = 又一份"看起来生效其实没生效"的声明）。
+  format_rules:
+    pmid: '(?i)^PMID:\s*(\d+)$'
+    isbn_candidate: '(?:97[89][0-9]{10}|[0-9]{9}[0-9Xx])'
+    gb_number: 'GB\s*(?:/T|/Z)?\s*[0-9]+(?:\.[0-9]+)?(?:\s*[-—]\s*[0-9]{4})?'
+    announcement_no: '(?:公告|通告)\s*(?:第)?\s*[0-9]{1,5}\s*号'
 
 # ── 5 闸扩展（Q1 追加 stage 4，v3.3.0 起生效） ───────────────
 gates:

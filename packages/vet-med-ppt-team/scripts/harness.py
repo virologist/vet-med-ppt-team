@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.16.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.17.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -74,7 +74,7 @@ v3.9.0（2026-10-22 双层 Loop 契约下沉批）：
     hook）——它校验的是"路径是否越界"与"状态推进是否合规"，不是沙箱，不得对外宣称
     "两环隔离已由代码强制"。
 
-v3.16.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
+v3.17.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
   + F2 删重复声明源：harness.yaml#budgets 的 three_source_sample_rate /
     three_source_pass_threshold 删除（与 domain_config.yaml#three_source_check 重复声明，
     而 verify_deck.py 只读后者 → 改前者静默失效）。`budget --kind three_source_*`
@@ -96,7 +96,9 @@ v3.16.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
 用法（推荐先跑 `python3 scripts/harness.py doctor` 看可发现性表）：
     python3 scripts/harness.py doctor     # 所有子命令的 usage/examples/exit_codes
     python3 scripts/harness.py preflight  [--team <团队名>] [--workspace <路径>]
-    python3 scripts/harness.py route      --level L0|L1|L2|L3
+    python3 scripts/harness.py route      --level L0|L1|L2|L3 [--domain <域id>] [--task-id <id>] [--rationale "<选型理由>"]
+    python3 scripts/harness.py domain list|show [--id <域id>] [--workspace <路径>]      # v3.17.0：域档案菜单（给 LLM 选域用）
+    python3 scripts/harness.py collapse list|show|confirm --id <域id> [--task-id <id>] [--rationale "<选型理由>"]  # v3.17.0：坍缩产物确认
     python3 scripts/harness.py state init|get|set|validate  [--workspace <路径>] [--stage N] [--key K --value V]
     python3 scripts/harness.py budget check|spend|reset --kind spawn|react|rework [--n 1] [--workspace <路径>]
     python3 scripts/harness.py trace log|report  [--event E] [--actor A] [--detail D] [--workspace <路径>]
@@ -136,7 +138,7 @@ _FALLBACK = {
     "budgets": {"max_member_spawns": 8, "max_spawn_attempts_per_member": 2,
                 "max_react_rounds_per_gap": 3, "max_react_rounds_total": 15,
                 "max_rework_rounds_per_stage": 2, "max_stage_minutes": 20,
-                # v3.16.0：删掉 three_source_sample_rate / three_source_pass_threshold——
+                # v3.17.0：删掉 three_source_sample_rate / three_source_pass_threshold——
                 # 它们在 harness.yaml 里是"第二份声明"，真正被消费的是
                 # config/domain_config.yaml#three_source_check（见 _load_three_source_thresholds）。
                 "max_artifact_bytes": 60000},
@@ -170,7 +172,7 @@ def load_cfg():
         return dict(_FALLBACK), False
 
 
-# v3.16.0：三源阈值的**唯一源** = config/domain_config.yaml#three_source_check。
+# v3.17.0：三源阈值的**唯一源** = config/domain_config.yaml#three_source_check。
 # 与 verify_deck.py#_load_three_source_thresholds 同源同责（那里是执行者，这里是查询者），
 # 差异只在缺值策略：本函数**不静默补内置值**——缺键即告警并返回 None，
 # 由 `budget check` 按"护栏缺失"如实返回 exit 1（配了 0/null 同样视为不存在）。
@@ -208,7 +210,7 @@ def _load_three_source_thresholds():
 
 
 def load_term_reasons(cfg):
-    """v3.16.0：终止原因读 harness.yaml#loop_b.termination（不再与代码里另立一份）。
+    """v3.17.0：终止原因读 harness.yaml#loop_b.termination（不再与代码里另立一份）。
 
     此前 LOOP_TERMINATIONS 是 harness.py 里的硬编码常量，yaml 里又写一份——
     在 yaml 加终止原因不会生效，属同型"双声明"缺陷。本函数为唯一取值口，
@@ -244,7 +246,14 @@ def trace_path(w, cfg):
     return p
 
 
-def read_state(w):
+def read_state(w, strict=False):
+    """读 task_state.json。
+
+    v3.17.0：**解析失败不再一律"按空状态处理"**。
+      · strict=True（写入路径必须用）：抛 _StateCorrupt —— 在损坏状态上重建会把
+        stage_history / task_id 全部丢掉，比读不到更危险（丢历史会被读成"从未推进"）。
+      · strict=False（只读路径）：保持旧行为（打印告警 + 返回 {}），但仍**显式告警**。
+    """
     sp = state_path(w)
     if not os.path.exists(sp):
         return {}
@@ -252,13 +261,145 @@ def read_state(w):
         with open(sp, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠ task_state.json 解析失败（{e}），按空状态处理", file=sys.stderr)
+        msg = f"task_state.json 解析失败（{e}）：{sp}"
+        if strict:
+            raise _StateCorrupt(msg)
+        print(f"⚠ {msg}，按空状态处理", file=sys.stderr)
         return {}
 
 
-def write_state(w, st):
-    with open(state_path(w), "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
+class _StateCorrupt(Exception):
+    """task_state.json 损坏：写入路径必须拒绝（保留损坏文件供人工修）。"""
+
+
+class _TaskIdConflict(Exception):
+    """task_id 比对不一致：立即停止推进 + 显式报警（不得静默接受他人 task_id）。"""
+
+
+def _atomic_write_json(path, obj):
+    """原子写 JSON：同目录临时文件 → fsync → os.replace 覆盖。
+
+    为什么必须原子：裸 open(path,"w") 先截断文件，进程被杀 / 磁盘满 / 并发读到
+    中间态时，磁盘上留下半截 JSON → 解析失败 → 状态被当空状态处理（= 静默重置）。
+    os.replace 在同一文件系统内是原子的，读者要么看到旧版要么看到新版。
+    （与 Loop B 侧 _write_loop_state 同一实现，两处不再各写一套。）
+    """
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".taskstate.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())      # 落盘缓冲，避免 replace 后仍丢数据
+        os.replace(tmp, path)        # 同目录 → 原子替换
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
+
+
+def _task_id_ledger_path(w):
+    """task_id 台账（旁挂）：<workspace>/.workbuddy/task_state.taskid。
+
+    为什么需要台账（v3.17.0）：文档承诺"写入前原子比对 task_id"，但状态文件里的
+    task_id **本身可被手改**——只跟磁盘里的自己比，比的是"改过之后的自己"。
+    实测：把文件里的 task_id 改成 t-DIFFERENT-PROCESS 后 `state set --stage 2`
+    无告警、exit 0、直接推进。台账在首次写入时落盘、之后只读，成为 task_id 的
+    **不随状态文件一起被改写**的锚点。
+    ⚠ 诚实边界：台账挡的是"手改状态文件里的 task_id"，**不是**有写权限的恶意攻击者
+    （同时改掉台账仍可绕过）——本项是防误操作与并发串台，不是防攻击者。
+    """
+    return os.path.join(os.path.dirname(state_path(w)), "task_state.taskid")
+
+
+def _read_task_id_ledger(w):
+    """读 task_id 台账；不存在返回 None，**损坏则抛错**（fail-closed，不得静默失效）。"""
+    p = _task_id_ledger_path(w)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return (d or {}).get("task_id")
+    except Exception as e:
+        raise _TaskIdConflict(
+            f"task_id 台账损坏（{e}）：{p}——无法确认任务归属，拒绝写入"
+            f"（fail-closed：台账读不到就不能保证 task_id 比对有效）")
+
+
+def _assert_task_id(w, new_state, expect_task_id=None, reset_ledger=False):
+    """写入前的 **task_id 原子比对**（文档承诺的并发防护，v3.17.0 真正落地）。
+
+    比对三处：台账锚点 / 磁盘上的 task_state.json / 本次操作携带的 task_id。
+    任一不一致 → 抛 _TaskIdConflict：调用方必须立即停止推进 + 显式报警 + 非 0 退出。
+    """
+    path = state_path(w)
+    if reset_ledger:
+        # `state init` = 显式重建任务：新 task_id 取代旧锚点（台账随之重置）。
+        # 此时不做任何比对——否则"重建任务"反而会被上一轮任务的台账挡住。
+        # ⚠ 调用方（cmd_state init）负责先把损坏的旧状态文件备份留证。
+        return {"ledger": None, "disk_task_id": None, "new_task_id":
+                (new_state or {}).get("task_id"), "reset": True}
+    ledger = _read_task_id_ledger(w)          # 损坏 → 抛错（fail-closed）
+    disk = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                disk = json.load(f)
+        except Exception as e:
+            raise _StateCorrupt(f"task_state.json 解析失败（{e}）：{path}")
+    disk_tid = disk.get("task_id") if isinstance(disk, dict) else None
+    new_tid = (new_state or {}).get("task_id") if isinstance(new_state, dict) else None
+    if expect_task_id and disk_tid and str(expect_task_id) != str(disk_tid):
+        raise _TaskIdConflict(
+            f"本次操作携带的 task_id={expect_task_id!r} 与状态文件里的 {disk_tid!r} "
+            f"不一致——可能是在操作别人的任务，拒绝推进")
+    if ledger and disk_tid and str(ledger) != str(disk_tid):
+        raise _TaskIdConflict(
+            f"状态文件里的 task_id={disk_tid!r} 与台账锚点 {ledger!r} 不一致——"
+            f"task_state.json 的 task_id 被改写（并发防护命中），拒绝推进")
+    if ledger and new_tid and str(ledger) != str(new_tid):
+        raise _TaskIdConflict(
+            f"本次写入的 task_id={new_tid!r} 与台账锚点 {ledger!r} 不一致——"
+            f"不得改写 task_id（除非 `state init` 显式重建任务）")
+    if not ledger and disk_tid:
+        print(f"⚠ task_id 台账缺失（老版本遗留？）——以状态文件现有 task_id={disk_tid!r} "
+              f"为锚点落台账；此后 task_id 被改写即会被拦下", file=sys.stderr)
+    return {"ledger": ledger, "disk_task_id": disk_tid, "new_task_id": new_tid}
+
+
+def write_state(w, st, locked=False, expect_task_id=None, reset_ledger=False):
+    """写 task_state.json：原子写 + 文件锁 + task_id 原子比对（v3.17.0）。
+
+    v3.17.0 前是裸 open(path,"w")：无临时文件、无 fsync、无 os.replace、无 task_id
+    比对、无锁——而文档（agents/vet-med-ppt-team-team-lead.md:218、
+    references/sop-stages.md:153）明确承诺"写入前原子比对 task_id，不一致立即停止
+    推进并报警"。**同一份代码里两套标准**（Loop B 侧的 _write_loop_state 早就做了
+    原子写 + _StateLock）。现在统一到同一套标准。
+
+    ⚠ 失败一律**抛异常**（_TaskIdConflict / _StateCorrupt），由调用方转成
+      "显式报警 + 非 0 退出"——绝不允许"写不下去就当没这回事"。
+    """
+    path = state_path(w)
+
+    def _do():
+        info = _assert_task_id(w, st, expect_task_id=expect_task_id,
+                               reset_ledger=reset_ledger)
+        _atomic_write_json(path, st)
+        # 台账：首次写入 / 显式重建任务时落盘（锚点只认第一次或重建）
+        if st.get("task_id") and (info.get("ledger") is None or info.get("reset")):
+            _atomic_write_json(_task_id_ledger_path(w),
+                               {"task_id": st["task_id"], "written_at": now_iso()})
+
+    if locked:
+        _do()
+    else:
+        with _StateLock(w, None, path=path + ".lock"):
+            _do()
 
 
 # ─────────────────────────── preflight ───────────────────────────
@@ -308,7 +449,15 @@ def cmd_preflight(args):
 
 # ─────────────────────────── route ───────────────────────────
 def cmd_route(args):
-    """确定性路由：复杂度 → spawn 计划（不再靠主理人临场判断）。"""
+    """确定性路由：复杂度 → spawn 计划（不再靠主理人临场判断）。
+
+    v3.17.0：新增 `--domain <域id>` —— 追加**域坍缩**字段并落盘坍缩产物。
+      ⚠ **默认行为零变化**：不传 --domain 时，本函数的输出与改造前**逐字节一致**
+        （追加字段全部在 `if domain_id:` 分支内，plan 的键序不变）。
+      ⚠ **选哪个域是语义判断**——脚本不做关键词选域；域由主理人（LLM）读
+        `domain list` 菜单后显式指定。传了不存在的域 id → **显式报错**，
+        绝不静默回落默认域（动物医学）。
+    """
     cfg, _ = load_cfg()
     r = cfg.get("routing", {}).get(args.level)
     if not r:
@@ -319,8 +468,414 @@ def cmd_route(args):
             "red_team": r.get("red_team", False),
             "budgets": cfg.get("budgets", {}),
             "handoff_mode": cfg.get("context", {}).get("handoff_mode")}
+    domain_id = (getattr(args, "domain", None) or "").strip()
+    if domain_id:
+        # ── v3.17.0：域坍缩（追加域字段 + 落盘坍缩产物）─────────────────
+        profiles, err = load_domain_profiles(cfg)
+        if err:
+            print(f"⛔ {err}\n   域档案不可用时**不得**回落任何域（含默认域）——"
+                  f"请修复 {config/domain-profiles.yaml} 或去掉 --domain。", file=sys.stderr)
+            return 3
+        dom = find_domain(profiles, domain_id)
+        if not dom:
+            ids = ", ".join(str(x.get("id")) for x in (profiles.get("domains") or [])
+                             if isinstance(x, dict))
+            print(f"⛔ 未知域 id：{domain_id!r}\n"
+                  f"   可用域：{ids}\n"
+                  f"   → **不回落任何域**（尤其不回落默认域）：域的选择是语义判断，"
+                  f"由主理人读 `domain list` 菜单后显式指定。", file=sys.stderr)
+            return 2
+        path, payload, _created = _write_collapse_artifact(cfg, dom, args)
+        status = payload.get("status")
+        c = _collapse_cfg(cfg)
+        pending = c.get("pending_status") or "pending_confirmation"
+        confirmed = c.get("confirmed_status") or "confirmed"
+        effective = bool(payload.get("effective")) and status == confirmed
+        plan["domain"] = dom.get("id")
+        plan["domain_profile_path"] = _domain_profiles_path(cfg)
+        plan["role_persona"] = dom.get("role_persona")
+        plan["collapse_artifact"] = path
+        plan["collapse_status"] = status
+        plan["collapse_effective"] = effective
+        plan["collapse_note"] = ("已确认，已生效" if effective
+                                 else "待确认，未生效（须经 `collapse confirm` 确认后域人格方可生效）")
+        plan["collapse_confirmation_required"] = bool(c.get("require_user_confirmation", True))
+        plan["selection_rationale_status"] = payload.get("selection_rationale_status")
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
+
+
+# ───────────────────── 域档案 / 坍缩（v3.17.0）────────────────────
+# 域档案唯一数据源 = config/domain-profiles.yaml（路径取自 harness.yaml#collapse.profile_file）。
+#
+# 分工宪法（**最重要的一条**）：
+#   · **选哪个域 = 语义判断** → 由主理人（LLM）读 `domain list` 菜单后显式指定；
+#     本文件**严禁**用 match_hints / 关键词 / 正则 / 打分自动选域（那是规则匹配偏见）。
+#   · 脚本只做确定性事务：读档案、组装、落盘、校验状态——**不猜、不判断语义**。
+_DOMAIN_PROFILES_REL = "config/domain-profiles.yaml"
+
+
+def _domain_profiles_path(cfg=None):
+    rel = ((cfg or {}).get("collapse") or {}).get("profile_file") or _DOMAIN_PROFILES_REL
+    return os.path.join(PKG, rel)
+
+
+def load_domain_profiles(cfg=None):
+    """读域档案。返回 (data, err)；err 非 None = 不可用。
+
+    失败一律**显式报错**，不回落任何域（尤其不得静默回落动物医学域）——
+    "显式失败"优于"静默跑偏"。域 id 缺失/重复也判非法（否则选域会指向歧义目标）。
+    """
+    path = _domain_profiles_path(cfg)
+    try:
+        import yaml  # noqa
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        return None, f"域档案读取失败（{e}）：{path}"
+    if not isinstance(data, dict):
+        return None, f"域档案格式非法（顶层须是映射）：{path}"
+    doms = data.get("domains")
+    if not isinstance(doms, list) or not doms:
+        return None, f"域档案格式非法（domains 须是非空列表）：{path}"
+    ids = []
+    for d in doms:
+        if not isinstance(d, dict) or not str(d.get("id") or "").strip():
+            return None, f"域档案格式非法（有域缺 id）：{path}"
+        ids.append(str(d.get("id")))
+    if len(set(ids)) != len(ids):
+        return None, f"域档案格式非法（域 id 重复：{ids}）：{path}"
+    return data, None
+
+
+def find_domain(profiles, domain_id):
+    """按 id 取域档案；取不到返回 None（**调用方必须显式报错，不得回落**）。"""
+    for d in (profiles or {}).get("domains") or []:
+        if isinstance(d, dict) and str(d.get("id")) == str(domain_id):
+            return d
+    return None
+
+
+def _collapse_cfg(cfg):
+    return (cfg or {}).get("collapse") or {}
+
+
+def cmd_domain(args):
+    """v3.17.0：域档案菜单（list）与详情（show）——**给主理人（LLM）看的选域入口**。
+
+    ⚠ 本命令**不做任何自动匹配**：`match_hints` 是给人读的线索菜单，
+      脚本不据此选域（分工宪法：面向内容语义的判断归 LLM）。
+    """
+    cfg, _ = load_cfg()
+    profiles, err = load_domain_profiles(cfg)
+    if err:
+        print(f"⛔ {err}", file=sys.stderr)
+        return 3
+    ppath = _domain_profiles_path(cfg)
+    if args.action == "list":
+        items = []
+        for d in profiles.get("domains") or []:
+            ka = d.get("knowledge_anchor")
+            ka_path = ka.get("path") if isinstance(ka, dict) else ka
+            items.append({
+                "id": d.get("id"),
+                "display_name": d.get("display_name"),
+                "match_hints": d.get("match_hints") or [],
+                "knowledge_anchor": ka_path,
+                "knowledge_anchor_present": bool(ka_path),
+                "knowledge_anchor_note": (ka.get("note") if isinstance(ka, dict) else None),
+            })
+        print(json.dumps({
+            "profile_file": ppath,
+            "default_domain": profiles.get("default_domain"),
+            "usage": "这是**给主理人（LLM）看的选域菜单**——脚本不自动选域；"
+                     "选定后用 `route --level <L> --domain <id>` 落盘坍缩产物，"
+                     "并须经 `collapse confirm` 确认后域人格方可生效。",
+            "domains": items,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if args.action == "show":
+        d = find_domain(profiles, args.id)
+        if not d:
+            ids = ", ".join(str(x.get("id")) for x in (profiles.get("domains") or [])
+                             if isinstance(x, dict))
+            print(f"⛔ 未知域 id：{args.id!r}。可用域：{ids}", file=sys.stderr)
+            return 2
+        print(json.dumps({"profile_file": ppath, "domain": d,
+                          "fallback": profiles.get("fallback") or {}},
+                         ensure_ascii=False, indent=2))
+        return 0
+    return 2
+
+
+def _run_dir(workspace, task_id):
+    """RUN_DIR 约定 = <workspace>/.harness-runs/<task_id>（见 references/spawn-protocol.md#二）。
+
+    坍缩产物与成员检索单（`_search_requests/`）同在 RUN_DIR 下、同级分目录，
+    保证"一次任务的所有中间产物"在一处、且不散落进用户课件目录。
+    """
+    return os.path.join(os.path.abspath(workspace), ".harness-runs", str(task_id))
+
+
+def _collapse_artifact_path(cfg, workspace, task_id, domain_id):
+    c = _collapse_cfg(cfg)
+    d = os.path.join(_run_dir(workspace, task_id), c.get("artifact_dir") or "_collapse")
+    tpl = c.get("artifact_name_template") or "collapse_{task_id}_{domain_id}.json"
+    return os.path.join(d, tpl.format(task_id=task_id, domain_id=domain_id))
+
+
+def _resolve_task_id(args, workspace):
+    """task_id 取值顺序：--task-id > task_state.json 的 task_id > adhoc。"""
+    tid = (getattr(args, "task_id", "") or "").strip()
+    if tid:
+        return tid
+    try:
+        st = read_state(workspace, strict=False)
+        if isinstance(st, dict) and st.get("task_id"):
+            return str(st["task_id"])
+    except Exception:
+        pass
+    return "adhoc"
+
+
+def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path):
+    """组装坍缩产物（**只组装，不判断**）。
+
+    · 选型理由由主理人（LLM）填（--rationale）；未填 → null + 状态"待补"，
+      **脚本不猜**（猜出来的理由等于没对齐）。
+    · 各成员的域匹配说明取自域档案的 member_bindings（**声明式**，不是脚本推断）；
+      主理人的补充说明留 confirmed_note 待确认时补写。
+    """
+    c = _collapse_cfg(cfg)
+    members = cfg.get("members") or {}
+    bindings = {}
+    for b in (dom.get("member_bindings") or []):
+        if isinstance(b, dict) and b.get("member"):
+            bindings[str(b.get("member"))] = b
+    mm = []
+    for mid, spec in members.items():
+        b = bindings.get(str(mid)) or {}
+        mm.append({
+            "member": mid,
+            "duty": (spec or {}).get("duty"),
+            "binding": b.get("binding") or "unspecified",
+            "domain_match_note": b.get("note"),
+            "confirmed_note": None,      # 主理人确认时补写
+        })
+    for mid, b in bindings.items():
+        if mid not in members:
+            mm.append({"member": mid, "duty": None,
+                       "binding": b.get("binding"),
+                       "domain_match_note": b.get("note"),
+                       "confirmed_note": None,
+                       "warning": "该成员 id 未登记在 config/harness.yaml#members"})
+    return {
+        "schema": "collapse-artifact/1",
+        "created_at": now_iso(),
+        "task_id": task_id,
+        "domain_id": dom.get("id"),
+        "domain_display_name": dom.get("display_name"),
+        "domain_profile_path": _domain_profiles_path(cfg),
+        "status": c.get("pending_status") or "pending_confirmation",
+        "effective": False,
+        "confirmed_at": None,
+        "confirmed_by": None,
+        "selection_rationale": rationale,
+        "selection_rationale_status": "filled" if rationale else "pending_team_lead",
+        "role_persona": dom.get("role_persona"),
+        "role_persona_status": "proposed_pending_confirmation",
+        "content_axes": dom.get("content_axes") or [],
+        "evidence_hierarchy": dom.get("evidence_hierarchy") or {},
+        "image_channel": dom.get("image_channel") or {},
+        "knowledge_bases": dom.get("knowledge_bases") or [],
+        "terminology": dom.get("terminology") or [],
+        "safety_redlines": dom.get("safety_redlines") or [],
+        "knowledge_anchor": dom.get("knowledge_anchor"),
+        "member_domain_match": mm,
+        "gate1_freeze_item": "collapsed_team_config",
+        "confirm_command": c.get("confirm_command")
+                          or "python3 scripts/harness.py collapse confirm --id <域id> --task-id <task_id>",
+        "notes": [
+            "本产物为**待确认态**：域人格（role_persona）**尚未生效**。",
+            "确认命令见 confirm_command；**沉默不构成确认**，须由主理人显式执行。",
+            "选型理由（selection_rationale）由主理人填写，脚本不猜。",
+        ],
+    }
+
+
+def _write_collapse_artifact(cfg, dom, args):
+    """落盘坍缩产物；返回 (path, payload, created)。
+
+    已确认的产物**不覆盖**：确认是用户裁决，不能被再次 route 悄悄打回待确认态。
+    """
+    c = _collapse_cfg(cfg)
+    w = wkspace(args)
+    tid = _resolve_task_id(args, w)
+    path = _collapse_artifact_path(cfg, w, tid, dom.get("id"))
+    rationale = (getattr(args, "rationale", "") or "").strip()
+    confirmed_status = c.get("confirmed_status") or "confirmed"
+    old = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                old = json.load(f)
+        except Exception:
+            old = None
+    if isinstance(old, dict) and old.get("status") == confirmed_status:
+        return path, old, False
+    payload = _collapse_artifact_payload(cfg, dom, tid, rationale, path)
+    if isinstance(old, dict):
+        # 沿用此前已填的选型理由（本次未显式提供时不抹掉）
+        if not rationale and old.get("selection_rationale"):
+            payload["selection_rationale"] = old["selection_rationale"]
+            payload["selection_rationale_status"] = (old.get("selection_rationale_status")
+                                                      or "filled")
+        payload["created_at"] = old.get("created_at") or payload["created_at"]
+        payload["updated_at"] = now_iso()
+    _atomic_write_json(path, payload)
+    return path, payload, True
+
+
+def cmd_collapse(args):
+    """v3.17.0：坍缩产物的落盘查询与**用户确认**（确认前域人格不生效）。
+
+    契约（规格原文：「坍缩结果须主动输出并与我对齐、**经确认后生效**」）：
+      · `route --domain <id>` 落盘**待确认**产物；
+      · `collapse confirm --id <id> --task-id <tid>` 才把状态改为 confirmed / effective=true；
+      · 确认**要求已填选型理由**（脚本不猜理由；没有理由的确认等于没对齐）。
+    """
+    cfg, _ = load_cfg()
+    c = _collapse_cfg(cfg)
+    w = wkspace(args)
+    if not c.get("enabled", True):
+        print("ℹ 坍缩已禁用（config/harness.yaml#collapse.enabled=false），跳过")
+        return 0
+
+    if args.action == "list":
+        root = os.path.join(os.path.abspath(w), ".harness-runs")
+        items = []
+        if os.path.isdir(root):
+            for tid in sorted(os.listdir(root)):
+                d = os.path.join(root, tid, c.get("artifact_dir") or "_collapse")
+                if not os.path.isdir(d):
+                    continue
+                for fn in sorted(os.listdir(d)):
+                    if not fn.endswith(".json"):
+                        continue
+                    fp = os.path.join(d, fn)
+                    try:
+                        with open(fp, encoding="utf-8") as f:
+                            obj = json.load(f)
+                    except Exception:
+                        continue
+                    items.append({
+                        "domain_id": obj.get("domain_id"),
+                        "task_id": obj.get("task_id") or tid,
+                        "status": obj.get("status"),
+                        "effective": bool(obj.get("effective")),
+                        "selection_rationale_status": obj.get("selection_rationale_status"),
+                        "path": fp,
+                    })
+        print(json.dumps({"root": root, "count": len(items), "artifacts": items},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    if args.action == "show":
+        tid = _resolve_task_id(args, w)
+        profiles, err = load_domain_profiles(cfg)
+        if err:
+            print(f"⛔ {err}", file=sys.stderr)
+            return 3
+        dom = find_domain(profiles, args.id)
+        if not dom:
+            print(f"⛔ 未知域 id：{args.id!r}", file=sys.stderr)
+            return 2
+        path = _collapse_artifact_path(cfg, w, tid, dom.get("id"))
+        if not os.path.exists(path):
+            print(f"⛔ 未找到坍缩产物：{path}\n"
+                  f"   → 先执行 `route --level <L> --domain {dom.get('id')} --task-id {tid}` 生成待确认产物。",
+                  file=sys.stderr)
+            return 1
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+        print(json.dumps(obj, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.action == "confirm":
+        tid = _resolve_task_id(args, w)
+        profiles, err = load_domain_profiles(cfg)
+        if err:
+            print(f"⛔ {err}", file=sys.stderr)
+            return 3
+        dom = find_domain(profiles, args.id)
+        if not dom:
+            print(f"⛔ 未知域 id：{args.id!r}", file=sys.stderr)
+            return 2
+        path = _collapse_artifact_path(cfg, w, tid, dom.get("id"))
+        if not os.path.exists(path):
+            print(f"⛔ 未找到待确认的坍缩产物：{path}\n"
+                  f"   → 先执行 `route --level <L> --domain {dom.get('id')} --task-id {tid}`。",
+                  file=sys.stderr)
+            return 1
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+        rationale = (getattr(args, "rationale", "") or "").strip() or (obj.get("selection_rationale") or "")
+        if not rationale:
+            print("⛔ 拒绝确认：选型理由（selection_rationale）为空。\n"
+                  "   理由由**主理人**提供（脚本不猜）——请用 `--rationale \"<理由>\"` 重新执行。",
+                  file=sys.stderr)
+            return 1
+        confirmed_status = c.get("confirmed_status") or "confirmed"
+        obj["status"] = confirmed_status
+        obj["effective"] = True
+        obj["confirmed_at"] = now_iso()
+        obj["confirmed_by"] = getattr(args, "actor", "") or "team-lead"
+        obj["selection_rationale"] = rationale
+        obj["selection_rationale_status"] = "filled"
+        obj["role_persona_status"] = "effective"
+        obj.setdefault("notes", []).append(
+            f"已由 {obj['confirmed_by']} 于 {obj['confirmed_at']} 确认：域人格生效。")
+        _atomic_write_json(path, obj)
+        # 镜像进 task_state.json（白名单键 collapse；不在白名单会被静默拒绝）
+        # ⚠ 仅当状态文件**已存在**时才镜像：状态文件不存在说明本任务还没 `state init`，
+        #   此时凭空造一个只含 collapse 的残状态文件，会让下游 `state validate` 判非法
+        #   （缺 task_id / current_stage）——宁可只留产物（产物本身就是生效依据）。
+        mirrored = False
+        sp = state_path(w)
+        if os.path.exists(sp):
+            try:
+                st = read_state(w, strict=True)
+                if isinstance(st, dict):
+                    st["collapse"] = {
+                        "domain_id": obj.get("domain_id"),
+                        "task_id": obj.get("task_id"),
+                        "role_persona": obj.get("role_persona"),
+                        "selection_rationale": obj.get("selection_rationale"),
+                        "status": obj.get("status"),
+                        "effective": True,
+                        "confirmed_at": obj.get("confirmed_at"),
+                        "artifact": path,
+                    }
+                    write_state(w, st)
+                    mirrored = True
+            except Exception as e:
+                print(f"⚠ 未能镜像进 task_state.json（{e}）——坍缩产物本身已是生效依据。",
+                      file=sys.stderr)
+        else:
+            print(f"ℹ 未发现 task_state.json（{sp}）——本次不镜像状态；"
+                  f"坍缩产物本身即生效依据。", file=sys.stderr)
+        print(json.dumps({
+            "ok": True,
+            "domain_id": obj.get("domain_id"),
+            "status": obj.get("status"),
+            "effective": True,
+            "confirmed_at": obj.get("confirmed_at"),
+            "artifact": path,
+            "state_mirrored": mirrored,
+            "gate1_freeze_item": obj.get("gate1_freeze_item"),
+        }, ensure_ascii=False, indent=2))
+        return 0
+    return 2
 
 
 # ─────────────────────────── state ───────────────────────────
@@ -331,15 +886,42 @@ def cmd_state(args):
     stages = cfg.get("stages", {})
 
     if args.action == "init":
-        st = {"task_id": f"t{int(time.time())}", "workflow": args.workflow or "WF-1",
+        # v3.17.0：原状态文件损坏时**先保留证据再重建**（不静默覆盖）
+        sp = state_path(w)
+        if os.path.exists(sp):
+            try:
+                with open(sp, encoding="utf-8") as f:
+                    json.load(f)
+            except Exception as e:
+                bak = sp + ".corrupt"
+                try:
+                    os.replace(sp, bak)
+                except OSError as e2:
+                    print(f"❌ 原 task_state.json 损坏（{e}）且无法备份（{e2}）：{sp}"
+                          f"——拒绝重建（不覆盖损坏文件）", file=sys.stderr)
+                    return 1
+                print(f"⚠ 原 task_state.json 损坏（{e}），已保留为 {bak} 后重建"
+                      f"（请人工核查其内容）", file=sys.stderr)
+        st = {"task_id": args.task_id or f"t{int(time.time())}", "workflow": args.workflow or "WF-1",
               "current_stage": args.stage if args.stage is not None else 0,
               "stage_history": [], "user_confirmations_pending": [],
               "tool_probe_results": {}, "budget": {}, "next_action": "", "compaction": {}}
-        write_state(w, st)
+        try:
+            write_state(w, st, reset_ledger=True)
+        except (_TaskIdConflict, _StateCorrupt) as e:
+            print(f"⛔ 拒绝写入：{e}", file=sys.stderr)
+            return 1
         print(json.dumps(st, ensure_ascii=False, indent=2))
         return 0
 
-    st = read_state(w)
+    # v3.17.0：非 init 动作一律**严格读**——损坏状态不得被读成"空状态"（那是静默重置）
+    try:
+        st = read_state(w, strict=True)
+    except _StateCorrupt as e:
+        print(f"⛔ 拒绝操作：{e}\n"
+              f"   损坏文件已原样保留（**不覆盖、不重建**）——请人工修复，"
+              f"或确认作废后删除再 `state init` 重建。", file=sys.stderr)
+        return 1
     if args.action == "get":
         print(json.dumps(st, ensure_ascii=False, indent=2))
         return 0
@@ -362,23 +944,51 @@ def cmd_state(args):
         print(json.dumps({"ok": not errs, "errors": errs}, ensure_ascii=False, indent=2))
         return 0 if not errs else 1
     if args.action == "set":
-        if args.stage is not None:
-            # v3.3.0：双轨期 0-4 合法
-            if not isinstance(args.stage, int) or args.stage < 0 or args.stage > 4:
-                print(f"拒绝写入：阶段必须是 0-4 整数（v3.3.0 双轨期），收到 {args.stage!r}", file=sys.stderr)
-                return 1
-            st["current_stage"] = args.stage
-            st.setdefault("stage_history", []).append(
-                {"stage": args.stage, "status": "entered", "ts": now_iso(), "summary": args.detail or ""})
-        if args.key:
-            if allowed and args.key not in allowed:
-                print(f"拒绝写入：{args.key} 不在 state_allowed_keys 白名单内", file=sys.stderr)
-                return 1
+        # v3.17.0：读-改-写整段在锁内（避免并发写丢更新），写前做 task_id 比对
+        with _StateLock(w, None, path=state_path(w) + ".lock"):
             try:
-                st[args.key] = json.loads(args.value)
-            except Exception:
-                st[args.key] = args.value
-        write_state(w, st)
+                st = read_state(w, strict=True)
+            except _StateCorrupt as e:
+                print(f"⛔ 拒绝写入：{e}\n"
+                      f"   损坏文件已原样保留（**不覆盖、不重建**）——请人工修复。",
+                      file=sys.stderr)
+                return 1
+            if args.stage is not None:
+                # v3.3.0：双轨期 0-4 合法
+                if not isinstance(args.stage, int) or args.stage < 0 or args.stage > 4:
+                    print(f"拒绝写入：阶段必须是 0-4 整数（v3.3.0 双轨期），收到 {args.stage!r}", file=sys.stderr)
+                    return 1
+                st["current_stage"] = args.stage
+                st.setdefault("stage_history", []).append(
+                    {"stage": args.stage, "status": "entered", "ts": now_iso(), "summary": args.detail or ""})
+            if args.key:
+                if allowed and args.key not in allowed:
+                    print(f"拒绝写入：{args.key} 不在 state_allowed_keys 白名单内", file=sys.stderr)
+                    return 1
+                try:
+                    st[args.key] = json.loads(args.value)
+                except Exception as e:
+                    # v3.17.0：**不再静默存字符串**。旧实现在 JSON 解析失败时
+                    # `st[key] = args.value`，于是 quality_history 变成字符串，
+                    # 下游 isinstance(h, dict) 过滤掉 → 收敛判据 streak 恒 0（静默失效）。
+                    print(f"拒绝写入：--value 不是合法 JSON（{e}）：{args.value!r}\n"
+                          f"   用法：--value 的内容必须是合法 JSON。\n"
+                          f"     字符串 → 显式加引号：--value '\"abc\"'（例：--value '\"gate2_spawn\"'）\n"
+                          f"     数字   → --value '3'\n"
+                          f"     数组   → --value '[1,2]'\n"
+                          f"     对象   → --value '{{\"k\":1}}'\n"
+                          f"   不做隐式字符串回落（静默存字符串会让 quality_history 之类结构化键"
+                          f"变成字符串 → 下游按 dict 过滤掉 → 判据静默失效）。", file=sys.stderr)
+                    return 2
+            try:
+                write_state(w, st, locked=True, expect_task_id=getattr(args, "task_id", "") or None)
+            except _TaskIdConflict as e:
+                print(f"⛔ 拒绝写入：{e}", file=sys.stderr)
+                return 1
+            except _StateCorrupt as e:
+                print(f"⛔ 拒绝写入：{e}\n"
+                      f"   损坏文件已原样保留（**不覆盖、不重建**）。", file=sys.stderr)
+                return 1
         print(json.dumps(st, ensure_ascii=False, indent=2))
         return 0
     return 2
@@ -395,7 +1005,7 @@ def cmd_budget(args):
     three_source_pass_threshold）只在 _FALLBACK 兜底字典里出现，代码从不读——
     配置写了、文档也引用了（如 sop-stages.md 引用 max_stage_minutes），
     但**没有任何执行者**，等于"看起来有护栏、实际不设防"。
-    v3.16.0：后两项（three_source_*）已从 harness.yaml 删除——它们与
+    v3.17.0：后两项（three_source_*）已从 harness.yaml 删除——它们与
     domain_config.yaml#three_source_check 重复声明，而 verify_deck.py 只读后者，
     改 harness.yaml 静默无效。现 three_source_sample / three_source_pass 两个 kind
     改读 domain_config.yaml（见 threshold_map 的第三项"配置源"），
@@ -413,7 +1023,7 @@ def cmd_budget(args):
     limit_map = {"spawn": "max_member_spawns", "react": "max_react_rounds_total",
                  "rework": "max_rework_rounds_per_stage"}
     # v3.12.0：阈值型预算——harness 不代执行，只做「配置查得到 + 标明执行者」
-    # v3.16.0：三元组第三项是**配置源**：
+    # v3.17.0：三元组第三项是**配置源**：
     #   "budgets"            → 读 config/harness.yaml#budgets.<key>
     #   "domain_three_source"→ 读 config/domain_config.yaml#three_source_check.<key>
     # 背景：three_source_* 曾在 harness.yaml 与 domain_config.yaml 两处同值声明，
@@ -486,7 +1096,7 @@ def cmd_budget(args):
                 "note": ("阈值型预算：harness 只查配置，不计数不阻断——由执行者判定。"
                          "配成 0/null 即该护栏实际不存在，勿当已有。"
                          + ("配置源=domain_config.yaml#three_source_check.%s；"
-                            "harness.yaml 不再提供此键（v3.16.0 已删 three_source_* 重复声明）。"
+                            "harness.yaml 不再提供此键（v3.17.0 已删 three_source_* 重复声明）。"
                             % key if source == "domain_three_source" else "")),
             }, ensure_ascii=False))
             if val in (None, 0):
@@ -768,15 +1378,17 @@ _FAKE_PMIDS = {"12345", "00000", "99999", "11111", "012345"}
 _OK_NO_TS = _re_ref.compile(r"\"ok\"\s*:\s*true", _re_ref.I)
 
 
-def _check_one_ref(src: dict) -> dict:
+def _check_one_ref(src: dict, pmid_rx=None) -> dict:
     """单条来源预检：返回 {verdict, reason, fix_hint}。
     v3.4.2 红线：ok=true 但无 verified_at → 假通过（最高优先级，先判）。
     真黑名单号（PMID:12345 等占位号）即使 ok=false 也报 fake，便于核验时挑出。
+    v3.17.0：PMID 格式正则改由 yaml 提供（pmid_rx），内置正则仅作缺配置时的受控兜底。
     """
     kind = (src.get("kind") or "").lower()
     ref = (src.get("ref") or "").strip()
     has_ts = bool(src.get("verified_at"))
     ok_flag = bool(src.get("ok"))
+    rx = pmid_rx or _PMID_RE
     if not kind or not ref:
         return {"verdict": "invalid", "reason": "缺 kind 或 ref",
                 "fix_hint": "补 kind+ref，或改 unverified=true"}
@@ -784,7 +1396,7 @@ def _check_one_ref(src: dict) -> dict:
         return {"verdict": "stale_ok", "reason": "ok=true 但缺 verified_at 时间戳（v3.4.2 红线）",
                 "fix_hint": "改为 ok=false + verified_at 留空，或联网实检后补 verified_at"}
     if kind == "pubmed":
-        m = _PMID_RE.match(ref)
+        m = rx.match(ref)
         if not m:
             return {"verdict": "format_err", "reason": f"PMID 格式不合规: {ref!r}",
                     "fix_hint": "应为 PMID:<数字>，如 PMID:12345678"}
@@ -802,14 +1414,14 @@ def _check_one_ref(src: dict) -> dict:
     return {"verdict": "ok", "reason": "通过预检", "fix_hint": ""}
 
 
-def _static_ref_report(cases):
+def _static_ref_report(cases, pmid_rx=None):
     """v3.4.3 A2：静态引用预检（自 cmd_verify_ref 抽出——--online 修复后需复跑同一逻辑）。"""
     report = {"total": len(cases), "fake": [], "stale_ok": [], "suspicious": [],
               "format_err": [], "ok": [], "fake_unverified": []}
     for c in cases:
         sid = c.get("case_id", c.get("title", "?"))
         for src in (c.get("sources") or []):
-            r = _check_one_ref(src)
+            r = _check_one_ref(src, pmid_rx)
             v = r["verdict"]
             # 已 unverified 的黑名单号不阻断（仅标出便于核验时挑出）
             if v == "fake" and not src.get("ok"):
@@ -821,25 +1433,516 @@ def _static_ref_report(cases):
     return report
 
 
-def _pmid_online_check(pmids):
-    """v3.4.3 A2：PubMed esearch 联网确认 PMID 真实存在（反"假核验"闭环核心）。
+def _esearch_url(base, db, pmid, api_key=None):
+    """拼 esearch URL（api_key 非空时附加 &api_key=...）。"""
+    url = f"{base}?db={db}&term={pmid}%5Buid%5D&retmode=json"
+    if api_key:
+        url += f"&api_key={api_key}"
+    return url
+
+
+def _classify_net_error(exc):
+    """把网络异常分成两类：rate_limit（明确的速率限制/封禁）/ network（其它）。
+
+    NCBI 封禁的两种表现：HTTP 403（Access Denied 页面）或 HTTP 429（Too Many
+    Requests）——都是明确的速率限制信号；部分网络路径下同一封禁表现为 SSL EOF
+    （URLError），那类无法单次判定，靠"连续失败次数"阈值来怀疑（见 suspect_threshold）。
+    """
+    code = getattr(exc, "code", None)
+    if code in (403, 429):
+        return "rate_limit"
+    return "network"
+
+
+def pmid_existence_check(pmids, endpoint=None, db="pubmed", timeout=15, sleep=0.4,
+                         api_key=None, max_retries=3, backoff_base=2.0,
+                         backoff_cap=30.0, suspect_threshold=2, on_alarm=None,
+                         abort_batch_on_rate_limit=True):
+    """PubMed esearch 联网确认 PMID 是否**真实存在**（v3.17.0：参数化 + 退避）。
+
     返回 {pmid: True/False/None}——True=存在 False=esearch 无记录 None=网络失败。
-    请求间 sleep 0.4s（NCBI 无 key 限速 3/s）；None 不参与写回判定（防半核验落盘）。
+    **False 与 None 必须分开计数**：False=证伪（该号根本不存在，是数据错）；
+    None=没查到（网络故障/被封禁，是环境问题）。二者都**不得**被当作"已验证"，
+    但处置不同，故返回值保留三态而不是布尔。
+
+    v3.17.0 收尾（治 NCBI abuse 封禁）：
+      · api_key：有 key 时请求带 &api_key=（NCBI 限速 3→10 req/s）。
+        ⚠ **key 真值只从环境变量读**（调用方解析 yaml#…pubmed.api_key_env 得到变量名），
+          本函数只接收已取到的值，**绝不**把 key 写进任何日志/报告/URL 输出。
+      · 退避：遇 403/429（明确的速率限制）或连续失败达 suspect_threshold
+        （疑似封禁，如 SSL EOF）→ **指数退避重试**，且**每次退避都显式告警**
+        （on_alarm 回调；默认打印到 stderr）——**不静默重试到超时**。
+      · 退避耗尽 → 该 PMID 记 None（网络失败），由上层计入 network_error 并阻断。
+      · 熔断（abort_batch_on_rate_limit=True，默认开）：**某个 PMID 因速率限制
+        重试耗尽 = 端点/限速对整批都不可用**，此时**中止本批剩余 PMID 的实查**
+        （不再发请求，剩余全部记 None）——否则封禁时每条 PMID 都要赔上
+        2+4+8 秒退避，整批清单会拖到无法忍受。被中止的条数**显式告警**，
+        上层按 network_error 计数 → fail-closed，不静默。
+
+    请求间 sleep（限速，NCBI 无 key 3 req/s）；None 不参与写回判定（防半核验落盘）。
     """
     import urllib.request as _u
     out = {}
-    base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-    for pmid in pmids:
-        try:
-            url = f"{base}?db=pubmed&term={pmid}%5Buid%5D&retmode=json"
-            with _u.urlopen(url, timeout=15) as resp:
-                j = json.loads(resp.read().decode("utf-8"))
-            ids = (j.get("esearchresult") or {}).get("idlist") or []
-            out[pmid] = str(pmid) in [str(x) for x in ids]
-        except Exception:
+    base = endpoint or "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+    def _alarm(msg):
+        if on_alarm:
+            on_alarm(msg)
+        else:
+            print(msg, file=sys.stderr)
+
+    consecutive_fail = 0
+    aborted = False
+    pmids = list(pmids)
+    for idx, pmid in enumerate(pmids):
+        if aborted:
             out[pmid] = None
-        time.sleep(0.4)  # NCBI 限速（无 key 3 req/s）
+            continue
+        attempt = 0
+        while True:
+            try:
+                url = _esearch_url(base, db, pmid, api_key)
+                with _u.urlopen(url, timeout=timeout) as resp:
+                    j = json.loads(resp.read().decode("utf-8"))
+                ids = (j.get("esearchresult") or {}).get("idlist") or []
+                out[pmid] = str(pmid) in [str(x) for x in ids]
+                consecutive_fail = 0
+                break
+            except Exception as e:
+                kind = _classify_net_error(e)
+                consecutive_fail += 1
+                suspected = (kind == "network"
+                             and consecutive_fail >= max(1, int(suspect_threshold)))
+                if kind == "rate_limit" or suspected:
+                    reason = ("HTTP %s（NCBI 速率限制/封禁）" % getattr(e, "code", "?")
+                              if kind == "rate_limit"
+                              else "连续 %d 次连接失败（疑似触发 NCBI 速率限制）" % consecutive_fail)
+                    if attempt < max_retries:
+                        delay = min(backoff_base * (2 ** attempt), backoff_cap)
+                        _alarm(f"⚠ 疑似触发 NCBI 速率限制（{reason}）：PMID:{pmid} "
+                               f"第 {attempt + 1} 次请求失败，{delay:.1f}s 后指数退避重试"
+                               f"（退避期间**不算已验证**；退避耗尽即记网络失败）")
+                        time.sleep(delay)
+                        attempt += 1
+                        continue
+                    _alarm(f"⛔ PMID:{pmid} 因速率限制连续失败 {attempt + 1} 次，退避重试耗尽"
+                           f"（{reason}）——记为网络失败，**不计入已验证**；"
+                           f"建议配 NCBI_API_KEY 环境变量或放慢节奏重跑")
+                    out[pmid] = None
+                    if abort_batch_on_rate_limit:
+                        aborted = True
+                        rest = len(pmids) - idx - 1
+                        if rest:
+                            _alarm(f"⛔ 已因速率限制中止本批剩余 {rest} 条 PMID 的实查"
+                                   f"（不再发请求，全部记为网络失败）——"
+                                   f"端点/限速对整批不可用，继续跑只会把每条都赔上退避时间")
+                    break
+                out[pmid] = None
+                break
+        if sleep and not aborted:
+            time.sleep(sleep)  # NCBI 限速（无 key 3 req/s / 有 key 10 req/s）
     return out
+
+
+def _resolve_api_key(tsc=None, alarms=None):
+    """按 yaml 指定的**环境变量名**取 NCBI API key（真值只从环境读，绝不落盘）。
+
+    yaml 里只放变量名（source_verification.pubmed.api_key_env），本函数读
+    os.environ。**返回的 key 不得写进任何日志/报告**——调用方只把它交给
+    pmid_existence_check 拼 URL。
+
+    返回 (key, 说明文字)：说明文字供调用方显式告警"用没用 key"（没 key 是
+    **已知环境约束**，必须让使用者知道，否则批量清单跑不完会被当成 bug）。
+    """
+    spec = ((tsc or {}).get("source_verification") or {}).get("pubmed") or {}
+    env_name = str(spec.get("api_key_env") or "").strip()
+    if not env_name:
+        return "", ("ℹ 未配置 NCBI API key（yaml 未设 api_key_env）——按匿名限速 3 req/s 跑，"
+                    "批量清单易触发 NCBI 封禁，建议分批+批间留间隔")
+    key = os.environ.get(env_name, "").strip()
+    if not key:
+        return "", (f"ℹ 未取到 NCBI API key（环境变量 {env_name} 未设置）——按匿名限速 3 req/s 跑，"
+                    f"批量清单易触发 NCBI 封禁，建议分批+批间留间隔")
+    return key, f"ℹ 已启用 NCBI API key（取自环境变量 {env_name}，限速 10 req/s）"
+
+
+def _pmid_online_check(pmids):
+    """v3.4.3 A2：PubMed esearch 联网确认 PMID 真实存在（反"假核验"闭环核心）。
+
+    v3.17.0：改为薄封装，参数化实现见 pmid_existence_check()（端点/时限/限速落 yaml）。
+    返回 {pmid: True/False/None}——True=存在 False=esearch 无记录 None=网络失败。
+    """
+    return pmid_existence_check(pmids)
+
+
+# ══════════════ v3.17.0 三源核验内核（存在性 / 格式 三档判定）══════════════
+# 唯一实现点：verify_deck.py#three_source_check（裁判侧执行）与
+#   harness.py#cmd_verify_ref（编排侧查询/写回）共用，避免同型逻辑两处各写一份
+#   （"同一判据两处各写"是本包反复出现的缺陷类型）。
+#
+# 为什么必须重做判定口径（v3.17.0 独立诊断组实跑攻击复现）：
+#   原判据 = `any(src.get("ok") is True for src in sources)` —— **自报布尔值**，
+#   零存在性校验。攻击：造 3 条来源（不存在的 PMID + 不存在的 ISBN + 不存在的 GB），
+#   把 ok 写成 true → 闸4.5 输出 pass_rate=1.0 / verdict=pass / exit 0；
+#   交叉核验该 PMID 在 PubMed esearch count=0（根本不存在）。
+#   ⇒ 判据必须从"自报"改为"实查"，且**查得到才算通过，查不到更不算通过**。
+#
+# 三档语义（唯一源 = config/domain_config.yaml#three_source_check.tiers）：
+#   existence_verified 存在性已验证 —— 联网实查命中（当前仅 pubmed 具备该能力）
+#   format_only        仅格式合规   —— 校验位/编号格式通过，**未验证存在性**
+#   unverifiable       不可核验     —— 无核验器 / 格式不过 / 联网失败
+# 硬约束：判定**不读 src.ok / src.verified_at**——自报布尔值不构成证据。
+
+TIER_EXISTENCE = "existence_verified"    # 存在性已验证
+TIER_FORMAT = "format_only"              # 仅格式合规（未验证存在性）
+TIER_UNVERIFIABLE = "unverifiable"       # 不可核验
+# 档位排序：同一 kind 下取"档位最高"的一条作为该类来源的代表
+_TIER_RANK = {"existence_verified": 4, "format_only": 3, "unverifiable": 2}
+
+
+# v3.17.0 收尾：**决策键**（缺了就不能继续判）vs 装饰键（缺了只影响显示）
+#   口径与包内既有查询者 _load_three_source_thresholds() 一致：「缺值不补内置值」。
+_DECISION_KEYS = ("sample_rate", "pass_threshold", "required_kinds",
+                  "required_existence_verified", "network_failure_policy")
+
+
+def load_three_source_config():
+    """读 config/domain_config.yaml#three_source_check **全段**（v3.17.0）。
+
+    缺键策略：逐键退回内置最小集并**显式告警**（不静默）。
+    ⚠ 本函数**不做进程内缓存**：本包反复吃过"改配置不生效"的亏（进程内缓存会让
+      长驻进程读到过期阈值），故每次调用都重新读盘。
+    ⚠ **yaml 的键全量覆盖**（不只兜底集里那几个）：否则本版新增的子键
+      （如 sources[].label、source_verification.pubmed.api_key_env）会被兜底集
+      静默丢掉——"配了但代码读不到" = 同型静默失效。
+    """
+    defaults = {
+        "enabled": True,
+        "sample_rate": 0.1,
+        "pass_threshold": 0.8,
+        "sample_seed": None,
+        "sources": [],
+        "tiers": {"existence_verified": "存在性已验证",
+                  "format_only": "仅格式合规",
+                  "unverifiable": "不可核验"},
+        "required_kinds": ["pubmed", "textbook", "regulation"],
+        "required_existence_verified": 1,
+        "network_failure_policy": "block",
+        "source_verification": {},
+        "format_rules": {},
+    }
+    out = dict(defaults)
+    try:
+        import yaml
+        with open(_DOMAIN_CFG, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        tsc = cfg.get("three_source_check") or {}
+        if not tsc:
+            print(f"⚠ {_DOMAIN_CFG}#three_source_check 缺失或为空——退回内置三档判定集"
+                  f"（改配置不会生效）", file=sys.stderr)
+            return out
+        # yaml 全量覆盖（新增子键不会被兜底集吞掉）
+        for k, v in tsc.items():
+            out[k] = v
+        # v3.17.0 收尾（同 guard.yaml 的"缺键即红"标准 + 与包内既有查询者口径对齐）：
+        #   **决策键缺失不再补内置值**——补了 = yaml 那份成装饰品（检查照跑、没消费配置）。
+        #   决策键缺 → 置 None + 显式告警，由闸4.5 判"护栏缺失"并 fail-closed；
+        #   纯装饰键（tiers 中文名等）保留兜底，不影响判定。
+        for k in defaults:
+            if k in tsc:
+                continue
+            if k in _DECISION_KEYS:
+                out[k] = None
+                print(f"⛔ {_DOMAIN_CFG}#three_source_check.{k} 未配置——该护栏实际不存在，"
+                      f"**不补内置值**（补了 yaml 就成装饰品：检查照跑、但没消费配置）。"
+                      f"闸4.5 将判「护栏缺失」并阻断，请补齐该键。", file=sys.stderr)
+            else:
+                print(f"⚠ {_DOMAIN_CFG}#three_source_check.{k} 未配置——退回内置值 "
+                      f"{defaults[k]!r}（仅影响显示文案，不影响判定）", file=sys.stderr)
+        return out
+    except Exception as e:
+        print(f"⚠ {_DOMAIN_CFG}#three_source_check 读取失败（{e}）——退回内置三档判定集"
+              f"（改配置不会生效）", file=sys.stderr)
+        return out
+
+
+def _esearch_params(tsc=None):
+    """从 yaml 取 esearch 调用参数（端点/库/时限/限速/退避），两个调用方共用。
+
+    v3.17.0 收尾：有 NCBI key 时用更快的限速（10 req/s 上限内），无 key 用
+    匿名限速（3 req/s 上限内，默认 0.4s **不调慢**）。
+    """
+    spec = ((tsc or {}).get("source_verification") or {}).get("pubmed") or {}
+    key, note = _resolve_api_key(tsc)
+    sleep = float(spec.get("rate_limit_sleep_with_key") or 0.11) if key \
+        else float(spec.get("rate_limit_sleep") or 0.4)
+    return {
+        "endpoint": spec.get("endpoint"),
+        "db": spec.get("db") or "pubmed",
+        "timeout": float(spec.get("timeout_seconds") or 15),
+        "sleep": sleep,
+        "api_key": key,
+        "max_retries": int(spec.get("max_retries", 3)),
+        "backoff_base": float(spec.get("backoff_base", 2.0)),
+        "backoff_cap": float(spec.get("backoff_cap", 30.0)),
+        "suspect_threshold": int(spec.get("suspect_threshold", 2)),
+        "abort_batch_on_rate_limit": bool(spec.get("abort_batch_on_rate_limit", True)),
+        "note": note,
+    }
+
+
+def _source_labels(tsc=None):
+    """kind → 来源类型显示名（读 yaml#three_source_check.sources[*].label）。
+
+    v3.17.0 收尾：这三个 label 此前是"配了无人读"的死配置键（体检第 18 项 INFO）。
+    现由报告真正消费——来源定档时带上显示名，报告里直接显示
+    「PubMed 检索（PMID）」而不是裸 kind。改 label 会真实改变报告输出。
+    """
+    out = {}
+    for s in ((tsc or {}).get("sources") or []):
+        if isinstance(s, dict) and s.get("kind"):
+            out[str(s["kind"])] = str(s.get("label") or s["kind"])
+    return out
+
+
+def _pmid_regex(tsc=None):
+    """取 PMID 格式正则（唯一源 = yaml#three_source_check.format_rules.pmid）。
+
+    yaml 未配该项时退回既有内置正则 `_PMID_RE` 并**显式告警**（受控逃生舱），
+    不用"猜一个"的新正则——两份正则并存 = 同型双声明缺陷。
+    """
+    rules = ((tsc or {}).get("format_rules") or {})
+    pat = rules.get("pmid")
+    if not pat:
+        return _PMID_RE
+    try:
+        return _re_ref.compile(pat)
+    except Exception as e:
+        print(f"⚠ yaml#three_source_check.format_rules.pmid 非法（{e}）——退回内置正则",
+              file=sys.stderr)
+        return _PMID_RE
+
+
+def isbn_checksum_ok(code):
+    """ISBN 校验位算法（ISBN-10 / ISBN-13）——**确定性结构校验**，不是存在性验证。
+
+    ISBN-10：前 9 位权重 10..2，末位校验位权重 1（X 表示 10），和 % 11 == 0
+    ISBN-13：权重 1/3 交替，和 % 10 == 0
+    长度不受支持或含非数字 → False（不猜、不折算）。
+    """
+    c = re.sub(r"[^0-9Xx]", "", (code or ""))
+    if len(c) == 10:
+        if not c[:9].isdigit():
+            return False
+        s = sum((10 - i) * int(ch) for i, ch in enumerate(c[:9]))
+        chk = 10 if c[9] == "X" else (int(c[9]) if c[9].isdigit() else -1)
+        return chk >= 0 and (s + chk) % 11 == 0
+    if len(c) == 13:
+        if not c.isdigit():
+            return False
+        s = sum(int(ch) * (1 if i % 2 == 0 else 3) for i, ch in enumerate(c))
+        return s % 10 == 0
+    return False
+
+
+def _compile_rule(pattern, key):
+    """编译 yaml 规则表里的正则；缺失/非法 → (None, 原因)。
+
+    刻意**不内置正则兜底**：内置兜底 = 又一份"看起来生效其实没生效"的声明，
+    且 yaml 与代码两份正则会漂移。缺规则 → 该 kind 判「不可核验」并显式告警。
+
+    ⚠ 传入的是**已取出的规则字符串**（调用点用 rules.get("<键>") 取），
+      这样"该规则有代码读取者"能被体检第 18 项的 AST 判据真实识别到。
+    """
+    if not pattern:
+        return None, f"未配置 {key} 规则"
+    try:
+        return _re_ref.compile(pattern), ""
+    except Exception as e:
+        return None, f"{key} 规则非法（{e}）"
+
+
+def collect_pending_pmids(cases, tsc=None):
+    """收集需要联网实查的 PMID 列表（去重、保序）。
+
+    只收 kind=pubmed、PMID 格式可解析、且不在静态黑名单（占位号/测试号）里的号。
+    黑名单号静态即可判"假"，不必浪费一次网络请求。
+    """
+    rx = _pmid_regex(tsc)
+    out, seen = [], set()
+    for c in (cases or []):
+        for src in ((c or {}).get("sources") or []):
+            if str((src or {}).get("kind") or "").strip().lower() != "pubmed":
+                continue
+            m = rx.match(str((src or {}).get("ref") or "").strip())
+            if not m:
+                continue
+            pmid = m.group(1)
+            if pmid in _FAKE_PMIDS or pmid in seen:
+                continue
+            seen.add(pmid)
+            out.append(pmid)
+    return out
+
+
+def classify_source(src, tsc=None, online=None):
+    """给**单条来源**定档 → {kind, ref, tier, tier_label, reason, refuted, network_error}。
+
+    ⚠ 判定**不读 src.ok / src.verified_at**：那是自报值，v3.17.0 实测可被纯编造骗过。
+      · existence_verified 只能由**联网实查命中**得到；
+      · format_only 由确定性结构校验得到（ISBN 校验位 / 国标编号格式），**不代表存在**；
+      · 联网失败（None）既不是"已验证"也不是"证伪"，单列 network_error 并告警。
+    """
+    online = online or {}
+    src = src or {}
+    kind = str(src.get("kind") or "").strip().lower()
+    ref = str(src.get("ref") or "").strip()
+    tsc = tsc or {}
+    sv = (tsc.get("source_verification") or {})
+    rules = (tsc.get("format_rules") or {})
+    tiers = (tsc.get("tiers") or {})
+    labels = _source_labels(tsc)
+    res = {"kind": kind, "label": labels.get(kind) or kind, "ref": ref,
+           "tier": TIER_UNVERIFIABLE,
+           "tier_label": tiers.get(TIER_UNVERIFIABLE) or "不可核验",
+           "reason": "", "refuted": False, "network_error": False}
+    if not kind or not ref:
+        res["reason"] = "缺 kind 或 ref"
+        return res
+    spec = (sv.get(kind) or {})
+    mode = spec.get("mode")
+    if not mode:
+        res["reason"] = f"kind={kind} 无核验器（yaml#source_verification 未配该 kind）"
+        return res
+
+    if mode == "online_esearch":
+        rx = _pmid_regex(tsc)
+        m = rx.match(ref)
+        if not m:
+            res["reason"] = f"PMID 格式不合规：{ref!r}"
+            return res
+        pmid = m.group(1)
+        if pmid in _FAKE_PMIDS:
+            res["reason"] = f"PMID:{pmid} 在静态黑名单（占位号/测试号）"
+            return res
+        if pmid not in online:
+            res["reason"] = f"PMID:{pmid} 未纳入本批联网核验（无实查结论）"
+            return res
+        verdict = online[pmid]
+        if verdict is True:
+            res["tier"] = TIER_EXISTENCE
+            res["tier_label"] = tiers.get(TIER_EXISTENCE) or "存在性已验证"
+            res["reason"] = f"PubMed esearch 命中 PMID:{pmid}（实查存在）"
+        elif verdict is False:
+            res["refuted"] = True
+            res["reason"] = f"PubMed esearch 无此记录：PMID:{pmid}（实查**不存在**）"
+        else:
+            res["network_error"] = True
+            res["reason"] = f"PMID:{pmid} 联网核验失败（网络/端点异常，未取得结论）"
+        return res
+
+    if mode == "isbn_checksum":
+        rx, err = _compile_rule(rules.get("isbn_candidate"), "isbn_candidate")
+        if rx is None:
+            res["reason"] = f"ISBN 校验不可用：{err}"
+            return res
+        norm = re.sub(r"[^0-9Xx]", "", ref)
+        m = rx.search(norm)
+        if not m:
+            res["reason"] = f"未找到 ISBN 号：{ref!r}"
+            return res
+        code = m.group(0)
+        if isbn_checksum_ok(code):
+            res["tier"] = TIER_FORMAT
+            res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
+            res["reason"] = f"ISBN 校验位通过：{code}（**仅格式合规，未验证存在性**）"
+        else:
+            res["reason"] = f"ISBN 校验位不通过：{code}"
+        return res
+
+    if mode == "gb_number_format":
+        rx, err = _compile_rule(rules.get("gb_number"), "gb_number")
+        rx2, err2 = _compile_rule(rules.get("announcement_no"), "announcement_no")
+        if rx is None and rx2 is None:
+            res["reason"] = f"国标编号校验不可用：{err or err2}"
+            return res
+        if (rx and rx.search(ref)) or (rx2 and rx2.search(ref)):
+            res["tier"] = TIER_FORMAT
+            res["tier_label"] = tiers.get(TIER_FORMAT) or "仅格式合规"
+            res["reason"] = f"编号格式合规：{ref!r}（**仅格式合规，未验证存在性**）"
+        else:
+            res["reason"] = f"国标/公告编号格式不合规：{ref!r}"
+        return res
+
+    res["reason"] = f"kind={kind} 的核验方式 mode={mode!r} 未实现——判「不可核验」"
+    return res
+
+
+def verify_three_source_case(case, tsc=None, online=None):
+    """给**单案例**定档 → 案例级判定（口径见下，唯一源 = yaml#three_source_check）。
+
+    判定口径：
+      ① required_kinds 里每一类都须有 1 条达到「存在性已验证」或「仅格式合规」的来源
+         （格式不过 / 无核验器 / 联网失败都不算该类已提供）——堵死"只留 1 条来源也能过"；
+      ② 其中至少 required_existence_verified 条达到「存在性已验证」（"仅格式合规"不计入）；
+      ③ 被实查**证伪**的来源若承担该类职责 → 案例判否（明示原因，不静默）；
+      ④ 联网核验**失败** → 案例判「未取得结论」，不得计为已验证。
+    """
+    tsc = tsc or {}
+    online = online or {}
+    case = case or {}
+    sources = case.get("sources") or []
+    per_src = [classify_source(s, tsc, online) for s in sources]
+    kinds_cfg = tsc.get("required_kinds") or []
+    try:
+        need_exist = int(tsc.get("required_existence_verified", 1))
+    except Exception:
+        need_exist = 1
+    kind_status = {}
+    for k in kinds_cfg:
+        cands = [r for r in per_src if r["kind"] == k]
+        if not cands:
+            kind_status[k] = {"status": "missing", "reason": f"无 {k} 类来源",
+                              "label": _source_labels(tsc).get(k) or k,
+                              "ref": "", "refuted": False, "network_error": False}
+            continue
+        best = max(cands, key=lambda r: _TIER_RANK.get(r["tier"], 0))
+        st = {"status": best["tier"], "reason": best["reason"], "ref": best["ref"],
+              "label": best.get("label") or k,
+              "refuted": best["refuted"], "network_error": best["network_error"]}
+        if best["refuted"]:
+            st["status"] = "refuted"
+        elif best["network_error"]:
+            st["status"] = "network_error"
+        kind_status[k] = st
+    exist_count = sum(1 for r in per_src if r["tier"] == TIER_EXISTENCE)
+    refuted_all = [r for r in per_src if r["refuted"]]
+    net_err_all = [r for r in per_src if r["network_error"]]
+    bad_kinds = [k for k, v in kind_status.items()
+                 if v["status"] in ("missing", TIER_UNVERIFIABLE, "refuted", "network_error")]
+    if net_err_all:
+        verdict = "network_incomplete"
+    elif any(v["status"] == "refuted" for v in kind_status.values()):
+        verdict = "refuted"
+    elif bad_kinds:
+        verdict = "insufficient_sources"
+    elif exist_count < need_exist:
+        verdict = "not_existence_verified"
+    else:
+        verdict = "pass"
+    return {
+        "case_id": case.get("case_id"),
+        "title": case.get("title"),
+        "deck_path": case.get("deck_path"),
+        "verdict": verdict,
+        "existence_verified": exist_count,
+        "format_only": sum(1 for r in per_src if r["tier"] == TIER_FORMAT),
+        "unverifiable": sum(1 for r in per_src if r["tier"] == TIER_UNVERIFIABLE),
+        "refuted": len(refuted_all),
+        "network_error": len(net_err_all),
+        "kind_status": kind_status,
+        "sources": per_src,
+    }
 
 
 def cmd_verify_ref(args):
@@ -863,9 +1966,19 @@ def cmd_verify_ref(args):
         print(f"❌ 解析失败: {e}", file=sys.stderr)
         return 2
     cases = d.get("cases", d) if isinstance(d, dict) else d
-    report = _static_ref_report(cases)
+    tsc = load_three_source_config()          # v3.17.0：PMID 格式正则与联网参数的唯一源
+    pmid_rx = _pmid_regex(tsc)
+    report = _static_ref_report(cases, pmid_rx)
 
     # ── v3.4.3 A2：--online 联网核验（esearch 命中 → 补 ok+verified_at）──
+    # v3.17.0 关键修复：原实现只核验"缺 ok / 缺 verified_at"的来源——
+    #   于是**编造**的来源只要把 ok=true + verified_at 写上，就**永远不会被实查**，
+    #   静态预检也查不出（不在 5 个占位号黑名单里）→ 假核验闭环。
+    #   现改为：**所有**格式可解析的 pubmed 来源一律实查；实查证伪的来源写回时
+    #   强制降级 ok=false（自报"已核验"与实查结论冲突时，以实查为准）。
+    #   ⚠ 溯源声明（主理人 2026-10-24 裁决批准保留）：**本行为 v3.17.0 越出
+    #   闸4.5 范围**，因属**同一缺陷根因**（"自报 ok=true 的编造来源永不被实查"
+    #   在 verify-ref 与闸4.5 是同一个出口）——治本需要两处同改，不是无关改动。
     online_summary = None
     if getattr(args, "online", False):
         todo = {}
@@ -873,29 +1986,46 @@ def cmd_verify_ref(args):
             for src in (c.get("sources") or []):
                 if (src.get("kind") or "").lower() != "pubmed":
                     continue
-                m = _PMID_RE.match((src.get("ref") or "").strip())
+                m = pmid_rx.match((str(src.get("ref") or "").strip()))
                 if not m or m.group(1) in _FAKE_PMIDS:
                     continue
-                if not (src.get("ok") and src.get("verified_at")):
-                    todo[m.group(1)] = src
-        online_summary = {"checked": len(todo), "hit": 0, "miss": 0, "net_err": 0}
+                todo.setdefault(m.group(1), []).append(src)
+        online_summary = {"checked": len(todo), "hit": 0, "miss": 0, "net_err": 0,
+                          "refuted_pmids": []}
         if todo:
-            res = _pmid_online_check(sorted(todo))
+            # v3.17.0 收尾：api_key（真值只从环境变量读）+ 可配限速 + 遇速率限制指数退避
+            ep = _esearch_params(tsc)
+            print(ep["note"], file=sys.stderr)
+            res = pmid_existence_check(sorted(todo), **{
+                k: ep[k] for k in ("endpoint", "db", "timeout", "sleep", "api_key",
+                                   "max_retries", "backoff_base", "backoff_cap",
+                                   "suspect_threshold", "abort_batch_on_rate_limit")})
             for pmid, verdict in res.items():
-                src = todo[pmid]
                 if verdict is True:
-                    src["ok"] = True
-                    src["verified_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+                    for src in todo[pmid]:
+                        src["ok"] = True
+                        src["verified_at"] = datetime.now().astimezone().isoformat(
+                            timespec="seconds")
                     online_summary["hit"] += 1
                 elif verdict is False:
+                    for src in todo[pmid]:
+                        # 实查证伪 → 自报的 ok=true 必须降级（否则假核验继续存活）
+                        src["ok"] = False
+                        src["verified_at"] = ""
                     online_summary["miss"] += 1
+                    online_summary["refuted_pmids"].append(pmid)
                 else:
                     online_summary["net_err"] += 1
             # 联网修复后复跑静态预检（ok 补齐后 stale_ok 应清零）
-            report = _static_ref_report(cases)
+            report = _static_ref_report(cases, pmid_rx)
         print(f"🌐 online 核验：checked={online_summary['checked']} "
               f"hit={online_summary['hit']} miss={online_summary['miss']} "
               f"net_err={online_summary['net_err']}")
+        if online_summary["refuted_pmids"]:
+            print(f"⚠ 实查证伪（PubMed 无此记录，来源 ok 已降级为 false）："
+                  f"{online_summary['refuted_pmids'][:20]}"
+                  f"{' …' if len(online_summary['refuted_pmids']) > 20 else ''}",
+                  file=sys.stderr)
 
     # ── v3.4.3 A2：--write-back 受控写回（门禁 → 备份 → 写回 → 复检）──
     wrote_back = False
@@ -915,10 +2045,34 @@ def cmd_verify_ref(args):
                 json.dump(d, f, ensure_ascii=False, indent=2)
             with open(p, "w", encoding="utf-8") as f:
                 json.dump(d, f, ensure_ascii=False, indent=2)
-            report = _static_ref_report(cases)   # 写回后复检
+            report = _static_ref_report(cases, pmid_rx)   # 写回后复检
             wrote_back = True
             print(f"💾 已写回 {p}（备份 {bak}）；复检 fake={len(report['fake'])} "
                   f"stale_ok={len(report['stale_ok'])} suspicious={len(report['suspicious'])}")
+    # v3.17.0：结论必须区分"静态预检通过"与"存在性已实查"——
+    #   旧版无论是否实查都打「✅ 全过」，实测把编造的 PMID 判成全过（自报 ok=true 即可）。
+    #   现在：实查证伪 / 网络失败（未取得结论）一律非 0，且结论原文写明核验层级。
+    static_bad = bool(report["fake"] or report["stale_ok"]
+                      or report["suspicious"] or report["format_err"])
+    refuted = list((online_summary or {}).get("refuted_pmids") or [])
+    net_err = int((online_summary or {}).get("net_err", 0) or 0)
+    if static_bad:
+        verdict = "❌ 存在需处置项（静态预检）"
+        rc = 1
+    elif refuted:
+        verdict = f"❌ 实查证伪 {len(refuted)} 条来源（引用在 PubMed 不存在）"
+        rc = 1
+    elif net_err:
+        verdict = (f"⚠ 核验未完成（网络失败 {net_err} 条，未取得结论）"
+                   f"——**不得读作「已通过」**")
+        rc = 1
+    elif online_summary:
+        verdict = "✅ 全过（静态预检 + PubMed 联网实查）"
+        rc = 0
+    else:
+        verdict = ("✅ 静态预检全过（**未验证存在性**——存在性须 --online 实查，"
+                   "静态预检判不了「像真的但不存在」的引用）")
+        rc = 0
     summary = {
         "total": report["total"],
         "fake_count": len(report["fake"]),
@@ -927,10 +2081,15 @@ def cmd_verify_ref(args):
         "format_err_count": len(report["format_err"]),
         "ok_count": len(report["ok"]),
         "fake_unverified_count": len(report["fake_unverified"]),
-        "verdict": ("✅ 全过" if not (report["fake"] or report["stale_ok"]
-                                       or report["suspicious"] or report["format_err"])
-                     else "❌ 存在需处置项"),
+        "verdict": verdict,
         "details": {k: v for k, v in report.items() if k != "total" and v},
+        # v3.17.0：静态预检**只判格式与占位号**，判不了"像真的但不存在"——
+        #   实查结论单列，避免结论被读成"引用都真实存在"。
+        "existence_check": {
+            "performed": bool(getattr(args, "online", False)),
+            "note": "静态预检不验证存在性；存在性结论以 --online 实查为准",
+            "online_summary": online_summary,
+        },
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     _trace(w, cfg, "verify_ref", args.actor or "verifier",
@@ -939,9 +2098,7 @@ def cmd_verify_ref(args):
             "online": bool(getattr(args, "online", False)),
             "write_back": wrote_back,
             "online_summary": online_summary})
-    if report["fake"] or report["stale_ok"] or report["suspicious"] or report["format_err"]:
-        return 1
-    return 0
+    return rc
 
 
 # ─────────────────── 回传信封机器校验（B2）───────────────────
@@ -1026,7 +2183,7 @@ def _extract_envelope(text):
     return m.group(0) if m else None
 
 
-# ── v3.16.0：内容判据执行器 ───────────────────────────────────────────
+# ── v3.17.0：内容判据执行器 ───────────────────────────────────────────
 # 为什么单独成段：fields.*.rule 写了语义（confidence 禁裸标签、deliverable_summary
 # 禁裸表述），但校验器只判"字段存在且非空"，规则与校验器是两套。
 # 设计约束（与 result-envelope.yaml#validation.content_rules 配套）：
@@ -1066,7 +2223,7 @@ def _rule_confidence_not_bare(env, rule):
 def _rule_deliverable_summary_verifiable(env, rule):
     """deliverable_summary 不得是裸表述：命中裸词集且无可验证计数，或过短且无可验证计数。
 
-    ⚠ 关键细节（v3.16.0 实测修正）：命中裸词后要把**裸词本身从文本里剔除**再判
+    ⚠ 关键细节（v3.17.0 实测修正）：命中裸词后要把**裸词本身从文本里剔除**再判
     "有没有可验证计数"（开关：evidence_check_excludes_bare_terms）。原因：
     "问题已修复归零" 里的"归零"含汉字数字"零"，会被证据正则当成"有计数"而漏网——
     裸表述自己给自己提供了计数，判据就废了。
@@ -1108,9 +2265,16 @@ def _rule_status_issues_consistency(env, rule):
 
 
 def _rule_metrics_keys_subset(env, rule):
-    """metrics 的键必须是 fields.metrics.keys 的子集；越界键只告警（severity=warn）。"""
+    """metrics 的键应是 fields.metrics.known_keys 的子集；越界键只告警（severity=warn）。
+
+    v3.17.0：yaml 侧把 `keys`（硬限）改名为 `known_keys`（已知键白名单）。
+    改名原因：硬限 2 键会把成员逼到「删指标」或「谎报键名」，比不登记更糟。
+    兼容：若 yaml 仍是旧键 `keys`（老包/老配置），继续读它——但这是**显式的
+    版本兼容**，不是"缺键补内置值"的静默兜底。
+    """
     sc = load_envelope_schema()
-    allowed = set(((sc.get("fields") or {}).get("metrics") or {}).get("keys") or [])
+    mf = (sc.get("fields") or {}).get("metrics") or {}
+    allowed = set(mf.get("known_keys") or mf.get("keys") or [])
     m = env.get("metrics")
     if not isinstance(m, dict):
         return True, ""
@@ -1120,12 +2284,73 @@ def _rule_metrics_keys_subset(env, rule):
     return True, ""
 
 
+def _load_domain_ids():
+    """读 config/domain-profiles.yaml 的域 id 集合（信封 domain 字段的枚举源）。
+
+    v3.17.0 新增。**缺键即红**——domain 的枚举源读不到就不能校验 domain，
+    静默放行等于让 domain 字段变成装饰品（与第 21/22 项同型盲区）。
+    """
+    import os as _os
+    p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                      "..", "config", "domain-profiles.yaml")
+    try:
+        import yaml as _y
+        with open(p, encoding="utf-8") as f:
+            d = _y.safe_load(f) or {}
+        doms = d.get("domains") or []
+        ids = [x.get("id") for x in doms if isinstance(x, dict) and x.get("id")]
+        return ids, None
+    except Exception as e:
+        return [], f"读 config/domain-profiles.yaml 失败（{e}）——域枚举源不可用，域字段无法校验"
+
+
+def _rule_domain_in_profile(env, rule):
+    """domain 必须在 config/domain-profiles.yaml 的域 id 集合内。
+
+    v3.17.0 新增。通用化后信封必须能自证「这批产出属于哪个域」；
+    域 id 写错会让 trace 与台账按域聚合时归错桶，故判失败（severity=fail）。
+    """
+    v = env.get("domain")
+    if v in (None, ""):
+        return True, ""                       # 未坍缩/未标域 → 不判失败
+    if not isinstance(v, str):
+        return False, f"domain 必须是字符串，收到 {type(v).__name__}：{v!r}"
+    ids, err = _load_domain_ids()
+    if err:
+        return False, f"域枚举源不可用——{err}（不得静默放行，否则 domain 字段形同装饰品）"
+    if v not in ids:
+        return False, f"domain={v!r} 不在 config/domain-profiles.yaml 的域 id 集合内；合法值：{ids}"
+    return True, ""
+
+
+def _rule_routing_structure(env, rule):
+    """routing 若提供，必须含 level / members / collapse_artifact 三个子键。
+
+    v3.17.0 新增。它把「本次产出属于哪次路由与哪次坍缩」钉死在信封里，
+    是通用化后可追溯性的最小保证。
+    """
+    r = env.get("routing")
+    if r in (None, ""):
+        return True, ""
+    if not isinstance(r, dict):
+        return False, f"routing 必须是对象，收到 {type(r).__name__}：{r!r}"
+    need = ["level", "members", "collapse_artifact"]
+    miss = [k for k in need if k not in r]
+    if miss:
+        return False, f"routing 缺子键 {miss}；结构见 references/result-envelope.yaml#fields.routing"
+    if not isinstance(r.get("members"), list):
+        return False, f"routing.members 必须是数组，收到 {type(r.get('members')).__name__}"
+    return True, ""
+
+
 # 规则 id → 执行器（新增 yaml 规则必须在此登记，否则校验器会告警"无执行者"）
 _CONTENT_RULE_EXECUTORS = {
     "confidence_not_bare": _rule_confidence_not_bare,
     "deliverable_summary_verifiable": _rule_deliverable_summary_verifiable,
     "status_issues_consistency": _rule_status_issues_consistency,
     "metrics_keys_subset": _rule_metrics_keys_subset,
+    "domain_in_profile": _rule_domain_in_profile,
+    "routing_structure": _rule_routing_structure,
 }
 
 
@@ -1165,7 +2390,7 @@ def cmd_verify_envelope(args):
     缘由（2026-10-04）：result_envelope 由 commit 7013f87 引入，但只写在 MD 里，
     成员"自觉遵守"——实测自报失真 4/4 个版本复发，说明约定必须有执行者。
     v3.12.0：字段改读 references/result-envelope.yaml，消除多套 schema 互斥。
-    v3.16.0：新增**内容判据**——此前只判字段存在且非空，`confidence:"高"` 能过；
+    v3.17.0：新增**内容判据**——此前只判字段存在且非空，`confidence:"高"` 能过；
     现在按 yaml#validation.content_rules 逐条判裸标签/裸表述/status-issues 一致性/
     metrics 键子集，规则与词表全在 yaml（改 yaml 即改校验器）。
     """
@@ -1219,7 +2444,7 @@ def cmd_verify_envelope(args):
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 1
 
-    # v3.16.0：内容判据（只判存在性拦不住 confidence:"高" 这类自评失真）
+    # v3.17.0：内容判据（只判存在性拦不住 confidence:"高" 这类自评失真）
     violations, warns, disabled, unimpl = _eval_content_rules(env, sc)
     res["content_rules"] = {
         "checked": len(((sc.get("validation") or {}).get("content_rules") or [])),
@@ -1326,7 +2551,7 @@ def cmd_template_audit(args):
 # 诚实边界：本段**不判定**条目的专业内容对错（仍归成员与主理人），也不拦截成员的实际
 #   写文件动作（平台层无 hook）——它校验"路径是否越界"与"状态推进是否合规"，不是沙箱。
 
-# v3.16.0：终止原因的唯一源改为 harness.yaml#loop_b.termination（见 load_term_reasons）。
+# v3.17.0：终止原因的唯一源改为 harness.yaml#loop_b.termination（见 load_term_reasons）。
 #   本常量降级为**兜底**：仅当 yaml 缺失/为空时启用，且启用时打印告警。
 #   ⚠ 不要在这里新增终止原因——加了也不会生效（这正是本批要修的"双声明静默失效"）。
 _FALLBACK_TERMINATIONS = ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成", "用户取消"]
@@ -1354,7 +2579,7 @@ def _state_lock_path(w, loop):
 
 
 class _StateLock:
-    """Loop 状态文件的跨进程文件锁（v3.12.0）。
+    """状态文件的跨进程文件锁（v3.12.0；v3.17.0 泛化到 task_state.json）。
 
     为什么需要：`_write_loop_state` 全包 20 处调用，且都是「读 JSON → 改内存 → 写回」的
     读-改-写模式。两个 harness 进程并发跑（如主理人一边 freeze 一边 verify）会：
@@ -1366,10 +2591,15 @@ class _StateLock:
 
     实现：fcntl.flock 排他锁，跨进程有效（Windows 无 fcntl 时退化为进程内互斥并告警）。
     用法：with _StateLock(w, loop): st = _read_loop_state(...); ... ; _write_loop_state(...)
+
+    v3.17.0：新增 path 参数——task_state.json 不是 Loop 状态文件（路径不同），
+      但**并发写丢更新/半写**是同一个问题，故复用同一把锁的实现（不再各写一套）。
+      ⚠ flock 绑定在 open file description 上：**同一进程重复加锁会自死锁**，
+        故调用方需用 write_state(..., locked=True) 表达"我已持锁"。
     """
 
-    def __init__(self, w, loop, timeout=5.0):
-        self.path = _state_lock_path(w, loop)
+    def __init__(self, w, loop=None, timeout=5.0, path=None):
+        self.path = path if path else _state_lock_path(w, loop)
         self.timeout = timeout
         self._fh = None
 
@@ -1422,33 +2652,22 @@ def _write_loop_state(w, loop, st):
     磁盘满 / 并发读到中间态，磁盘上留下半截 JSON；`_read_loop_state` 解析失败会
     「按空状态处理」——等于静默把整个 Loop 状态重置，比丢几条更严重。
     os.replace 在同一文件系统内是原子的，读者要么看到旧版要么看到新版，不存在半截态。
+
+    v3.17.0：实现下沉到 _atomic_write_json()，与 task_state.json 共用同一份原子写
+    （此前同文件里两套标准：Loop B 侧有原子写，task_state 侧裸写）。
     """
     path = _loop_state_path(w, loop)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".loopstate.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(st, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())      # 落盘缓冲，避免 replace 后仍丢数据
-        os.replace(tmp, path)        # 同目录 → 原子替换
-    except Exception:
-        if os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        raise
+    _atomic_write_json(path, st)
 
 
 def _loop_quality_snapshot(st, rnd, p0, p1, p2, source="", extra=None):
     """记录一轮结束时的质量快照（P0/P1/P2 计数），供"有无进展"判定。
 
-    v3.16.0：loop_b.budgets.no_progress_threshold 此前零命中——配了阈值但没有任何
+    v3.17.0：loop_b.budgets.no_progress_threshold 此前零命中——配了阈值但没有任何
     执行者，缺陷数不再下降这件事机器检不出来。本函数是它的落点。
     同一轮重复记录按"后者覆盖前者"处理（返修后复测值应为最新值）。
 
-    source（v3.16.0 F6 补）：数据从哪来——"verify_json|<报告路径>"（verify_deck 机器复算，
+    source（v3.17.0 F6 补）：数据从哪来——"verify_json|<报告路径>"（verify_deck 机器复算，
     优先）或 "manual"（成员/主理人自报，未经交叉核验）。**必须写进快照**：
     只知道数字不知道来源，就等于无法判断这个数能不能信（本包"工具自报不算数"纪律）。
     """
@@ -1466,23 +2685,55 @@ def _loop_quality_snapshot(st, rnd, p0, p1, p2, source="", extra=None):
 
 
 class _QualityReportError(Exception):
-    """--verify-json 取数失败：code=3 报告不存在，code=2 不可解析/缺字段。"""
+    """--verify-json 取数失败：code=3 报告不存在，code=2 不可解析/缺字段/课件不匹配。"""
 
     def __init__(self, msg, code=2):
         super().__init__(msg)
         self.code = code
 
 
-def _load_quality_from_verify_json(path):
+def _deck_binding_targets(st):
+    """本轮 loop 的「目标课件」集合：原件 + 工作副本目录。
+
+    v3.17.0 B2-2：--verify-json 报告必须绑定到本轮课件。此前只校验报告**结构**，
+    从不校验它对应哪份 pptx（课件路径只在 stats.file，代码不读它）——
+    实测把**另一份完全不同的课件**的报告喂进来，照单全收并参与收敛判定。
+    """
+    out = []
+    src = (st or {}).get("source_ppt") or {}
+    if src.get("path"):
+        out.append(("原件", os.path.realpath(os.path.abspath(src["path"]))))
+    wip = (st or {}).get("wip_dir")
+    if wip:
+        out.append(("工作副本目录", os.path.realpath(os.path.abspath(wip))))
+    return out
+
+
+def _report_deck_matches(rfile, targets):
+    """报告的 stats.file 是否落在本轮目标课件内 → (是否匹配, 命中标签)。
+
+    比较用 realpath（macOS 的 /var → /private/var 软链会让 abspath 失配）。
+    """
+    rp = os.path.realpath(os.path.abspath(rfile))
+    for label, t in targets or []:
+        if rp == t:
+            return True, label
+        if os.path.isdir(t) and rp.startswith(t.rstrip(os.sep) + os.sep):
+            return True, label
+    return False, ""
+
+
+def _load_quality_from_verify_json(path, expect_deck=None):
     """从 `verify_deck.py --json` 报告里取本轮 P0/P1/P2（**报告优先**于手工自报）。
 
-    为什么必须有这条路（v3.16.0 F6）：`--p0/--p1/--p2` 手工值理论上可注水，而
+    为什么必须有这条路（v3.17.0 F6）：`--p0/--p1/--p2` 手工值理论上可注水，而
     verify_deck 早就有 `--json` 报告——机器复算的结果必须是第一数据源，人手填的只能
     当"没有报告时的次选"，并且要在输出里标明未核验。
 
     失败策略（铁律：不静默）：
       · 文件不存在 → code 3（依赖缺失）
       · 顶层不是对象 / 缺 gate 段 / gate 缺 p0|p1 / 既无 p2 也无 p2_block → code 2
+      · **v3.17.0 B2-2**：缺 stats 段 / 缺 stats.file / 报告对应**别的课件** → code 2
     两种都不退回手工值、**也不按 0 处理**——静默取 0 会造出"本轮缺陷为 0"的假象，
     比不取数更危险（会让 no_progress 判据反向失灵）。
     """
@@ -1498,6 +2749,27 @@ def _load_quality_from_verify_json(path):
         raise _QualityReportError(f"报告不可解析：{p}（{e}）", 2)
     if not isinstance(rep, dict):
         raise _QualityReportError(f"报告顶层不是对象：{p}（{type(rep).__name__}）", 2)
+
+    # ── v3.17.0 B2-2：报告与本轮课件的绑定校验（此前**只校验结构，不校验归属**）──
+    stats = rep.get("stats")
+    if not isinstance(stats, dict):
+        raise _QualityReportError(
+            f"报告缺 stats 段：{p}（顶层键 {sorted(rep)}）——无法确认这份报告对应哪份课件，"
+            f"拒绝采用（宁可无数据，不拿错课件的数据算收敛）", 2)
+    rfile = stats.get("file")
+    if not rfile or not isinstance(rfile, str):
+        raise _QualityReportError(
+            f"报告 stats.file 缺失或非法：{p}（stats 键 {sorted(stats)}）——"
+            f"无法确认这份报告对应哪份课件，拒绝采用", 2)
+    if expect_deck:
+        ok, label = _report_deck_matches(rfile, expect_deck)
+        if not ok:
+            targets = "；".join(f"{lab}={t}" for lab, t in expect_deck)
+            raise _QualityReportError(
+                f"报告对应的是**另一份课件**：stats.file={rfile!r}，"
+                f"本轮目标课件（{targets}）——拒绝采用"
+                f"（拿别处课件的报告喂收敛判据 = 拿别人的成绩单算自己的进度）", 2)
+
     gate = rep.get("gate")
     if not isinstance(gate, dict):
         raise _QualityReportError(
@@ -1690,7 +2962,7 @@ def cmd_loop(args):
             "wip_dir": wip,
             "intake": {k: None for k in LOOP_INTAKE_A} | {"confirmed": False},
             "current_round": 1, "items": {}, "budgets": eff_budgets,
-            # v3.16.0：质量快照序列（每轮 continue 带 --p0/--p1/--p2 追加一条；
+            # v3.17.0：质量快照序列（每轮 continue 带 --p0/--p1/--p2 追加一条；
             # 供 no_progress_threshold 收敛判据消费）
             "quality_history": [],
             "blockers": [], "termination": None,
@@ -1796,7 +3068,7 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "blockers": st.get("blockers", []), "termination": st.get("termination"),
             "original_unchanged": orig_ok,
             "intake_confirmed": st.get("intake", {}).get("confirmed", False),
-            # v3.16.0：质量收敛判据的可观测面（no_progress_threshold 此前零命中，
+            # v3.17.0：质量收敛判据的可观测面（no_progress_threshold 此前零命中，
             # 现在每轮 continue 带 --p0/--p1/--p2 即落 quality_history）
             "quality_history": st.get("quality_history", []),
             "no_progress_streak": _loop_no_progress_streak(st.get("quality_history") or []),
@@ -1855,7 +3127,7 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                   f"**暂停并报告，不宣布通过**。如需继续须用户上调 max_rounds 并确认。",
                   file=sys.stderr)
             return 1
-        # v3.16.0 F6：质量收敛判据——每轮结束（进位时）记该轮 P0/P1/P2 快照。
+        # v3.17.0 F6：质量收敛判据——每轮结束（进位时）记该轮 P0/P1/P2 快照。
         # 为什么挂在 continue：一轮的产出在此刻定稿，是唯一能拿到"本轮真实缺陷数"的时点；
         # 而 loop_b.budgets.no_progress_threshold 此前**零命中**（配了无执行者），
         # 五类终止条件全是工作量/交互维度，机器检不出"缺陷数已不再下降"。
@@ -1863,10 +3135,29 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         snap = None
         vjson = getattr(args, "verify_json", "") or ""
         manual_given = args.p0 is not None or args.p1 is not None or args.p2 is not None
+        allow_unverified = bool(getattr(args, "allow_unverified", False))
+
+        # ── v3.17.0 B2-2：手工填数受限（治"递减假数序列"绕过）────────────
+        # 攻击实测：手工 --p0 逐轮递减（9→7→5→3）能让每轮都判"有进展"，
+        #   真实情况该课件 P0 恒为 3、从未变好，收敛判据永不触发。
+        # 规则：一旦 quality_history 里已出现**非 verify_json 来源**的条目，
+        #   后续轮次**强制**要求 --verify-json；逃生口 --allow-unverified 须留痕
+        #   （写 blockers + trace 事件 + 快照 source=manual_unverified）。
+        prior_hist = st.get("quality_history") or []
+        prior_manual = [(h.get("round"), h.get("source")) for h in prior_hist
+                        if not str(h.get("source") or "").startswith("verify_json|")]
+        if manual_given and not vjson and prior_manual and not allow_unverified:
+            print(f"⛔ 拒绝进位：quality_history 已存在**非机器复算来源**的质量快照 "
+                  f"{prior_manual[:5]}——手工 --p0/--p1/--p2 理论可注水，"
+                  f"历史轮已用手工值则后续轮次必须改用 --verify-json <verify_deck 报告>。\n"
+                  f"   确无报告可显式声明 --allow-unverified（会登记 blocker 事件、"
+                  f"快照标 source=manual_unverified，且 make-gate 会阻断）。", file=sys.stderr)
+            return 2
+
         if vjson:
             # 报告优先：verify_deck 机器复算 > 手工自报（自报理论可注水）
             try:
-                q = _load_quality_from_verify_json(vjson)
+                q = _load_quality_from_verify_json(vjson, expect_deck=_deck_binding_targets(st))
             except _QualityReportError as e:
                 print(f"⛔ 质量取数失败（--verify-json {vjson}）：{e}——"
                       f"不静默退回手工值、也不按 0 处理。请产出有效报告后重试；"
@@ -1885,13 +3176,37 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                                           source=src, extra=extra)
             _loop_hist(st, "quality_snapshot", snap)
         elif manual_given:
+            # v3.17.0：source 区分 "manual"（首轮自报）与 "manual_unverified"
+            #   （已用过自报值后又用 --allow-unverified 强行自报）——后者留痕更重。
+            src = "manual_unverified" if (prior_manual or allow_unverified) else "manual"
+            extra = {"unverified": "自报值，未经 --verify-json 交叉核验"}
+            if allow_unverified:
+                extra["allow_unverified"] = True
+                extra["reason"] = ("显式逃生口：已声明本轮质量数无机器复算报告可依"
+                                   "（降级为未核验自报）")
+                st.setdefault("blockers", []).append(
+                    {"kind": "unverified_quality_source",
+                     "detail": f"第 {rnd_end} 轮质量数来自手工自报（--allow-unverified）："
+                               f"p0={args.p0 or 0} p1={args.p1 or 0} p2={args.p2 or 0}；"
+                               f"未经 verify_deck 报告交叉核验，不得据此宣布达标",
+                     "ts": now_iso()})
+                _loop_hist(st, "quality_source_unverified",
+                           {"round": rnd_end, "p0": args.p0 or 0, "p1": args.p1 or 0,
+                            "p2": args.p2 or 0})
+                _trace(w, cfg, "quality_source_unverified", "team-lead",
+                       {"loop": "B", "round": rnd_end, "p0": args.p0 or 0,
+                        "p1": args.p1 or 0, "p2": args.p2 or 0,
+                        "note": "手工自报（--allow-unverified）——非机器复算"})
+                print(f"⚠ 本轮质量数取自手工 --p0/--p1/--p2 且带 --allow-unverified："
+                      f"已登记 blocker 事件（kind=unverified_quality_source），"
+                      f"快照 source={src}，make-gate 会因此阻断。", file=sys.stderr)
             snap = _loop_quality_snapshot(st, rnd_end, args.p0 or 0, args.p1 or 0, args.p2 or 0,
-                                          source="manual",
-                                          extra={"unverified": "自报值，未经 --verify-json 交叉核验"})
+                                          source=src, extra=extra)
             _loop_hist(st, "quality_snapshot", snap)
-            print("⚠ 本轮质量数取自手工 --p0/--p1/--p2（source=manual）："
-                  "自报值未经 verify_deck 报告交叉核验，可信度低于 --verify-json。",
-                  file=sys.stderr)
+            if not allow_unverified:
+                print("⚠ 本轮质量数取自手工 --p0/--p1/--p2（source=manual）："
+                      "自报值未经 verify_deck 报告交叉核验，可信度低于 --verify-json。",
+                      file=sys.stderr)
         st["current_round"] = nxt
         st["awaiting_user_confirm"] = False
         st["last_decision"] = args.decision
@@ -2062,6 +3377,25 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         src = st.get("source_ppt", {})
         if os.path.isfile(src.get("path", "")) and _sha256_file(src["path"]) != src.get("sha256"):
             reasons.append("原件已被改动（只读纪律被破坏）")
+        # ── v3.17.0 B2-2：quality_history 来源合规性（让 manual 来源**可被下游发现**）──
+        # 此前 quality_history[].source 只被 `loop status` 打印，**无任何下游消费者**
+        # 读它做门禁 → 手工填的数能一路走到制作门而不被发现。现 make-gate 是消费者：
+        #   · 已进位（current_round > 1）却没有质量快照 → 无收敛数据，不得放行；
+        #   · 存在非 verify_json 来源的快照 → 未经机器复算，不得据此宣布达标。
+        # ⚠ "已进位却无快照"只在**真的走过轮次**时判定：从未 continue 过的 Loop
+        #   （current_round == 1）本就无快照，不是质量问题，不阻断。
+        rounds_done = int(st.get("current_round", 1)) - 1
+        qhist = st.get("quality_history") or []
+        if rounds_done > 0:
+            if not qhist:
+                reasons.append(f"已进位 {rounds_done} 轮但 quality_history 为空——"
+                               f"收敛判据无数据，须用 --verify-json 报告补记质量快照")
+            else:
+                bad_src = [(h.get("round"), h.get("source")) for h in qhist
+                           if not str(h.get("source") or "").startswith("verify_json|")]
+                if bad_src:
+                    reasons.append(f"quality_history 含 {len(bad_src)} 条**非机器复算来源**"
+                                   f"的质量快照（须为 verify_json|...）：{bad_src[:5]}")
         if reasons:
             _loop_hist(st, "make_gate_blocked", {"reasons": reasons})
             _write_loop_state(w, "b", st)
@@ -2085,7 +3419,7 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
 
     # ── terminate：五类终止（穷举，不得自造）
     if args.action == "terminate":
-        # v3.16.0：终止原因读 harness.yaml#loop_b.termination（唯一源），
+        # v3.17.0：终止原因读 harness.yaml#loop_b.termination（唯一源），
         # 不再用代码里另立的常量——否则在 yaml 加原因不生效（同型双声明缺陷）
         reasons = load_term_reasons(cfg)
         if args.reason not in reasons:
@@ -2131,9 +3465,11 @@ def cmd_doctor(args):
         ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
-        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason/--verify-json/--p0/--p1/--p2", "0/1/2/3", "harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（报告优先于手工 --p0/--p1/--p2）"),
+        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason/--verify-json/--p0/--p1/--p2/--allow-unverified", "0/1/2/3", "harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（报告优先于手工 --p0/--p1/--p2；v3.17.0：报告须对应本轮课件）"),
+        ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
+        ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.16.0", "executable": __file__,
+    out = {"version": "v3.17.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            "exit_codes": {
                "0": "正常通过",
@@ -2459,14 +3795,50 @@ def main():
 
     p = sub.add_parser("route", help="复杂度 → spawn 计划")
     p.add_argument("--level", required=True, choices=["L0", "L1", "L2", "L3"])
+    # v3.17.0：域坍缩——追加域字段并落盘坍缩产物（未确认不生效）
+    p.add_argument("--domain", default="",
+                   help="内容域 id（见 `domain list` 菜单）；不传则**输出与改造前逐字节一致**。"
+                        "域由主理人显式指定，脚本不做关键词自动匹配")
+    p.add_argument("--task-id", dest="task_id", default="",
+                   help="任务 ID（坍缩产物落盘用；不传则读 task_state.json 的 task_id）")
+    p.add_argument("--rationale", default="",
+                   help="选型理由（**主理人填**，脚本不猜）；不填则坍缩产物标记为待补")
     _ws(p)
     p.set_defaults(func=cmd_route)
+
+    # v3.17.0：域档案菜单（给主理人/LLM 看的选域入口；脚本不自动匹配）
+    p = sub.add_parser("domain", help="v3.17.0：内容域档案菜单与详情（list / show）")
+    p.add_argument("action", choices=["list", "show"])
+    p.add_argument("--id", default="", help="show：域 id（kebab-case）")
+    _ws(p)
+    p.set_defaults(func=cmd_domain)
+
+    # v3.17.0：坍缩产物查询与用户确认（确认前域人格不生效）
+    p = sub.add_parser("collapse", help="v3.17.0：坍缩产物查询与确认（list / show / confirm）")
+    p.add_argument("action", choices=["list", "show", "confirm"])
+    p.add_argument("--id", default="", help="域 id")
+    p.add_argument("--task-id", dest="task_id", default="", help="任务 ID")
+    p.add_argument("--rationale", default="",
+                   help="confirm：选型理由（主理人填；为空则拒绝确认）")
+    p.add_argument("--actor", default="team-lead", help="confirm：确认人")
+    _ws(p)
+    p.set_defaults(func=cmd_collapse)
 
     p = sub.add_parser("state", help="状态机读写与校验")
     p.add_argument("action", choices=["init", "get", "set", "validate"])
     p.add_argument("--workflow", default="WF-1")
     p.add_argument("--stage", type=int)
-    p.add_argument("--key"); p.add_argument("--value"); p.add_argument("--detail")
+    # v3.17.0：task_id 原子比对的显式入口——带上它才能验证"本次操作属于这个任务"
+    p.add_argument("--task-id", dest="task_id", default="",
+                   help="state init/set：本任务 ID（init 时用于指定；set 时用于比对——"
+                        "与状态文件里的 task_id 不一致即拒绝推进）")
+    p.add_argument("--key"); p.add_argument("--detail")
+    # v3.17.0：--value 只接受合法 JSON（旧的"解析失败就存字符串"会让
+    # quality_history 之类结构化键变字符串 → 下游按 dict 过滤 → 判据静默失效）
+    p.add_argument("--value",
+                   help="set：值必须是**合法 JSON**；字符串须显式加引号，"
+                        "例如 --value '\"gate2_spawn\"'（不带引号会被拒绝并报错，"
+                        "不再静默存成字符串）")
     _ws(p)
     p.set_defaults(func=cmd_state)
 
@@ -2477,7 +3849,7 @@ def main():
     p.add_argument("--kind", default="",
                    help="计数型 spawn|react|rework；阈值型 attempts|react_gap|"
                         "stage_minutes|artifact_bytes|three_source_sample|three_source_pass"
-                        "（v3.16.0：three_source_* 改读 config/domain_config.yaml#three_source_check）")
+                        "（v3.17.0：three_source_* 改读 config/domain_config.yaml#three_source_check）")
     p.add_argument("--n", type=int, default=1)
     p.add_argument("--actor", default="main")
     _ws(p)
@@ -2600,14 +3972,20 @@ def main():
                    help="continue/freeze：用户裁决（不传即拒绝进位——沉默不构成确认）")
     p.add_argument("--confirmed", action="store_true", help="continue/terminate：已获用户确认")
     p.add_argument("--reason", help="terminate：已登记终止原因之一（harness.yaml#loop_b.termination）")
-    # v3.16.0 F6：continue 带本轮 P0/P1/P2 计数 → 落 quality_history，
+    # v3.17.0 F6：continue 带本轮 P0/P1/P2 计数 → 落 quality_history，
     # 供 loop_b.budgets.no_progress_threshold 的"连续 N 轮无质量进展"判据消费
     p.add_argument("--p0", type=int, default=None, help="continue：本轮结束时的 P0 缺陷数")
     p.add_argument("--p1", type=int, default=None, help="continue：本轮结束时的 P1 缺陷数")
     p.add_argument("--p2", type=int, default=None, help="continue：本轮结束时的 P2 缺陷数")
     p.add_argument("--verify-json", dest="verify_json", default="",
                    help="continue：verify_deck.py --json 产出的报告路径（**优先于** --p0/--p1/--p2："
-                        "机器复算 > 手工自报；缺字段/不可解析即报错，不静默取 0）")
+                        "机器复算 > 手工自报；缺字段/不可解析/对应别的课件即报错，不静默取 0）")
+    # v3.17.0 B2-2：手工填数的显式逃生口——留痕（blocker 事件 + trace + 快照 source），
+    #   不得成为默认；用了它 make-gate 会阻断。
+    p.add_argument("--allow-unverified", dest="allow_unverified", action="store_true",
+                   help="continue：**逃生口**——允许在已有手工自报历史后继续用手工 "
+                        "--p0/--p1/--p2（会登记 blocker 事件、快照标 source=manual_unverified，"
+                        "make-gate 阻断；默认不允许）")
     p.add_argument("--kind", default="", help="block：阻塞类型（capability/evidence/...）")
     p.add_argument("--note", default="", help="人读备注")
     p.add_argument("--path", help="check-path：待写入的目标路径（越界校验）")

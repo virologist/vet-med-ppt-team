@@ -33,3 +33,7 @@ secrets.yaml
 packages/vet-med-ppt-team/*.zip
 __pycache__/
 .pytest_cache/
+
+# v3.17.0：坍缩产物运行时目录（route --domain 落盘，默认写在包根 .harness-runs/）
+#   属运行期产物，不是包内容，不入版本库、不进第二副本
+.harness-runs/

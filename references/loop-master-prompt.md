@@ -5,6 +5,15 @@
 > 配套：判环与授权 `dual-loop-governance.md` · 执行细则 `round-review-sop.md` ·
 > 接单清单 `task-intake-checklist.md` · 状态机 `scripts/harness.py loop`。
 > **本文件自身不得成为第二规则源**——条款冲突一律回上面三份文档。
+>
+> **计数口径注记（v3.17.0 新增，专治「几个阶段/几道闸」各说各话）**
+> 本包同时存在**三个互不相干**的计数器，历史上被混为一谈（出现过「六阶段 / 四道闸」的旧口径）：
+> | 计数器 | 取值 | 唯一源 |
+> |---|---|---|
+> | **闸门数** | **五闸（stage 0–4）**：闸1 任务冻结 / 闸2 设计 / 闸3 成稿 / 闸4 交付 / 闸4.5 案例三源核验 | **`config/harness.yaml#stages`** |
+> | **Loop B 执行阶段数** | 七阶段（探针对齐 → 资产转换 → 细颗粒度诊断 → 证据检索 → 逐轮审阅 → 冻结 → 制作验收） | `references/dual-loop-governance.md#5` |
+> | **本提示词的操作步序** | 第 0 步 判环 + 第 1–8 步 | 本文件自身 |
+> **判据**：谈「几道闸 / stage 几」→ 只认 `config/harness.yaml#stages`；其余两套不得被写成闸门数。
 
 ---
 
@@ -33,7 +42,7 @@
 
 依次执行并如实报告：
 1. python3 scripts/harness.py doctor           # 看实际安装版本与子命令表
-2. python3 scripts/ensure_settings.py          # 须 15/15 全绿
+2. python3 scripts/ensure_settings.py          # 须 22/22 全绿
 3. 只读核验能力并**四类分级标注**：[D] 官方文档支持 / [R] 仓库已有实现 /
    [L] 本地可调用 / [T] 已完成样本测试。**前三类的任何一项都不得冒充 [T]**。
 4. 缺关键能力时，披露缺口 + 核验方法，不得静默降级。
@@ -73,6 +82,20 @@
 - 交付：**成品 PPTX + 逐页修改说明 + 验收自检清单**（三件缺一不算完成，见 delivery-spec.md）；
   **每轮产出后执行一次自检**（对照受众层/课时配比/模板约束/六查/交付五节逐项核对，
   缺口当轮修正或显式挂账，不得留到下一轮）
+  **【v3.17.0 纯诊断分支】**若本单是**只诊断不修改**（用户只要诊断结论/报告，不要成品课件），
+  则交付物**不是 PPTX 三件套**，而是**诊断报告**（见下「纯诊断任务出口」）：
+  机器态 YAML + 人读渲染版 MD + `_index.yaml` 台账，结构唯一源
+  `references/diagnosis-report-schema.yaml`。**「只诊断不修改」是合法任务终态**，
+  不得因为「交付清单要求 PPTX」就硬造一份没改过的 PPTX 充数。
+
+> **纯诊断任务出口（v3.17.0 新增）**
+> - 分流时点：**第 2 步接单阶段**就分流，**不进入**后续逐轮停等流程，也不消耗轮次配额
+> - 判据与清单：`references/round-review-sop.md#13`
+> - 量规：**七维**，执行源 `references/seven-dimension-rubric.md`（已内化进本包，
+>   内化自 `teaching-ppt-studio` v2.6.0 并去领域化；上游副本仅作比对更新用）
+> - 报告结构/必填字段/枚举/落盘路径/终止态产物清单：唯一源 `references/diagnosis-report-schema.yaml`
+> - 终止态：**「诊断完成（只诊断不修改）」**（任务级终态，与 Loop B 逐轮的五类终止状态**不同层级**）
+> - 反例：诊断完顺手改了课件却仍报「只诊断」→ 违反 `round-review-sop.md#13.4`，须如实标注
 
 > 默认值 ≠ 本单意图：开工前仍须确认一句「本单沿用默认还是有覆盖」，覆盖须记入 intake。
 
@@ -96,6 +119,9 @@ python3 scripts/harness.py loop start --deck <原PPTX绝对路径>
 python3 scripts/harness.py loop add-item --item <ID> --page <sNN> --file <draft.md> ...
 - 全局扫描只在第 1 轮做一次；每轮只处理 max_items_per_round 条（默认 5）
 - 小批是让我能真正读完的，**不许为效率一次塞满**
+- **v3.17.0**：八字段的**机器可校验形态**（字段名 / 必填集 / 枚举取值）唯一源为
+  `references/diagnosis-report-schema.yaml`；「判定方式」取值以 schema 为准 =
+  **机 / 人 / 机+人**（「机+人」= 脚本初筛 + 人工复核，检出≠判定）
 
 # 第 5 步：ReAct 证据检索
 
@@ -149,12 +175,16 @@ python3 scripts/harness.py loop add-item --item <ID> --page <sNN> --file <draft.
 成功完成 / 等待用户 / 能力或证据阻塞 / 达到预算但未完成 / 用户取消。
 python3 scripts/harness.py loop terminate --reason <五类之一>
 - 轮次/检索/无进展阈值触顶时**只暂停并报告，禁止宣布通过**
+- **v3.17.0 补充（纯诊断任务）**：若本单走的是「只诊断不修改」出口，
+  其终态是**「诊断完成（只诊断不修改）」**——**任务级**终态，**不是**上面五类之一，
+  也**不用**调 `loop terminate`（那五类是逐轮优化状态机的 reason，自造会 exit 2）。
+  报告产物落盘 + 五条退出条件（见 `references/round-review-sop.md#13.3`）全过即算该任务完成。
 
 # 全程纪律
 
 - 只有你能向我提问与接收确认；成员遇到缺失信息写进 issues 由你转达，不得直接联系我
 - 成员之间禁止横向直连，跨成员信息流一律经你中转；成员不得代写他人的专业结论
-- Loop A 每批修改前必须停一次确认我批准；只做最小补丁；回归 ensure_settings 15/15
+- Loop A 每批修改前必须停一次确认我批准；只做最小补丁；回归 ensure_settings 22/22
   与全部测试套件，任一红即回滚本批
 - **不得因一次课件的特殊要求擅自改全局规则**（单课件诉求走 Loop B，要改规则须在
   Loop A 单独立项）

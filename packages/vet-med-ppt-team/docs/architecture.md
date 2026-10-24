@@ -185,10 +185,16 @@ packages/vet-med-ppt-team/
 
 ---
 
-## 防漂移守卫（v3.16.0）
+## 防漂移守卫（v3.16.0 建 / v3.17.0 扩面）
 
 > 起因：本文件在 v3.0.0 改五闸、**v3.3.0 加闸 4.5** 之后仍描述六阶段流水线并漏掉 verifier，
 > 与 `config/harness.yaml` 分化**无人察觉、无机器拦截**。文档与真源之间没有守卫，必然继续漂移。
+>
+> **v3.17.0 扩面（实测同型漂移复发）**：上一轮只修了本文件，同型的
+> `references/sop-stages.md`（闸号口径与闸4.5 章节未同步）与
+> `references/harness-engine.md`（`current_stage` 取值范围未同步）**无人拦**——
+> 守卫覆盖面只有一个文件时，同型文件必然继续漂移。现覆盖面改为**一组文档**，
+> 清单 = `config/guard.yaml#guarded_docs`。
 
 ### 守卫实现
 
@@ -202,19 +208,30 @@ packages/vet-med-ppt-team/
 | T4 | 「团队组成」表的 Agent ID == {主理人} ∪ `members` 全键 | 成员表漏人 / 多出幽灵成员 |
 | T5 | `agents/*.md`（除 team-lead）文件名集合 == `members` 全键 | 有 MD 未注册，或注册了没有 MD 的成员 |
 | T6 | 「六阶段」仅出现在「历史沿革」章节之后 | 已废弃的旧口径复活 |
+| T7 | 每个成员 MD 都把工具白名单指向 `config/harness.yaml` | 工具权限在 MD 与 yaml 各写一份 |
+| T8 | `config/guard.yaml#cross_review_mapping` 与各 agent MD「你不做…」边界**取反**一致 | 闸3 交叉复检把关人被派给了被明文禁止接活的人 |
+| T9 | **受守卫文档**（`guard.yaml#guarded_docs` 清单）的阶段镜像块 == `harness.yaml#stages` 逐项 | 清单里的文档与真源分化（含缺镜像块） |
+| T10 | 受守卫文档正文不得出现旧口径词表（`guard.yaml#legacy_wording`） | 旧口径在正文复活 |
+
+**口径唯一源 = `config/guard.yaml`**（v3.17.0 新增）：`guarded_docs`（覆盖面清单）、
+`legacy_wording`（旧口径词表）、`cross_review_mapping`（闸3 交叉复检映射）三段均在此，
+**不在脚本里硬编码**——改覆盖面 / 词表 / 映射只改 yaml，不改代码。
 
 **为何不会假阳性**：守卫只解析镜像块 sentinel 之间的结构化行与两张显式表格，
 不扫描散文；yaml 侧只做「stage 成员 ⊆ 成员注册表」的单向子集判定（新增注册成员不会误报）；
 `docs/architecture.md` / `config/harness.yaml` / `agents/` 任一缺失时该断言 **SKIP 而非 FAIL**
 （避免在 packages/ 副本等局部树里误报）。
+**旧口径豁免区用可判定的声明式标记**（不靠关键词猜测）：① 标题行以「## 历史沿革」开头的章节
+（其下的 `###` 子标题仍在区内）；② `<!-- LEGACY_HISTORY_BEGIN --> … <!-- LEGACY_HISTORY_END -->` 哨兵块。
 
 ### yaml 变动时的同步清单（改 `config/harness.yaml` 必须同步本文档的条款）
 
-1. 增/删/改 `stages[*]` → 同步「阶段镜像块」全行 + 「人读视图」表 + 「并行 / 串行的判据」小节
+1. 增/删/改 `stages[*]` → 同步**全部受守卫文档**（`config/guard.yaml#guarded_docs` 清单）的「阶段镜像块」全行 + 本文件「人读视图」表 + 「并行 / 串行的判据」小节
 2. 增/删 `members` 键 → 同步「团队组成」表，且 `agents/` 下必须有同名 MD
 3. 改 `members[*].tools_whitelist` → **本文档不同步**（文档不复述工具清单，这是刻意的防分化设计）
 4. 改 `context.handoff_mode` / `budgets.max_artifact_bytes` → 同步「上下文交接」表
 5. 改 `gate_exit_codes` / `delta_gate` → 同步「关键约束」表
+6. 增删受守卫文档 / 改旧口径词表 / 改交叉复检映射 → **只改 `config/guard.yaml`**（覆盖面与词表不写进本文档，避免第三份声明）
 
 > 未覆盖项（已知，见 `.learnings/FEATURE_REQUESTS.md` 的 v3.16.0 条目）：
 > 工具白名单与门禁退出码目前**只靠人工核对**——它们不在本文档复述，故无机器比对面。

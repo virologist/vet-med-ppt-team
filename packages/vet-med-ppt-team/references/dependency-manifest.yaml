@@ -1,0 +1,65 @@
+# 外部依赖登记表（v3.17.0 新建 · 包内 SSOT）
+#
+# 为什么要这张表（真实缺陷，非设想）：
+#   原设计把「七维量规的唯一执行源」放在**包外**的用户级 skill `teaching-ppt-studio`，
+#   而 `.codebuddy-plugin/plugin.json` **没有任何依赖声明字段**（见下方「平台事实」）。
+#   结果：换机器 / 换用户 → 诊断入口**静默失效，无任何提示**。
+#   v3.17.0 处置：**量规内化**进本包（`references/seven-dimension-rubric.md`）+ 本表登记外部副本状态。
+#
+# 平台事实（v3.17.0 实测，判定依据见 §platform_fact）：
+#   WorkBuddy 专家包清单规范 `plugin-json-spec.md` 的字段全集为
+#   基础字段（name/version/description/author/homepage/license/keywords）、
+#   类型字段（expertType/agentName/teamInfo）、资源声明（agents/skills）、
+#   展示字段（displayName/profession/displayDescription/avatar/categoryId/
+#   defaultInitPrompt/tags/quickPrompts/plugin）、Team 专用字段（members）。
+#   **其中不存在任何「依赖声明」字段**（dependencies / requires / skillDependencies / pluginDependencies 均无）。
+#   因此**不向 plugin.json 写入平台不识别的键**——改为在本表登记 + 由
+#   `references/check_external_deps.py` 做可执行检查。
+
+schema_id: vet-med-ppt-team.external-dependencies
+schema_version: "1.0.0"
+established: "v3.17.0"
+
+platform_fact:
+  checked_at: "2026-10-24"
+  spec_path: "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/references/plugin-json-spec.md"
+  conclusion: 平台 plugin.json 无依赖声明字段 → 不自创键；依赖登记在本表 + 可执行检查
+  evidence:
+    - plugin-json-spec.md 的四组字段表中均无 dependencies / requires / skillDependencies
+    - WorkBuddy 内置 11 个插件的 .codebuddy-plugin/plugin.json 顶层键均无依赖字段
+    - validate_expert.py 的 plugin.json 校验只覆盖必填/类型/展示/Team/agents/skills 路径，无依赖概念
+
+# 外部依赖逐条登记
+dependencies:
+  - id: teaching-ppt-studio
+    kind: external_skill
+    required: false
+    blocking: false            # 缺失**不阻断**本包使用——内化就是为了自包含
+    purpose: 七维量规的**上游对照源**（比对上游更新），非运行期必需
+    probe_roots:
+      - "~/.workbuddy/skills/teaching-ppt-studio"
+      - "~/.codebuddy/skills/teaching-ppt-studio"
+    probe_files:
+      - "SKILL.md"
+    upstream_rubric_file: "references/seven-dimension-rubric.md"
+    upstream_version: "v2.6.0"
+    upstream_updated_at: "2026-10-17"
+    internal_fallback:
+      path: "references/seven-dimension-rubric.md"
+      role: 执行源（量规定义 / 修复路由 / 报告契约的唯一有效来源）
+    messages:
+      found: "外部 skill teaching-ppt-studio 已安装（{path}）→ 量规执行源仍以包内 references/seven-dimension-rubric.md 为准；外部副本仅用于比对上游更新"
+      missing: "外部 skill teaching-ppt-studio 未安装 → 本包已内化 references/seven-dimension-rubric.md，以包内版本为准；外部副本仅用于比对上游更新"
+    note: |
+      外部副本与包内版本不一致时，**以包内版本为准**，并登记差异（写入报告的
+      rubric_ref.drift_checked_at / upstream 字段）。**不得**因为外部副本更新就静默改包内量规。
+
+# 可执行检查（由 references/check_external_deps.py 消费本表）
+checker:
+  path: "references/check_external_deps.py"
+  invocation: "python3 references/check_external_deps.py"
+  default_exit_code: 0        # 默认不阻断（缺失不阻断本包使用）
+  strict_flag: "--strict"     # 显式严格模式：缺失时 exit 1（供 CI/发布流程可选启用）
+  json_flag: "--json"
+  env_override: "VETPPT_SKILLS_ROOT"   # 覆盖探针根目录（供反例测试与多安装布局）
+  integration_status: "待并入体检第 23 项（**跨批需求**：scripts/ensure_settings.py 由另一批维护，本批不改）"

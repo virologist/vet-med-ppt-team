@@ -197,31 +197,47 @@ THRESHOLD = _load_threshold()
 # v3.12.0：闸4.5 三源核验阈值改为读配置（此前三处硬编码 0.8/0.1）。
 # 根因：harness.yaml#budgets 与 domain_config.yaml#three_source_check 都配了同值，
 # 但代码从不读——"唯一数据源"纪律形同虚设，任一方单独调参会静默失效。
-# 本函数只负责取数，**不改变任何判定逻辑与默认数值**（仍为 sample=0.1 / pass=0.8）。
+# v3.17.0：本段扩为**三档判定配置**的读取入口，且实现**下沉到 harness.py**
+#   （唯一读取实现点，避免同一份 yaml 被两个脚本各读一遍、各维护一份兜底）。
+# 依赖方向：verify_deck → harness（单向）。harness 从不 import verify_deck，
+#   两者**无循环依赖**；且方向不可反——verify_deck 依赖 python-pptx，
+#   让编排内核反向依赖裁判会把重依赖倒灌进 harness。
 _DOMAIN_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "config", "domain_config.yaml")
 
 
+def _load_three_source_kernel():
+    """惰性加载 scripts/harness.py 的三源核验内核（导入期不耦合）。
+
+    为什么惰性：harness.py 模块级只做常量定义与函数定义（CLI 在 __main__ 守卫后），
+    但仍**不在导入期**建立依赖——裁判脚本被当库导入时（如 pytest）不应连带拉起编排内核。
+    加载失败必须**显式报错**（不得静默跳过实查），由调用方决定 fail-closed。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import harness  # noqa: E402  （惰性导入：见上方说明）
+    return harness
+
+
 def _load_three_source_thresholds():
-    """读 domain_config.yaml#three_source_check 的抽检率与通过率。
+    """读 domain_config.yaml#three_source_check **全段**（抽检率 + 通过率 + 三档判定配置）。
 
     失败策略与 _load_threshold 一致但更宽松：这里缺值**不阻断**整轮门禁
     （三源核验只是闸4.5 的一个子项），退回内置值并**显式告警**——
     静默回退才是这里要防的（否则改配置的人看不出没生效）。
+    v3.17.0：实现下沉到 harness.py#load_three_source_config()（唯一读取实现点）；
+    本函数保留旧名与旧键（sample_rate / pass_threshold 语义不变），仅**扩键**。
     """
     fallback = {"sample_rate": 0.1, "pass_threshold": 0.8}
     try:
-        import yaml
-        with open(_DOMAIN_CFG_PATH, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        tsc = cfg.get("three_source_check") or {}
-        sample_rate = float(tsc.get("sample_rate", fallback["sample_rate"]))
-        pass_threshold = float(tsc.get("pass_threshold", fallback["pass_threshold"]))
-        return {"sample_rate": sample_rate, "pass_threshold": pass_threshold}
+        kernel = _load_three_source_kernel()
+        cfg = kernel.load_three_source_config()
+        return cfg
     except Exception as e:
-        print(f"⚠ domain_config.yaml#three_source_check 读取失败（{e}），"
-              f"退回内置 0.1/0.8——改配置不会生效", file=sys.stderr)
-        return fallback
+        print(f"⚠ 三源核验内核加载失败（{e}），退回内置 0.1/0.8——"
+              f"改配置不会生效，且实查能力不可用（本次判定将 fail-closed）", file=sys.stderr)
+        return dict(fallback)
 
 
 THREE_SOURCE = _load_three_source_thresholds()
@@ -1170,75 +1186,233 @@ def gate_decision(gate, level):
     return None, 0
 
 
-# ─────────────────────── 闸4.5 三源核验（v3.3.0）───────────────────
-def three_source_check(workspace: str, deck: str) -> dict:
-    """闸4.5：抽 10% unverified=true 案例，查 sources 字段，输出通过率。
+# ─────────────────────── 闸4.5 三源核验（v3.3.0 / v3.17.0 重做判定口径）───────────────────
+def _verdict_detail(verdict, blocked_by, pass_rate, threshold):
+    """人读结论（禁止只给一个布尔值——读的人必须知道"卡在哪一步"）。"""
+    if verdict == "pass":
+        return "通过：抽检案例全部满足三源判定（存在性已验证口径）"
+    parts = []
+    if "pass_rate_below_threshold" in blocked_by:
+        parts.append(f"通过率 {pass_rate:.3f} < 阈值 {threshold}")
+    if "network_incomplete" in blocked_by:
+        parts.append("联网核验未完成（网络失败条目未被当作已验证）")
+    return "未通过：" + "；".join(parts)
+
+
+def three_source_check(workspace: str, deck: str = "", scan_all: bool = False) -> dict:
+    """闸4.5：抽检 unverified 案例，按**三档判定**核验其 sources 的真实性。
+
+    v3.17.0 前的判据（已废除）：
+        `any(src.get("ok") is True for src in sources)`
+      —— 只看**自报布尔值**，零存在性校验。独立诊断组实跑复现：造 3 条来源
+      （不存在的 PMID + 不存在的 ISBN + 不存在的 GB）把 ok 写成 true，
+      闸4.5 输出 pass_rate=1.0 / verdict=pass / exit 0；交叉核验该 PMID 在
+      PubMed esearch count=0（根本不存在）。注释写"至少 1 条"还与"三源"命名矛盾。
+
+    v3.17.0 起的判据（唯一源 = config/domain_config.yaml#three_source_check）：
+      · 每条来源按 kind 走各自的核验方式，归入且仅归入三档之一：
+          存在性已验证 existence_verified —— 联网实查命中（当前仅 pubmed 具备）
+          仅格式合规   format_only        —— ISBN 校验位 / 国标编号格式通过，
+                                              **未验证存在性**（格式过 ≠ 存在）
+          不可核验     unverifiable       —— 无核验器 / 格式不过 / 联网失败
+      · 「仅格式合规」**不计入已验证**；判定**不读 src.ok**（自报值不构成证据）。
+      · 联网失败（None）单独计数 + 显式告警，既不算已验证、也不让整轮静默通过。
+      · 每案例须三类来源齐备，且其中至少 N 条达到「存在性已验证」才算通过。
 
     Args:
         workspace: 课程工作区根（含 .workbuddy/cases/cases_library.json）
         deck: 当前 deck 路径（仅用于过滤"此 deck 的案例"——非全库）
+        scan_all: True = 不按 deck 过滤，扫全库（**存量核验清单**用；见 --scan-all）
 
     Returns:
-        dict: {total, sampled, unverified_sampled, verified_sampled, pass_rate, threshold, verdict, samples}
-        verdict: "pass" (≥80%) / "needs_more_verification" (<80%)
+        dict: 见下方返回结构；verdict ∈ {pass, needs_more_verification, no_library}
     """
     import json
     import random
     from pathlib import Path
 
+    tsc = _load_three_source_thresholds()          # 全段（三档判定配置）
+    kernel = _load_three_source_kernel()            # 内核实现（唯一实现点）
+
+    # v3.17.0 收尾：**护栏缺失即 fail-closed**（与包内查询者口径、与 guard.yaml 的
+    #   "缺键即红"标准一致）。决策键缺失 → 不补内置值、不静默按默认判，
+    #   直接判「护栏缺失」并阻断：yaml 缺键 = 护栏不存在，不能当它存在。
+    missing_guard = [k for k in ("sample_rate", "pass_threshold", "required_kinds",
+                                 "required_existence_verified")
+                     if tsc.get(k) is None]
+    if missing_guard:
+        msg = (f"闸4.5 护栏缺失：{missing_guard} 未在 "
+               f"config/domain_config.yaml#three_source_check 配置——"
+               f"不补内置值、不按默认值继续判（补了就等于 yaml 成装饰品）。"
+               f"请补齐该键后重跑。")
+        print(f"⛔ {msg}", file=sys.stderr)
+        return {"verdict": "config_incomplete", "error": msg,
+                "blocked_by": ["config_incomplete"], "alarms": [msg],
+                "pass_rate": 0.0, "threshold": tsc.get("pass_threshold"),
+                "total": 0, "sampled": 0, "verified": 0,
+                "missing_guard_keys": missing_guard,
+                "criteria": {"config_source": "config/domain_config.yaml#three_source_check",
+                             "note": "护栏缺失 → fail-closed（不补内置值）"}}
+
     # 1. 读 cases_library
     cases_p = Path(workspace) / ".workbuddy" / "cases" / "cases_library.json"
     if not cases_p.exists():
         return {"verdict": "no_library", "error": f"未找到 {cases_p}",
-                "pass_rate": 0.0, "threshold": THREE_SOURCE["pass_threshold"],
-                "total": 0, "sampled": 0}
+                "pass_rate": 0.0, "threshold": tsc.get("pass_threshold"),
+                "total": 0, "sampled": 0, "verified": 0,
+                "alarms": [f"未找到案例登记册：{cases_p}——闸4.5 **未执行**，"
+                           f"不得读作「已通过」"]}
 
     with open(cases_p, encoding="utf-8") as f:
         lib = json.load(f)
-    cases = lib.get("cases", [])
+    cases = lib.get("cases", []) if isinstance(lib, dict) else (lib or [])
 
-    # 2. 过滤：当前 deck 的案例（按 deck_path 后缀匹配）
-    deck_name = Path(deck).name
-    deck_cases = [c for c in cases if Path(c.get("deck_path", "")).name == deck_name]
+    # 2. 过滤：当前 deck 的案例（按 deck_path 后缀匹配）；--scan-all 时扫全库
+    deck_name = Path(deck).name if deck else ""
+    if scan_all or not deck_name:
+        deck_cases = list(cases)
+    else:
+        deck_cases = [c for c in cases if Path(c.get("deck_path", "")).name == deck_name]
     unverified = [c for c in deck_cases if c.get("unverified", True)]
 
-    # 3. 抽检（v3.12.0：读 domain_config.yaml#three_source_check.sample_rate）
-    sample_n = max(1, int(len(unverified) * THREE_SOURCE["sample_rate"]))
-    sampled = random.sample(unverified, min(sample_n, len(unverified)))
+    # 3. 抽检（读 domain_config.yaml#three_source_check.sample_rate；可复现种子可选）
+    #    ⚠ --scan-all（存量核验清单）走**全量**：清单的目的是摸清存量规模，
+    #    抽样估不出规模；闸4.5 判定的抽样语义不变。
+    sample_rate = float(tsc.get("sample_rate", 0.1))
+    if scan_all:
+        sample_n = len(unverified)
+        sampling = "all"
+    else:
+        sample_n = max(1, int(len(unverified) * sample_rate))
+        sample_n = min(sample_n, len(unverified))
+        sampling = "rate"
+    seed = tsc.get("sample_seed")
+    rnd = random.Random(seed) if seed is not None else random
+    sampled = rnd.sample(unverified, sample_n) if sample_n else []
 
-    # 4. 验 sources：每个样本检查 sources 列表是否至少 1 条 ok=true
-    verified = 0
-    for s in sampled:
-        sources = s.get("sources", [])
-        if any(src.get("ok") is True for src in sources):
-            verified += 1
+    # 4. 联网实查（存在性核验的唯一来源）：只查格式可解析、且不在静态黑名单的 PMID
+    #    v3.17.0 收尾：api_key（真值只从环境变量读）+ 可配限速 + 遇速率限制指数退避
+    #    并显式告警（NCBI 对无 key 匿名访问有 3 req/s 限制，批量清单会触发封禁——
+    #    这是**已知环境约束**，处置是配 key / 分批 + 批间留间隔，不是改判据）。
+    online = {}
+    pmids = kernel.collect_pending_pmids(sampled, tsc)
+    ep = kernel._esearch_params(tsc)
+    if pmids:
+        print(ep["note"], file=sys.stderr)
+        online = kernel.pmid_existence_check(
+            pmids,
+            endpoint=ep["endpoint"], db=ep["db"], timeout=ep["timeout"],
+            sleep=ep["sleep"], api_key=ep["api_key"],
+            max_retries=ep["max_retries"], backoff_base=ep["backoff_base"],
+            backoff_cap=ep["backoff_cap"], suspect_threshold=ep["suspect_threshold"],
+            abort_batch_on_rate_limit=ep["abort_batch_on_rate_limit"])
 
+    # 5. 逐案例定档（三档判定）
+    case_results = [kernel.verify_three_source_case(c, tsc, online) for c in sampled]
+
+    # 6. 聚合
+    verified = sum(1 for r in case_results if r["verdict"] == "pass")
     pass_rate = verified / max(len(sampled), 1)
-    # v3.12.0：读配置而非硬编码（判定逻辑不变：pass_rate >= threshold 即 pass）
-    threshold = THREE_SOURCE["pass_threshold"]
-    return {
+    threshold = float(tsc.get("pass_threshold", 0.8))
+    policy = str(tsc.get("network_failure_policy") or "block")
+    net_err = sum(r["network_error"] for r in case_results)
+    refuted = sum(r["refuted"] for r in case_results)
+    tier_counts = {
+        "existence_verified": sum(r["existence_verified"] for r in case_results),
+        "format_only": sum(r["format_only"] for r in case_results),
+        "unverifiable": sum(r["unverifiable"] for r in case_results),
+    }
+    alarms = []
+    if net_err:
+        alarms.append(f"联网核验失败 {net_err} 条（网络/端点异常，未取得结论）——"
+                      f"按 network_failure_policy={policy} 处置：既不计为已验证，"
+                      f"也不让整轮判 pass")
+    if refuted:
+        alarms.append(f"实查证伪 {refuted} 条来源（引用真实不存在／已失效）——"
+                      f"这是数据错，不是环境问题，须逐条处置")
+    blocked_by = []
+    if pass_rate < threshold:
+        blocked_by.append("pass_rate_below_threshold")
+    if net_err and policy == "block":
+        blocked_by.append("network_incomplete")
+    verdict = "pass"
+    if blocked_by:
+        verdict = "needs_more_verification"
+
+    out = {
         "deck": deck_name,
+        "scope": "all_library" if (scan_all or not deck_name) else "deck",
         "total_in_deck": len(deck_cases),
         "unverified_in_deck": len(unverified),
         "sampled": len(sampled),
+        "sampling": sampling,
+        # ⚠ 语义变更（v3.17.0）：verified 从"任一来源 ok=true"改为
+        #   "该案例按三档判定**通过**"（含存在性已验证要求）。
         "verified": verified,
         "pass_rate": round(pass_rate, 3),
         "threshold": threshold,
-        "verdict": "pass" if pass_rate >= threshold else "needs_more_verification",
-        "samples": [{"case_id": s.get("case_id"), "title": s.get("title"),
-                     "sources_count": len(s.get("sources", [])),
-                     "verified": any(src.get("ok") is True for src in s.get("sources", []))}
-                    for s in sampled[:5]],  # 仅展示前 5
+        "verdict": verdict,
+        "blocked_by": blocked_by,
+        "verdict_detail": _verdict_detail(verdict, blocked_by, pass_rate, threshold),
+        "tier_counts": tier_counts,
+        "existence_verified_sources": tier_counts["existence_verified"],
+        "format_only_sources": tier_counts["format_only"],
+        "unverifiable_sources": tier_counts["unverifiable"],
+        "refuted_sources": refuted,
+        "network_error_sources": net_err,
+        "alarms": alarms,
+        "criteria": {
+            "config_source": "config/domain_config.yaml#three_source_check",
+            "tiers": tsc.get("tiers"),
+            "required_kinds": tsc.get("required_kinds"),
+            "required_existence_verified": tsc.get("required_existence_verified"),
+            "network_failure_policy": policy,
+            "sample_rate": tsc.get("sample_rate"),
+            "sample_seed": tsc.get("sample_seed"),
+            "note": "「仅格式合规」不计入已验证；联网失败不算通过；"
+                    "判定不读 src.ok（自报布尔值不构成证据）",
+        },
+        # v3.17.0 收尾：来源类型显示名（读 yaml#sources[*].label——此前是死配置键）
+        "source_types": kernel._source_labels(tsc),
+        "samples": [{"case_id": r.get("case_id"), "title": r.get("title"),
+                     "sources_count": len(r.get("sources") or []),
+                     "verified": r.get("verdict") == "pass",
+                     "verdict": r.get("verdict"),
+                     "existence_verified": r.get("existence_verified"),
+                     "format_only": r.get("format_only"),
+                     "unverifiable": r.get("unverifiable"),
+                     "sources": [{"kind": s.get("kind"), "label": s.get("label"),
+                                  "tier": s.get("tier"), "reason": s.get("reason")}
+                                 for s in (r.get("sources") or [])]}
+                    for r in case_results[:5]],  # 仅展示前 5
+        "case_results": case_results,
     }
+    if out["scope"] == "all_library":
+        # 存量核验清单：按 deck 归并，便于主理人汇总存量规模
+        by_deck = {}
+        for r in case_results:
+            k = Path(str(r.get("deck_path") or "")).name or "(未登记)"
+            by_deck.setdefault(k, {"cases": 0, "passed": 0, "refuted": 0, "network_error": 0})
+            by_deck[k]["cases"] += 1
+            if r.get("verdict") == "pass":
+                by_deck[k]["passed"] += 1
+            by_deck[k]["refuted"] += r.get("refuted") or 0
+            by_deck[k]["network_error"] += r.get("network_error") or 0
+        out["summary_by_deck"] = by_deck
+    for a in alarms:
+        print(f"⚠ {a}", file=sys.stderr)
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser(description="教学课件机械验证器（分级门禁 v2.0.0 + v3.3.0 三源核验）")
-    ap.add_argument("deck", help="课件路径 .pptx")
-    ap.add_argument("--hours", type=float, required=True,
+    ap.add_argument("deck", nargs="?",
+                    help="课件路径 .pptx（--three-source-check + --scan-all 模式可省）")
+    ap.add_argument("--hours", type=float, default=None,
                     help="课时数（v3.0.0 起必填：1 / 1.5 / 2 / 3 / 4。"
                          "不再默认 3——默认值会凭空判出「课时不达标」，是 B0 口径混乱的源头之一。"
-                         "1.5=1小时教学单元60min档；扩展阅读页不计入可见页，由阶段0 冻结口径")
+                         "1.5=1小时教学单元60min档；扩展阅读页不计入可见页，由阶段0 冻结口径。"
+                         "（--three-source-check 模式不需课时数，故改为运行期校验）")
     ap.add_argument("--level", choices=["P0", "P1", "all"], default="all",
                     help="门禁级别：P0=写回门禁 / P1=中检门禁 / all=交付门禁（默认）")
     # v3.16.0：页数口径显式切换（此前只有"整套课程课件"一张表，按单份 PPT 做的课件必被误判）
@@ -1253,16 +1427,39 @@ def main():
     # v3.3.0：闸4.5 案例三源核验模式
     ap.add_argument("--three-source-check", action="store_true",
                     help="闸4.5：读 <workspace>/.workbuddy/cases/cases_library.json，"
-                         "按 domain_config.yaml#three_source_check.sample_rate 抽检 unverified 案例的 sources 字段，"
-                         "按同节 pass_threshold 判定是否达标（默认 0.1 / 0.8）")
+                         "按 domain_config.yaml#three_source_check.sample_rate 抽检 unverified 案例，"
+                         "按**三档判定**核验来源真实性（存在性已验证 / 仅格式合规 / 不可核验），"
+                         "按同节 pass_threshold 判定是否达标（默认 0.1 / 0.8）。"
+                         "v3.17.0：判定不读 sources[].ok（自报布尔值），pubmed 走 PubMed esearch 实查，"
+                         "textbook 走 ISBN 校验位、regulation 走国标编号格式；联网失败不算通过。\n"
+                         "⚠ 已知环境约束（不是 bug）：NCBI 对**无 key 的匿名访问**限速 3 req/s，"
+                         "连续批量请求会被 abuse 系统封禁（Access Denied / 429，"
+                         "部分网络路径下表现为 SSL EOF）。⇒ **跑存量清单必须分批 + 批间留间隔**；"
+                         "有 key 时设环境变量 NCBI_API_KEY（yaml 只存变量名，真值不落盘）可到 10 req/s。"
+                         "遇封禁时闸4.5 判 network_incomplete（fail-closed，不静默通过）。")
     ap.add_argument("--workspace", default="",
                     help="--three-source-check 必填：课程工作区根（含 .workbuddy/cases/）")
+    ap.add_argument("--scan-all", dest="scan_all", action="store_true",
+                    help="闸4.5：扫全库案例（不按 deck 过滤、且**全量抽检**不用 sample_rate）"
+                         "——用于生成「存量核验清单」（汇总存量规模）；配 --json 落盘。"
+                         "⚠ 清单跑不完是已知环境约束（NCBI 匿名限速会封禁），"
+                         "须**分批 + 批间留间隔**，或设 NCBI_API_KEY 环境变量。")
     a = ap.parse_args()
+
+    # v3.17.0：--three-source-check 模式下 deck 位置参数与 --hours 均可省（--scan-all 清单模式用）
+    if not a.three_source_check and not a.deck:
+        print("用法错误：必须给出课件路径（--three-source-check 模式可用 --scan-all 免课件）",
+              file=sys.stderr)
+        sys.exit(2)
+    if not a.three_source_check and a.hours is None:
+        print("用法错误：--hours 必填（1 / 1.5 / 2 / 3 / 4）——不设默认值，"
+              "避免凭空判出「课时不达标」", file=sys.stderr)
+        sys.exit(2)
 
     # v3.3.0 短路：--three-source-check 模式只跑三源核验，不跑主门禁
     if a.three_source_check:
         try:
-            r = three_source_check(a.workspace, a.deck)
+            r = three_source_check(a.workspace, a.deck or "", scan_all=a.scan_all)
         except Exception as e:
             import traceback
             print(f"运行错误（三源核验）：{e}", file=sys.stderr)
@@ -1274,6 +1471,8 @@ def main():
             with open(a.json, "w", encoding="utf-8") as f:
                 _json.dump(r, f, ensure_ascii=False, indent=2)
         # 退出码：1=未达标 / 0=达标
+        # ⚠ v3.17.0：只有 verdict=="pass" 才算达标；联网失败 / 证伪 / 未齐备一律非 0，
+        #   杜绝"没查到 → 当作通过"。
         sys.exit(0 if r.get("verdict") == "pass" else 1)
 
     try:

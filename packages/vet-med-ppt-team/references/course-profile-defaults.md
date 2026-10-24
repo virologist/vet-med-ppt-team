@@ -17,6 +17,39 @@
 
 ---
 
+## 0-bis. 内容域（domain）默认取值规则（v3.17.0 新增 · 闸1 冻结清单第 6 项）
+
+**这项此前完全缺失**：闸1 是 `user_confirm` 门（`config/harness.yaml#stages.0.gate`），
+但**"用哪个域 / 选哪些专家"从未提交过用户确认**——域档案缺席时，
+内容专家只能沿用上一轮的人设，用户的真实主题（换学科）就悄悄丢了。
+v3.17.0 起，域是**闸1 冻结清单的第 6 项**（`config/harness.yaml#gate1_freeze`），
+须与受众/课时/模板/范围/验收标准**同等对待**地提交确认。
+
+| 项 | 规则 | 依据 |
+|---|---|---|
+| **默认域** | `animal-medicine`（**保持现状**，不改既有默认行为） | `config/domain-profiles.yaml#default_domain` |
+| **何时必须显式指定** | 主题**不属于默认域**时——须由主理人（LLM）读 `harness.py domain list` 菜单后**显式指定**并经 `collapse confirm` 确认 | 分工宪法：选域是语义判断 |
+| **不得"智能猜测"** | ❌ 脚本**不得**用关键词/正则/打分自动选域；`match_hints` 是**给人（LLM）看的菜单**，不是匹配器 | 分工宪法 |
+| **未指定时** | 沿用默认域 `animal-medicine`，并在证据包/交付报告里**显式标注"本单按默认域处理"**（不得让默认悄悄生效） | 本节 |
+| **未确认时** | 域人格**不生效**：坍缩产物停在 `pending_confirmation`，须经 `harness.py collapse confirm` 才生效 | `config/harness.yaml#collapse.require_user_confirmation` |
+| **域档案缺失时** | 显式报错（**不回落任何域**）；内容专家改用**通用兜底**并在证据包标注 | `config/domain-profiles.yaml#fallback` |
+
+**执行命令（Loop B 接单时）**：
+
+```bash
+H="python3 <专家包>/scripts/harness.py"; W="<工作空间>"
+python3 "$H" domain list --workspace "$W"                      # ① 看选域菜单（主理人判断）
+python3 "$H" route --level L2 --domain <域id> --task-id <tid> \
+        --rationale "<主理人填的选型理由>" --workspace "$W"      # ② 落盘坍缩产物（待确认）
+python3 "$H" collapse confirm --id <域id> --task-id <tid> \
+        --rationale "<选型理由>" --workspace "$W"                 # ③ 用户确认后才生效
+```
+
+> ⚠ **沉默不构成确认**：第 ③ 步必须显式执行；`route --domain` 的输出会标注
+> 「待确认，未生效」。选型理由由**主理人**填写，脚本不猜（理由缺失时 `collapse confirm` 直接拒绝）。
+
+---
+
 ## 1. 受众分层（默认 = 职业本科与本科生 · v3.11.0 改四层）
 
 > **单一数据源**：`references/audience-profile-schema.yaml`（本节为其人读视图，参数以 schema 为准）。
@@ -244,6 +277,7 @@ python3 scripts/ooxml_lint.py <新版.pptx> --geo-baseline <模板.pptx>
     "acceptance": {"value": "内容 5 条 + 视觉 7 条 + 受众/课时差异化阈值", "status": "confirmed", "ref": "course-profile-defaults.md#4"},
     "delivery":   {"value": "成品 PPTX + 逐页修改说明 + 验收自检清单", "status": "confirmed", "ref": "delivery-spec.md"},
     "purpose":    {"value": "日常授课", "status": "suggested"},
+    "domain":     {"value": "animal-medicine（默认域，保持现状）；非兽医主题须由主理人显式指定并经 `collapse confirm` 确认（**不得智能猜测**）", "status": "suggested", "ref": "course-profile-defaults.md#0-bis"},
     "asset_constraints": {"value": "禁用 AI 生成图冒充实物/病理图（原则六）", "status": "confirmed"},
     "prohibitions": {"value": "", "status": "suggested"}
   }
@@ -252,3 +286,7 @@ python3 scripts/ooxml_lint.py <新版.pptx> --geo-baseline <模板.pptx>
 
 > 制作前置门（round-review-sop#8）：A 类 5 项 `status` 全 `confirmed` 方可进入制作。
 > 本档案已使 A 类 5 项全部 `confirmed`——**但每单仍需确认是否需要覆盖**（换受众/换模板/限范围时）。
+>
+> ⚠ **v3.17.0 新增第 6 项（域）**：`domain` 一项默认 `suggested`（= 沿用默认域 `animal-medicine`）。
+> **非兽医主题必须显式指定并经 `collapse confirm` 确认**（见 §0-bis）——
+> 未确认时域人格**不生效**，内容专家按通用兜底执行并在证据包标注。

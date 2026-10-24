@@ -13,6 +13,7 @@
 - [Claude Code](#claude-code)
 - [Claude Desktop](#claude-desktop)
 - [通用（手动安装）](#通用手动安装)
+- [外部依赖（可选）](#外部依赖可选)
 - [验证安装成功](#验证安装成功)
 - [故障排查](#故障排查)
 
@@ -180,6 +181,33 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 
 ---
 
+## 外部依赖（可选）
+
+> **v3.17.0 新增**。本节说明「装了才更好、不装也能跑」的外部件。
+
+### 外部依赖：`teaching-ppt-studio` skill（七维量规上游副本）
+
+| 项 | 说明 |
+|---|---|
+| **用途** | 七维精准诊断量规的**上游对照源**（用于比对上游更新）。**不是运行期必需** |
+| **是否必需** | **否**——v3.17.0 起，七维量规已**内化**进本包：`references/seven-dimension-rubric.md` |
+| **缺失时的行为** | **不阻断**本包任何能力；诊断入口照常工作，量规以**包内版本**为准 |
+| **安装位置** | `~/.workbuddy/skills/teaching-ppt-studio/`（或 `~/.codebuddy/skills/teaching-ppt-studio/`） |
+| **检查命令** | `python3 references/check_external_deps.py`（缺失时明确打印提示；`--strict` 才返回非零码） |
+| **登记位置** | `references/dependency-manifest.yaml`（外部依赖的包内唯一数据源） |
+
+**为什么没有把它写进 plugin.json**：WorkBuddy 专家包清单规范（`plugin-json-spec.md`）
+的字段全集中**不存在**依赖声明字段（`dependencies` / `requires` / `skillDependencies` 之类），
+内置 11 个插件的清单顶层键也均无此类字段——
+**平台不认的键不写进清单**，改用「登记 + 可执行检查」把静默失效变成显式可见。
+
+```bash
+# 一键检查外部依赖状态（默认不阻断；缺失只影响「与上游比对更新」）
+python3 references/check_external_deps.py
+```
+
+---
+
 ## 验证安装成功
 
 ### WorkBuddy
@@ -235,7 +263,20 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 
 ### Q: teaching-ppt-studio skill 调用失败
 
-**A**: 路径 B 需要本地安装 teaching-ppt-studio skill。检查 `~/.workbuddy/skills/teaching-ppt-studio/` 或类似路径是否存在。若没有，主理人会自动回退到路径 A（只输出制作指令包）。
+**A**: 先分清两件事（v3.17.0 起）：
+- **七维量规不再依赖外部 skill**——它已内化在本包 `references/seven-dimension-rubric.md`，
+  外部副本**缺失不影响诊断入口**，以包内版本为准；外部副本只用于「比对上游更新」。
+- **路径 B 的制作链协同**才需要本地安装 `teaching-ppt-studio` skill。
+  检查 `~/.workbuddy/skills/teaching-ppt-studio/`（或 `~/.codebuddy/skills/teaching-ppt-studio/`）是否存在。
+  若没有，主理人会自动回退到路径 A（只输出制作指令包）。
+
+随时可自查外部依赖状态：
+
+```bash
+python3 references/check_external_deps.py
+# 缺失时会明确打印：外部 skill teaching-ppt-studio 未安装 → 本包已内化
+# references/seven-dimension-rubric.md，以包内版本为准；外部副本仅用于比对上游更新
+```
 
 ### Q: settings.json 反复丢失
 

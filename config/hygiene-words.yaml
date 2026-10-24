@@ -1,0 +1,159 @@
+# hygiene-words.yaml — 域绑定残留巡检词表 + 豁免标记（唯一数据源，v3.17.0 新建）
+# ══════════════════════════════════════════════════════════════════════
+# 缘由（2026-10-24 批次 A）：该包的实际能力是「一套可复用于**任意教学/培训主题**的
+#   PPT 诊断与优化工作流」，但**兽医绑定散落在 agents/ 与 references/ 的散文里**——
+#   谁写在哪、该不该下沉到域档案，此前**没有任何机器可查的地方**。
+#   本文件把「兽医专有词表」与「正当用法的豁免标记」落成声明式数据，
+#   由 scripts/ensure_settings.py#check_domain_binding_residue（第 23 项）消费。
+#
+# 原则（与本项目铁律一致）：
+#   · **词表落 yaml，代码只执行**（禁把词表硬编码在 .py 里）；
+#   · **豁免必须有可判定的标记**（哨兵 / 章节标题 / 引用路径 / frontmatter 注释），
+#     不靠"看起来像举例"这类关键词猜测；
+#   · **第一版只报不阻断**：词表天然会误伤正当举例，先积累一轮证据再谈阻断
+#     （与本轮「假阳性必须为零」的纪律一致：宁可先不出数，也不出无法解释的数）。
+#
+# 消费方：scripts/ensure_settings.py#check_domain_binding_residue（第 23 项 · 提示级·不阻断）
+#
+# ⚠ 与 config/domain-profiles.yaml 的分工：
+#   domain-profiles.yaml = **应该**写什么（域档案：域专有内容的正确归宿）
+#   本文件                = **不该**出现在别处的残留词（巡检面）
+
+version: "3.17.0"
+
+# ── 域专有词表（当前域 = 动物医学）──────────────────────────────
+# 每条 term = 一个**子串**（大小写敏感；英文缩写按原样）。
+# kind 仅用于报告文案分类，不参与判定。
+# ⚠ 收录原则：**只收"出现在通用 MD 里即说明绑定残留"的词**——
+#   泛用词（如"生物安全""流行病学""教学"）一律不收，否则报告会全是噪音。
+domain_specific_terms:
+  - term: "兽医"
+    kind: "职业身份"
+    note: "执业身份词——通用 MD 出现即说明角色仍绑在某一学科"
+  - term: "动物医学"
+    kind: "学科名"
+    note: "学科专名（含作为域 id 的用法）"
+  - term: "兽医公共卫生"
+    kind: "学科方向"
+    note: "交叉学科方向名"
+  - term: "禽"
+    kind: "物种"
+    note: "物种词（家禽/禽病/禽舍…均含此字）"
+  - term: "鸡"
+    kind: "物种"
+    note: "物种词"
+  - term: "鸭"
+    kind: "物种"
+    note: "物种词"
+  - term: "猪"
+    kind: "物种"
+    note: "物种词"
+  - term: "牛羊"
+    kind: "物种"
+    note: "物种词"
+  - term: "伴侣动物"
+    kind: "物种"
+    note: "物种词"
+  - term: "宠物"
+    kind: "物种/场景"
+    note: "场景与物种词"
+  - term: "禽舍"
+    kind: "生产设施"
+    note: "该域特有的生产设施名"
+  - term: "养殖"
+    kind: "生产体系"
+    note: "该域特有的生产体系词"
+  - term: "禽病"
+    kind: "病种集合"
+    note: "病种集合名"
+  - term: "禽流感"
+    kind: "病种"
+    note: "具体病种名"
+  - term: "新城疫"
+    kind: "病种"
+    note: "具体病种名"
+  - term: "疫病"
+    kind: "疾病集合"
+    note: "疾病集合词"
+  - term: "病原"
+    kind: "学科对象"
+    note: "致病因子（该域核心对象）"
+  - term: "攻毒"
+    kind: "实验操作"
+    note: "该域特有的实验操作"
+  - term: "毒株"
+    kind: "生产/防疫对象"
+    note: "该域特有的防疫对象"
+  - term: "休药期"
+    kind: "合规概念"
+    note: "该域特有的合规概念"
+  - term: "法氏囊"
+    kind: "解剖部位"
+    note: "该域特有的解剖部位名"
+  - term: "proventriculus"
+    kind: "解剖部位（英文）"
+    note: "解剖部位英文名"
+  - term: "IBDV"
+    kind: "病原缩写"
+    note: "病原英文缩写"
+  - term: "DHAV"
+    kind: "病原缩写"
+    note: "病原英文缩写"
+  - term: "WOAH"
+    kind: "机构源"
+    note: "该域特有的国际机构源"
+  - term: "MSD"
+    kind: "机构源"
+    note: "该域特有的机构源"
+
+# ── 扫描范围 ─────────────────────────────────────────────────────
+scan:
+  roots: ["agents", "references"]
+  include_suffixes: [".md"]
+  # 域专有文件：其域绑定是**按设计**的（不是"该下沉却没下沉"的残留），排除但登记原因。
+  # ⚠ 排除项必须写清理由——"悄悄排除"会让覆盖面无声缩水。
+  exclude_files:
+    - path: "references/poultry-disease-index.md"
+      reason: "任务书**指定排除**：它是 animal-medicine 域的**包内知识锚点**（域档案 knowledge_anchor 指向它），域专有内容按设计就在这里"
+    - path: "references/case_extract_sop.md"
+      reason: "病例库登记 SOP——病例域专有（案例库机制服务于该域的病种编号）"
+    - path: "references/case_library_usage.md"
+      reason: "病例库使用说明——同上"
+    - path: "references/default-template-profile.md"
+      reason: "默认模板指纹档案——模板本身就是该域课件的模板，指纹/路径为该域专有"
+    - path: "references/snapshot_usage.md"
+      reason: "快照使用说明——内含该域课件文件名示例"
+    - path: "references/template_registry_usage.md"
+      reason: "模板登记册使用说明——内含该域课件样例文件名"
+    - path: "references/markitdown_0.1.7_实测报告.md"
+      reason: "工具实测报告——实测样本为该域课件，属工具报告而非通用规范"
+
+  # ── 豁免标记（**可判定**，不靠关键词猜测）─────────────────────
+  exempt_markers:
+    # ① 哨兵块：begin…end 之间的全部行豁免（与 scripts/test_arch_drift.py 同一哨兵思路）
+    - id: "legacy_history"
+      begin: "<!-- LEGACY_HISTORY_BEGIN -->"
+      end: "<!-- LEGACY_HISTORY_END -->"
+      reason: "历史沿革区（沿用 B1 建立的 LEGACY_HISTORY 哨兵）"
+    # ② 举例说明区：域专有词出现在"举例"里是正当用法
+    - id: "domain_example"
+      begin: "<!-- DOMAIN_EXAMPLE_BEGIN -->"
+      end: "<!-- DOMAIN_EXAMPLE_END -->"
+      reason: "举例说明区（举例中的域专有词是正当用法）"
+  # ③ 章节级豁免：标题命中即豁免该章节内全部行（直到下一个同级或更高级标题）
+  exempt_headings:
+    - pattern: "^#{1,6}[ \\t]*历史沿革"
+      reason: "「历史沿革」章节（变更说明属正当用法）"
+  # ④ 行级豁免：提到域档案路径的行豁免（该行本就是在说"去档案里取"）
+  profile_ref_patterns:
+    - "config/domain-profiles.yaml"
+    - "domain-profiles.yaml"
+  # ⑤ frontmatter 注释行豁免：YAML frontmatter 内以 # 开头的注释行是**变更说明**，
+  #    不是内容（HTML 哨兵进不了 YAML frontmatter，故用"行首 #"这一可判定标记）
+  frontmatter_comment_exempt: true
+
+# ── 处置级别 ─────────────────────────────────────────────────────
+# 第一版**只报不阻断**：词表天然会误伤正当举例，先积累一轮证据再谈阻断。
+# 阻断条件（未来）：连续 N 轮证据显示某类命中是真实残留且判据可稳定复算。
+report_only: true
+report_only_reason: "词表天然会误伤正当举例；先积累证据再谈阻断（与本轮「假阳性必须为零」的纪律一致）"

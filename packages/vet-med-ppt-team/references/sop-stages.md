@@ -1,9 +1,18 @@
-# 四道闸门控流水线完整 SOP（主理人按需加载）
+# 五道闸门控流水线完整 SOP（主理人按需加载）
 
-> 本文件是主理人 MD 中「四道闸索引表」的展开细节。**规则唯一定义在本文件 + `adjudication-rules.md` + `harness-engine.md`**，agent MD 只引用不重复。
-> v3.0.0 变更：原六阶段（0–5）压缩为**四道闸**（0–3），确认门由最多 6 次降为**固定 2 次**（设计确认 + 交付终审）。
-> 压缩依据：实测 1 课时 45min 的任务从阶段0 跑到阶段3 耗时 25 分钟仍未产出；`stage_history` 75% 是 SOP 外非法值、`current_stage` 合法率 0/4——阶段越多，状态越烂。
-> **状态机只认 0–3 四个整数**（`config/harness.yaml#stages`），`harness.py state set/validate` 拒绝其它值。
+> 本文件是主理人 MD 中「五闸索引表」的展开细节。**规则唯一定义在本文件 + `adjudication-rules.md` + `harness-engine.md`**，agent MD 只引用不重复。
+> **状态机只认 0–4 五个整数**（唯一源 = `config/harness.yaml#stages`），`harness.py state set/validate` 拒绝其它值。
+> v3.17.0 变更：本文按 `config/harness.yaml#stages` 逐项对齐为**五闸 / stage 0–4**（补写闸4.5 案例三源核验章节）；旧口径已迁至文末「历史沿革」区。
+
+<!-- 机器比对用镜像块（v3.17.0 新增）：scripts/test_arch_drift.py#T9 把它与
+     config/harness.yaml#stages 逐项比对——改 yaml#stages 必须同步本块，由守卫强制、不靠自觉。 -->
+<!-- STAGE_MIRROR_BEGIN -->
+stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
+stage 1 | 闸2 设计（蓝图∥证据） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
+stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
+stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
+stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
+<!-- STAGE_MIRROR_END -->
 
 ---
 
@@ -86,7 +95,8 @@
    中断后按进度记录续跑并先对账，禁止重跑全量（详见 `references/batch-surgery-sop.md#7`）。
 4. **迭代回路（原阶段 4，并入本闸）**：
    - 单页小改动：主理人按三清单自查，零 spawn
-   - 跨模块改动：**非作者交叉复检**（科学性改动→苏学法视角；教学性改动→严真奥视角；页面性改动→苏学法视角），只答「从我的专业视角会不会在我的领域埋雷」
+   - 跨模块改动：**非作者交叉复检**（科学性改动→严真奥视角；教学性改动→苏学法视角；页面性改动→屠明熙视角），只答「从我的专业视角会不会在我的领域埋雷」
+   - v3.17.0：上条映射原先三处**全反**——把把关人派给了各自 agent MD 明文「你不做…（那是别人的事）」的人，等于把关被整体绕开。订正依据 = 各成员自述边界的取反（该领域归谁所有，就派谁复检）。**映射唯一源 = `config/guard.yaml#cross_review_mapping`**，由 `scripts/ensure_settings.py` 第 22 项（文档写法 == yaml 登记值）与 `scripts/test_arch_drift.py`#T8（yaml 登记值 vs agent MD 边界声明）双向强制；改本文必须同步改 yaml。
    - 改动影响上游已确认项时，明确提示需回退到哪一闸，经用户确认后重构
 5. **不设确认门**（v3.0.0）：小改动直接推进，避免来回确认吃掉碎片时间。
 
@@ -132,6 +142,34 @@
 
 ---
 
+## 闸 4.5｜案例三源核验（严真奥 ∥ 都衡言，并行）· 流程末端
+
+> **v3.17.0 补写**：本闸自 v3.3.0 起即在状态机内（`config/harness.yaml#stages` 的 stage 4），
+> 但本文此前**完全没有对应章节**——状态机能进、文档查不到，等于半条流程靠默契（文档漂移）。
+> 本节与 yaml stage 4 逐项一致：成员 `dvm-content-expert` + `verifier`、gate `three_source_check`、
+> `next: null`（**流程末端，无后继闸**）。
+
+输入：闸 4 交付后的病例库台账（`<课程工作区>/.workbuddy/cases/cases_library.json`）。
+
+1. **触发条件**：交付物含案例页，或病例库存在 `unverified=true` 的条目——二者满足其一即必走。
+2. **盘点（只读，不改数据）**：
+   ```bash
+   python3 "$H" case-audit <课程工作区>
+   python3 "<专家包>/scripts/case_extract.py" audit --workspace <课程工作区>
+   ```
+3. **并行 spawn**：严真奥补三源证据（`pubmed` / `textbook` / `regulation` 三类），都衡言独立抽检复算；
+   两者边界互斥（**补证 vs 判罚**），主理人自评不作放行依据。
+4. **核验协议**：详见 `references/case_extract_sop.md#5 三源核验协议`（三源类型、`sources` 字段 schema、失败处置）。
+5. **阈值唯一源**：`config/domain_config.yaml#three_source_check`（`sample_rate` 抽检比例 / `pass_threshold` 通过率）。
+   **禁止在本文或任何脚本里另写一份**（第 21 项体检守这条：重复声明会静默失效）。
+6. **失败不阻断入库**（Q4）：核验不过留 `unverified=true` + `sources[].ok=false` + `reason`；
+   **禁把未核验内容当已核验写进课件**。
+7. **治理触发**：`unverified_count` 长期不下降 → 触发治理整顿（见 `case_extract_sop.md#7`）。
+8. **流程末端**：`next: null` 表示本闸之后**没有后继闸**——任务在此收口；
+   交付、复盘与下一轮输入由主理人在闸 4 终审与本闸产出合并处置（不得为"再确认一次"另开闸）。
+
+---
+
 ## 任务状态文件规范（长任务防上下文丢失）
 
 ```json
@@ -149,7 +187,7 @@
 ```
 
 - **只允许 `config/harness.yaml#context.state_allowed_keys` 白名单内的键**（v3.0.0 起脚本强制）
-- `current_stage` **只接受 0–3 整数**；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
+- `current_stage` **只接受 0–4 整数**（唯一源 = `config/harness.yaml#stages`；v3.3.0 起双轨期 0–4 合法）；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
 - 并发防护：写入前原子比对 `task_id`，不一致立即停止推进并向用户报警
 - 每阶段完成更新 `stage_history`；用户确认后清空 `user_confirmations_pending`
 
@@ -160,10 +198,23 @@
 
 冷启动恢复 = `Read task_state.json` 最小集 + `Read` 本文件对应闸的章节 + `harness.py trace report`，**禁止重读全部历史上下文**。
 
-## 附：v2.x 六阶段 → v3.0.0 四道闸映射
+## 历史沿革（已废弃口径，仅供回溯）
+
+> 以下均为**已废弃**的历史口径，**不得作为当前实现依据**；当前口径以文首镜像块与 `config/harness.yaml#stages` 为准。
+
+<!-- LEGACY_HISTORY_BEGIN -->
+### 附：v2.x 六阶段 → v3.0.0 四道闸映射
 
 | v2.x 六阶段 | v3.0.0 四道闸 |
 |---|---|
 | 0 任务冻结 / 1 教学蓝图 / 2 证据核验 | 闸1 冻结 + 闸2 设计（蓝图 ∥ 证据并行） |
 | 3 页面脚本 / 4 迭代修订 | 闸3 成稿（含迭代回路，不设确认门） |
 | 5 制作交付 | 闸4 交付（门禁 + verifier 独立复判） |
+
+### v3.0.0 → v3.3.0 增补（历史记录）
+
+- v3.0.0：原六阶段（0–5）压缩为**四道闸**（0–3），确认门由最多 6 次降为**固定 2 次**（设计确认 + 交付终审）。
+- 压缩依据：实测 1 课时 45min 的任务从阶段0 跑到阶段3 耗时 25 分钟仍未产出；`stage_history` 75% 是 SOP 外非法值、`current_stage` 合法率 0/4——阶段越多，状态越烂。
+- v3.3.0：追加 stage 4 = 闸4.5 案例三源核验，形成现行**五闸 / stage 0–4**。
+- v3.17.0：本文补齐闸4.5 章节并加入阶段镜像块；旧口径全部迁入本区，正文只保留现行口径。
+<!-- LEGACY_HISTORY_END -->

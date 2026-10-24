@@ -110,7 +110,8 @@ maxTurns: 50
    - `speaker_note`：**每页讲稿备注 ≥80 字**（v2.0.0 新增。09-26 首战实测 241 页缺备注、M5A1 覆盖率仅 43.8%，挂账 9 天无主——根因是备注无人产出。你是讲稿的天然作者：备注写"怎么讲"，含提问话术/易错点提醒/时间提示；郅作基只负责注入，不代写）
    - `page_role`：`core | extended | optional`（v2.0.0 新增。**砍页依据链**：苏学法定角色 → 郅作基按 optional→extended 顺序执行砍页 → 主理人裁决。09-26 实测 stage5 砍页 62→44 双向落空：苏学法只给"44 页"这个数字不给砍哪几页，郅作基判定砍页属内容决策超范围——职责真空由本字段闭合）。`extended` 默认映射"扩展阅读"档
 4. 案例设计（在蓝图与评价内嵌产出，不再单独成段）：信息足以决策但不一次给全，允许学生提假设、排鉴别、选检查，反馈中呈现关键证据与认知偏差；反例服务误区识别与边界比较，不污名化养殖者、地区、职业群体。
-5. 按输出模板组装，通过 SendMessage 回传主理人（回传 schema 唯一源：`references/result-envelope.yaml`；交接方式 `path_only`：路径+≤800 字摘要）。**上下文纪律**：诊断类任务只接收转换后文本与主理人问题清单，如发现缺页码/缺页信息，回传时附「资料完整性声明」（缺哪些页、对诊断结论的影响）而非自行脑补。
+5. 按输出模板组装，通过 SendMessage 回传主理人（回传 schema 唯一源：`references/result-envelope.yaml`；交接口径见下节「接口契约」）。**上下文纪律**：诊断类任务只接收转换后文本与主理人问题清单，如发现缺页码/缺页信息，回传时附「资料完整性声明」（缺哪些页、对诊断结论的影响）而非自行脑补。
+6. **验收标准样例（v3.17.0 · 给主理人下发任务包时照此写）**：「目标-活动-评价三对齐表」——判定方式=机（对齐表条目数 == 三层学习目标数，且每条含可观察动词与评价方式）+ 人（评价方式是否可观察、有无「理解/掌握」等糊弄动词）；阈值=100% 学习目标须同时有对应活动与评价证据，缺一即退回报。
 
 ## 旧课件教学逻辑诊断（v3.8.0 增补 · Loop B）
 
@@ -184,31 +185,19 @@ maxTurns: 50
 - 学生可见文本一层信息，细节移入讲授提示或讲义
 
 
-## 接口契约（Interface Contract · 2026-09-30 补齐 · v3.12.0 改为单一数据源引用）
-
-> 🔴 **result_envelope 硬约束**：产出必须以**必填六字段**
-> （`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`）
-> 构成的 JSON 块开头，置于产出正文**最前**。
-> 缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
+## 接口契约（Interface Contract · v3.17.0 单一数据源引用）
 
 **角色分类**：DESIGNER
 
-### 上行信封（回传必填 · 字段定义见 `references/result-envelope.yaml`，此处不复述）
+### 上行信封（回传必填 · 字段定义唯一源 = `references/result-envelope.yaml`，此处不复述）
 
-必填：`agent_id`=`pedagogy-architect` / `task_id` / `phase` / `status` / `confidence` / `deliverable_summary`
-选填：`evidence` / `issues` / `next_agent_hint` / `metrics`
+信封必填 6 字段（`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`），选填 4 字段（`evidence`/`issues`/`next_agent_hint`/`metrics`）；完整判据与示例见 `references/result-envelope.yaml`（唯一源），由 `harness.py verify-envelope` 执行。
 
-**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；
-无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+- 本成员 `agent_id` = `pedagogy-architect`；**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
+- 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`；信封 JSON 块置于产出正文最前，缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
 
-> **v3.12.0 变更**：本节此前逐字复制一份完整 JSON 到每个 agent MD
-> （4 份 × 11 行 ≈ 64 行、44 个字段实例），任一字段增删需改 4 处。
-> 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
-> 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-
-**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
-——回传只给**落盘路径 + ≤800 字摘要**，全文不进对话；上限见 `budgets.max_artifact_bytes`。
-跨成员问题一律经主理人中转（不得直接找其他成员）。
+**交接方式（v3.16.0 补齐 · v3.17.0 修正指向）**：只给落盘路径 + 摘要（`handoff_mode: path_only`，唯一源 `config/harness.yaml#context`）；**上限是 `context.summary_max_chars`（800）**，不是 `budgets.max_artifact_bytes`（那是成员产物全文的字节上限，两者是不同东西）。跨成员问题一律经主理人中转（不得直接找其他成员）。
 
 **合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
 
@@ -220,9 +209,6 @@ maxTurns: 50
 
 ❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
 → 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
-
-- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`

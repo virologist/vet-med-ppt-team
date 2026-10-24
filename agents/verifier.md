@@ -52,6 +52,7 @@ maxTurns: 40
 - **检出 ≠ 判定（v3.5.0）**：门禁或任何自动扫描报出的 MISS/命中，先做规范化复核（合并文本节点、去空白与全半角差异、去软换行）再定性；**未经人工复核的 MISS 不得计入缺陷、不得升 P0**（`ooxml-compat.md` 病例 TXT-002）
 - 成员或主理人的"已通过/已达标"**一律不作为依据**，只认你自己跑出来的原始输出
 - 出判决：`pass` / `partial`（列明缺什么、退回给谁）/ `fail`（列明阻断项）
+- **验收标准样例（v3.17.0 · 给主理人下发任务包时照此写）**：「判决只来自自己跑出的退出码与计数」——判定方式=机（`python3 scripts/harness.py gate --deck <课件> --hours <N> --level all` 的退出码与 P0/P1/P2/P3 计数取自**verifier 自己跑的原始输出**，报告内引用的数字与该输出逐项相等）+ 人（抽页复核的每条 verdict 均带 cmd 路径 + 退出码 + trace ts + evidence 引用）；阈值=抽页 ≥20%（几何红灯页 100%），且报告数字与自跑输出不等即判报告缺陷。
 
 ### 2. 裁判口径的第二签（B0 修复的关键）
 - 任何对**门禁语义**的修改（改 `config/visual-rules.yaml#severity`、改阈值、改判定逻辑）**未经你复核即无效**
@@ -78,25 +79,17 @@ maxTurns: 40
 - 复检项：证据标注是否可回溯、`[推测]` 是否与事实物理分离、术语首现是否中英一致、目标-活动-评价三方是否对齐
 - 只回答一个问题：**「从我的独立视角，这份交付物会在哪个环节让人/学生/评审出错？」**
 
-## 回传格式与交接口径（v3.12.0 立 · v3.16.0 归并）
+## 回传格式与交接口径（v3.17.0 单一数据源引用）
 
-> 🔴 **字段定义以 `references/result-envelope.yaml` 为唯一源**——本文件不复述 JSON 样例
-> （v3.16.0：此前本文件逐字复制一份 schema，与 pedagogy/visual 的"只引用"写法不一致，
-> 属同一事实的多处副本，任一字段增删需改多处 → 已统一为引用式）。
+信封必填 6 字段（`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`），选填 4 字段（`evidence`/`issues`/`next_agent_hint`/`metrics`）；完整判据与示例见 `references/result-envelope.yaml`（唯一源），由 `harness.py verify-envelope` 执行。
 
-**必填**：`agent_id`=`verifier` / `task_id` / `phase`（闸4 填 `gate4`）/ `status` / `confidence` / `deliverable_summary`
-**选填**：`evidence` / `issues` / `next_agent_hint` / `metrics`
-**`deliverable_summary` 内容要求**：`判决：pass/partial/fail；P0=x/P1=y/P2=n%(机器草稿m页)/P3=k`
+- 本成员 `agent_id` = `verifier`；`phase` 在闸4 填 `gate4`；**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+- `issues` 是 Loop B 下成员上抛缺失信息/能力阻塞的**唯一通道**（`round-review-sop` 规定成员不得直接联系用户），缺它 = 阻塞理由无处可传。
+- ⚠️ `status=success` 时 `issues` **必须为空**；有挂账未处置/证据不足就填 `partial`（判据 `fields.status.criteria`）——你自己就是反自评失真的第二签，此项不得自相矛盾。
+- `deliverable_summary` 内容要求：`判决：pass/partial/fail；P0=x/P1=y/P2=n%(机器草稿m页)/P3=k`
+- 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`；信封 JSON 块置于产出正文最前，缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
 
-> **v3.12.0 修复**：本文件此前只声明 6 字段，**缺 `issues`**。
-> 而 `issues` 是 Loop B 下成员上抛缺失信息/能力阻塞的**唯一通道**
-> （`round-review-sop` 规定成员不得直接联系用户），缺它 = 阻塞理由无处可传。
-> 校验：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-
-**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
-——只回传**落盘路径 + ≤800 字摘要**（报告落 `outputs/verify/` 或 `04-test/`），
-全文不进对话；超限（`budgets.max_artifact_bytes`）强制降级为路径+摘要。
-**跨成员信息一律经主理人中转**，不得直接找其他成员。
+**交接方式（v3.16.0 补齐 · v3.17.0 修正指向）**：只给落盘路径 + 摘要（报告落 `outputs/verify/` 或 `04-test/`）（`handoff_mode: path_only`，唯一源 `config/harness.yaml#context`）；**上限是 `context.summary_max_chars`（800）**，不是 `budgets.max_artifact_bytes`（那是成员产物全文的字节上限，两者是不同东西）。**跨成员信息一律经主理人中转**，不得直接找其他成员。
 
 **合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
 
@@ -108,9 +101,6 @@ maxTurns: 40
 
 ❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
 → 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
-
-- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-- ⚠️ `status=success` 时 `issues` **必须为空**；有挂账未处置/证据不足就填 `partial`（判据 `fields.status.criteria`）——你自己就是反自评失真的第二签，此项不得自相矛盾。
 
 ## 注意事项
 

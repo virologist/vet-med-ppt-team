@@ -20,6 +20,7 @@ test_fix_md_image_refs.py 与 ensure_settings 覆盖）。
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -252,6 +253,9 @@ def main():
         # ── 场景 8（v3.16.0 F6）：质量收敛判据 ──────────────────────────
         # 背景：loop_b.budgets.no_progress_threshold 此前**零命中**（配了无执行者），
         #   五类终止条件全是工作量/交互维度，机器检不出"缺陷数已不再下降"。
+        # v3.17.0 B2-2：手工 --p0/--p1/--p2 在"已有手工历史"后被**强制**要求
+        #   --verify-json（治递减假数序列绕过）——本用例用手工值，故显式声明
+        #   --allow-unverified（逃生口，须留痕）以继续验证 streak 逻辑本身。
         with tempfile.TemporaryDirectory() as w4:
             deck4 = os.path.join(w4, "d.pptx")
             make_deck(deck4)
@@ -260,9 +264,11 @@ def main():
             r1, _, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                             "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
             r2, so2, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
-                              "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+                              "--p0", "3", "--p1", "2", "--p2", "5",
+                              "--allow-unverified", "--workspace", w4])
             r3, so3, se3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
-                                "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+                                "--p0", "3", "--p1", "2", "--p2", "5",
+                                "--allow-unverified", "--workspace", w4])
             s2 = jout(so2)
             check("质量收敛：第 1、2 轮未达阈值（exit 0，streak=0/1），第 3 轮触发（exit 1）",
                   r1 == 0 and r2 == 0 and s2.get("no_progress_streak") == 1 and r3 == 1,
@@ -289,9 +295,11 @@ def main():
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w5])   # 5
             run(["loop", "continue", "--decision", "accept", "--confirmed",
-                 "--p0", "1", "--p1", "2", "--p2", "5", "--workspace", w5])   # 3（下降）
+                 "--p0", "1", "--p1", "2", "--p2", "5",
+                 "--allow-unverified", "--workspace", w5])   # 3（下降）
             r6, so6, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
-                              "--p0", "2", "--p1", "2", "--p2", "5", "--workspace", w5])  # 4
+                              "--p0", "2", "--p1", "2", "--p2", "5",
+                              "--allow-unverified", "--workspace", w5])  # 4
             s6 = jout(so6)
             check("质量收敛：出现下降后 streak 归零 → 不触发（exit 0）",
                   r6 == 0 and s6.get("no_progress") is False
@@ -300,15 +308,20 @@ def main():
         # ── 场景 9（v3.16.0 F6 补）：质量数**报告优先**，自报为辅 ──────────
         # 背景：--p0/--p1/--p2 手工值理论可注水；verify_deck 早有 --json 报告，
         #   机器复算必须是第一数据源，且来源要写进快照（可追溯 > 看起来自动）。
+        # v3.17.0 B2-2：报告必须**绑定本轮课件**（stats.file），否则"别处课件的报告"
+        #   会被照单全收参与收敛判定 —— 本节 report() 一律带上本轮课件路径。
         with tempfile.TemporaryDirectory() as w8:
             deck8 = os.path.join(w8, "g.pptx")
             make_deck(deck8)
+            other8 = os.path.join(w8, "other.pptx")
+            make_deck(other8)
             run(["loop", "start", "--deck", deck8, "--workspace", w8])
 
-            def report(name, gate):
+            def report(name, gate, stats_file=None):
                 p = os.path.join(w8, f"{name}.json")
                 with open(p, "w", encoding="utf-8") as f:
-                    json.dump({"gate": gate, "stats": {}}, f)
+                    json.dump({"gate": gate,
+                               "stats": {"file": stats_file or deck8}}, f)
                 return p
 
             real = report("real", {"p0": 5, "p1": 1, "note_coverage": 0.62,
@@ -351,6 +364,8 @@ def main():
                   f"got {rv4} {sev4[:160]}")
 
             # ⑤ 仅手工（无报告）→ source=manual 且标记未核验
+            #    ⚠ v3.17.0 B2-2：本轮 history 里已有 verify_json 来源（无手工条目），
+            #    故手工值仍可作为"首次自报"进入（source=manual）。
             rv5, sov5, sev5 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                    "--p0", "2", "--p1", "1", "--p2", "3", "--workspace", w8])
             s5 = jout(sov5)
@@ -358,6 +373,144 @@ def main():
                   rv5 == 0 and s5.get("quality_source") == "manual"
                   and s5.get("quality_snapshot", {}).get("unverified")
                   and "source=manual" in (sev5 or ""), f"got {sov5[:200]} se={sev5[:120]}")
+
+            # ⑥ 报告不可解析 → 显式报错（不取 0、不退回手工值）
+            badjson = os.path.join(w8, "broken.json")
+            with open(badjson, "w", encoding="utf-8") as f:
+                f.write("{ NOT JSON")
+            rv6, _, sev6 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--verify-json", badjson, "--workspace", w8])
+            check("报告不可解析 → exit 2 且原文说明不按 0 处理",
+                  rv6 == 2 and "不可解析" in (sev6 or "") and "不按 0 处理" in (sev6 or ""),
+                  f"got {rv6} {sev6[:160]}")
+
+            # ⑦ **别处课件的报告** → 必须被拒（不得参与本轮收敛判定）
+            wrong = report("wrong_deck", {"p0": 0, "p1": 0, "p2_block": False},
+                           stats_file=other8)
+            rv7, _, sev7 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--verify-json", wrong, "--workspace", w8])
+            check("别处课件的报告 → 拒绝采用（exit 2，原文明示不匹配）",
+                  rv7 == 2 and "另一份课件" in (sev7 or ""),
+                  f"got {rv7} {sev7[:200]}")
+
+            # ⑧ 报告缺 stats.file → 无法确认归属，必须被拒（不得静默接受）
+            nostats = os.path.join(w8, "nostats.json")
+            with open(nostats, "w", encoding="utf-8") as f:
+                json.dump({"gate": {"p0": 1, "p1": 0, "p2_block": False}}, f)
+            rv8, _, sev8 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--verify-json", nostats, "--workspace", w8])
+            check("报告缺 stats.file → 拒绝采用（无法确认对应哪份课件）",
+                  rv8 == 2 and "stats" in (sev8 or ""),
+                  f"got {rv8} {sev8[:200]}")
+
+        # ── 场景 10（v3.17.0 B2-2）：手工填数被"强制 verify-json"规则拦下 ─────
+        # 攻击实测：手工 --p0 逐轮递减（9→7→5→3）能让每轮都判"有进展"，
+        #   而真实情况该课件 P0 恒为 3、从未变好 → 收敛判据永不触发。
+        with tempfile.TemporaryDirectory() as w9:
+            deck9 = os.path.join(w9, "h.pptx")
+            make_deck(deck9)
+            run(["loop", "start", "--deck", deck9, "--workspace", w9])
+            ra1, _, sea1 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--p0", "9", "--p1", "0", "--p2", "0", "--workspace", w9])
+            check("递减假数序列：第 1 轮手工自报放行（exit 0，source=manual）",
+                  ra1 == 0, f"got {ra1} {sea1[:160]}")
+            ra2, _, sea2 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--p0", "7", "--p1", "0", "--p2", "0", "--workspace", w9])
+            check("递减假数序列：第 2 轮手工自报被拦下（exit 2，明示须用 --verify-json）",
+                  ra2 == 2 and "拒绝进位" in (sea2 or "") and "--verify-json" in (sea2 or ""),
+                  f"got {ra2} {sea2[:200]}")
+            sa9 = jout(run(["loop", "status", "--workspace", w9])[1])
+            check("递减假数序列：被拦下的轮次**未**进位（quality_history 仍只有 1 条）",
+                  len(sa9.get("quality_history", [])) == 1,
+                  f"got {sa9.get('quality_history')}")
+            # 逃生口：显式 --allow-unverified → 放行但**留痕**（blocker + source 标记）
+            ra3, _, sea3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                "--p0", "7", "--p1", "0", "--p2", "0",
+                                "--allow-unverified", "--workspace", w9])
+            sa9b = jout(run(["loop", "status", "--workspace", w9])[1])
+            kinds = [b.get("kind") for b in sa9b.get("blockers", [])]
+            check("逃生口 --allow-unverified：放行但登记 blocker 事件（留痕）",
+                  ra3 == 0 and "unverified_quality_source" in kinds,
+                  f"got {ra3} blockers={kinds}")
+            check("逃生口 --allow-unverified：快照 source 标为 manual_unverified（可被下游发现）",
+                  any(h.get("source") == "manual_unverified"
+                      for h in sa9b.get("quality_history", [])),
+                  f"got {[h.get('source') for h in sa9b.get('quality_history', [])]}")
+
+        # ── 场景 11（v3.17.0 B2-2）：make-gate 必须发现 manual 来源 ──────────
+        with tempfile.TemporaryDirectory() as w10:
+            deck10 = os.path.join(w10, "i.pptx")
+            make_deck(deck10)
+            run(["loop", "start", "--deck", deck10, "--workspace", w10])
+            run(["loop", "continue", "--decision", "accept", "--confirmed",
+                 "--p0", "3", "--p1", "1", "--p2", "0", "--workspace", w10])
+            rm1, som1, _ = run(["loop", "make-gate", "--workspace", w10])
+            reasons = " ".join(jout(som1).get("reasons", []))
+            check("make-gate：quality_history 含手工来源 → 阻断并指明（exit≠0）",
+                  rm1 != 0 and "非机器复算来源" in reasons,
+                  f"got {rm1} {reasons[:200]}")
+
+        # ── 场景 12（v3.17.0 B2-2）：收敛判据三情形（单元级）────────────────
+        # 比较次数 = len(hist)-1：只有 1 条快照 → 无从比较 → 不触发。
+        try:
+            sys.path.insert(0, HERE)
+            import harness as _h
+            streak1 = _h._loop_no_progress_streak([{"round": 1, "p0p1": 5}])
+            streak_flat = _h._loop_no_progress_streak(
+                [{"round": 1, "p0p1": 5}, {"round": 2, "p0p1": 5}, {"round": 3, "p0p1": 5}])
+            streak_down = _h._loop_no_progress_streak(
+                [{"round": 1, "p0p1": 5}, {"round": 2, "p0p1": 3}, {"round": 3, "p0p1": 2}])
+            check("收敛判据③：只有 1 条快照 → 不触发（比较次数 = len-1，streak=0）",
+                  streak1 == 0, f"got {streak1}")
+            check("收敛判据①：连续持平 → streak 累积（2 次比较 → streak=2）",
+                  streak_flat == 2, f"got {streak_flat}")
+            check("收敛判据②：逐轮下降 → streak 归零（不触发）",
+                  streak_down == 0, f"got {streak_down}")
+        except Exception as e:
+            check("收敛判据三情形（单元级）", False, f"import/调用失败：{e}")
+
+        # ── 场景 13（v3.17.0 B2-3）：task_state.json 持久化加固 ──────────────
+        with tempfile.TemporaryDirectory() as w11:
+            ws = os.path.join(w11, ".workbuddy")
+            os.makedirs(ws, exist_ok=True)
+            sp = os.path.join(ws, "task_state.json")
+            run(["state", "init", "--workspace", w11])
+            rs1, _, _ = run(["state", "set", "--stage", "2", "--workspace", w11])
+            check("task_state：正常 set 放行（exit 0）", rs1 == 0, f"got {rs1}")
+            # ① 篡改 task_id → 报警 + 非 0 退出 + 不推进
+            with open(sp, encoding="utf-8") as f:
+                d = json.load(f)
+            d["task_id"] = "t-DIFFERENT-PROCESS"
+            with open(sp, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+            rs2, _, se2 = run(["state", "set", "--stage", "3", "--workspace", w11])
+            with open(sp, encoding="utf-8") as f:
+                d2 = json.load(f)
+            check("task_state：篡改 task_id 后 set → 报警 + 非 0 退出（并发防护命中）",
+                  rs2 != 0 and "task_id" in (se2 or ""), f"got {rs2} {se2[:200]}")
+            check("task_state：篡改后**未推进**（current_stage 仍为 2）",
+                  d2.get("current_stage") == 2, f"got {d2.get('current_stage')}")
+            # ② 损坏文件 → 拒绝写入 + 原文件不被覆盖
+            with open(sp, "w", encoding="utf-8") as f:
+                f.write("BAD")
+            before = open(sp, encoding="utf-8").read()
+            rs3, _, se3 = run(["state", "set", "--stage", "3", "--workspace", w11])
+            after = open(sp, encoding="utf-8").read()
+            check("task_state：文件损坏 → set 拒绝写入（非 0 退出）",
+                  rs3 != 0 and "损坏" in (se3 or ""), f"got {rs3} {se3[:200]}")
+            check("task_state：文件损坏 → 原文件**不被覆盖**（保留供人工修）",
+                  after == before == "BAD", f"got {after!r}")
+            # ③ 非法 JSON 值 → 显式报错（不静默存字符串）
+            with tempfile.TemporaryDirectory() as w12:
+                run(["state", "init", "--workspace", w12])
+                rs4, _, se4 = run(["state", "set", "--key", "quality_history",
+                                   "--value", "xxx", "--workspace", w12])
+                sp12 = os.path.join(w12, ".workbuddy", "task_state.json")
+                d12 = json.load(open(sp12, encoding="utf-8"))
+                check("task_state：--value 非法 JSON → 显式报错（非 0 退出）",
+                      rs4 != 0 and "不是合法 JSON" in (se4 or ""), f"got {rs4} {se4[:200]}")
+                check("task_state：--value 非法 JSON → **不得静默存字符串**（键不存在）",
+                      "quality_history" not in d12, f"got {d12.get('quality_history')!r}")
 
         # 终止原因唯一源：yaml 新增的「连续 N 轮无质量进展」可用，自造原因仍被拒
         with tempfile.TemporaryDirectory() as w6:
@@ -379,6 +532,121 @@ def main():
                               '[{"round":1,"p0":3,"p1":2,"p2":5}]', "--workspace", w7])
             check("白名单联动：quality_history 可写入 task_state.json（context.state_allowed_keys）",
                   r9 == 0, f"got {r9} {se9[:120]}")
+            # v3.17.0 补强：不只看 exit 0，还要确认**值真的以 list 形态落盘**
+            #   （静默存字符串会让下游 isinstance(h, dict) 过滤掉 → 判据静默失效）
+            sp7 = os.path.join(w7, ".workbuddy", "task_state.json")
+            d7 = json.load(open(sp7, encoding="utf-8"))
+            qh7 = d7.get("quality_history")
+            check("白名单联动：quality_history 以 list[dict] 形态落盘（非字符串）",
+                  isinstance(qh7, list) and isinstance(qh7[0], dict)
+                  and qh7[0].get("p0") == 3, f"got {qh7!r}")
+
+    # ── 场景 14（v3.17.0 收尾）：NCBI api_key / 限速 / 退避告警 / label 真读 ──
+    # 背景：NCBI 对无 key 的匿名访问限速 3 req/s，连续批量请求会被 abuse 系统封禁
+    #   （Access Denied / 429，部分网络路径下表现为 SSL EOF）→ 存量清单跑不完。
+    # 收尾批：api_key 支持（真值只从环境变量读）+ 可配限速 + 遇速率限制指数退避
+    #   并**显式告警**（不静默重试到超时）。
+    try:
+        sys.path.insert(0, HERE)
+        import harness as _h
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        stub_state = {"queries": [], "mode": "ok"}
+
+        class _Stub(BaseHTTPRequestHandler):
+            def do_GET(self):
+                stub_state["queries"].append(self.path)
+                if stub_state["mode"] == "429":
+                    self.send_response(429)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                m = re.search(r"term=(\d+)", self.path)
+                ids = [m.group(1)] if m and m.group(1) == "1954218" else []
+                body = json.dumps({"esearchresult": {"count": str(len(ids)),
+                                                     "idlist": ids}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), _Stub)
+        port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        ep_url = f"http://127.0.0.1:{port}/esearch.fcgi"
+        try:
+            # ① api_key 进 URL（key 真值只从环境变量读 → 这里直接传函数参数）
+            stub_state["queries"].clear()
+            r = _h.pmid_existence_check(["1954218"], endpoint=ep_url, sleep=0,
+                                        api_key="TESTKEY-123")
+            check("api_key：请求 URL 带 &api_key=（key 只来自环境变量→函数参数）",
+                  r.get("1954218") is True
+                  and stub_state["queries"]
+                  and "api_key=TESTKEY-123" in stub_state["queries"][0],
+                  f"got {r} q={stub_state['queries']}")
+            # ② 无 key：URL 不带 api_key，且限速仍为匿名档
+            stub_state["queries"].clear()
+            r2 = _h.pmid_existence_check(["1954218"], endpoint=ep_url, sleep=0)
+            check("无 key：URL 不含 api_key（不泄漏/不乱拼参数）",
+                  r2.get("1954218") is True
+                  and stub_state["queries"]
+                  and "api_key" not in stub_state["queries"][0],
+                  f"got {r2} q={stub_state['queries']}")
+            tsc = _h.load_three_source_config()
+            ep_nokey = _h._esearch_params(tsc)
+            ep_key = _h._esearch_params({**tsc, "source_verification": {
+                **tsc.get("source_verification", {}),
+                "pubmed": {**((tsc.get("source_verification") or {}).get("pubmed") or {}),
+                           "api_key_env": "VET_B2_TEST_KEY"}}})
+            os.environ["VET_B2_TEST_KEY"] = "FAKE-KEY"
+            try:
+                ep_key = _h._esearch_params({**tsc, "source_verification": {
+                    **tsc.get("source_verification", {}),
+                    "pubmed": {**((tsc.get("source_verification") or {}).get("pubmed") or {}),
+                               "api_key_env": "VET_B2_TEST_KEY"}}})
+            finally:
+                os.environ.pop("VET_B2_TEST_KEY", None)
+            check("api_key：yaml 只存**环境变量名**，真值从环境取（有 key→限速 0.11s / 无 key→0.4s）",
+                  ep_nokey["api_key"] == "" and ep_nokey["sleep"] == 0.4
+                  and ep_key["api_key"] == "FAKE-KEY" and ep_key["sleep"] == 0.11,
+                  f"nokey={ep_nokey['api_key']!r}/{ep_nokey['sleep']} "
+                  f"key={ep_key['api_key']!r}/{ep_key['sleep']}")
+            # ③ 429 → 指数退避 + **显式告警**（不静默重试到超时）
+            stub_state["mode"] = "429"
+            stub_state["queries"].clear()
+            alarms = []
+            r3 = _h.pmid_existence_check(["1954218"], endpoint=ep_url, sleep=0,
+                                        max_retries=1, backoff_base=0.05, backoff_cap=0.05,
+                                        suspect_threshold=2, on_alarm=alarms.append)
+            check("429：退避重试后仍失败 → 记 None（网络失败，不计已验证）",
+                  r3.get("1954218") is None, f"got {r3}")
+            check("429：退避**显式告警**「疑似触发 NCBI 速率限制」（不静默重试）",
+                  any("疑似触发 NCBI 速率限制" in a for a in alarms),
+                  f"got {alarms}")
+            check("429：退避后仍再发请求（真退避，不是直接放弃）",
+                  len(stub_state["queries"]) >= 2, f"got {len(stub_state['queries'])}")
+            stub_state["mode"] = "ok"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # ④ sources[*].label 必须被代码真读（此前是"配了无人读"的死配置键）
+        labels = _h._source_labels(_h.load_three_source_config())
+        check("label 死键：sources[*].label 被代码真读（三类来源名都拿到）",
+              labels.get("pubmed") and labels.get("textbook") and labels.get("regulation"),
+              f"got {labels}")
+        src = _h.classify_source({"kind": "textbook", "ref": "ISBN:978-7-117-22282-2"},
+                                 _h.load_three_source_config(), {})
+        check("label 死键：定档结果带来源类型显示名（报告里可见）",
+              src.get("label") == labels.get("textbook"), f"got {src.get('label')!r}")
+    except Exception as e:
+        check("B2 收尾：api_key / 退避 / label 用例", False, f"import/调用失败：{e}")
 
     print(f"\n通过 {len(PASS)} / 失败 {len(FAIL)}")
     if FAIL:

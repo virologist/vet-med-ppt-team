@@ -92,7 +92,7 @@ v3.4.2 起的回归测试 (test_harness.py) 增"工具使用率"指标：
 ## C. 关联：adjudication-rules.md / sop-stages.md
 
 - **裁决与终检**（六项自检/四门清单/缺陷回流/反自评失真红线）→ `adjudication-rules.md`
-- **六阶段 SOP 细节**（闸1-闸4.5 完整流程）→ `sop-stages.md`
+- **五闸 SOP 细节**（闸1-闸4.5 完整流程）→ `sop-stages.md`
 - **harness 工程细节**（开工三步/降级协议/上下文隔离/门禁退出码）→ `harness-engine.md`
 
 本文件只承担"五条铁律 + 工具纪律"的承接；裁决与 SOP 仍在原位。

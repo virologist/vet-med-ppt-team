@@ -84,10 +84,8 @@ maxTurns: 50
 
 1. 接收主理人任务包（写回门禁 / 批量驾驶 / 制作包）
 2. 执行门禁三步（分级 verify → manifest/台账 → 备份核对）
-3. 回传信封：必填 `agent_id/task_id/phase/status/confidence/deliverable_summary`，
-   选填 `evidence/issues/next_agent_hint/metrics`
-   ——**字段定义以 `references/result-envelope.yaml` 为唯一源，本文件不复述**
-   （v3.12.0 修复：此前本文件两处给出互斥 schema，§75 那套连 6 个必填字段都不含，按它产出必被判失败）
+3. 回传信封：字段定义以 `references/result-envelope.yaml` 为唯一源，本文件不复述（清单见下节「上行信封」）。
+4. **验收标准样例（v3.17.0 · 给主理人下发任务包时照此写）**：「写回门禁」——判定方式=机（`python3 scripts/harness.py gate --deck <课件> --hours <N> --level P0` 退出码 = 0 且自引入缺陷 = 0）+ 人（备份已生成、页数守恒、台账记录已落 `deck_registry.json`）；阈值=退出码必须为 0 且 P0 计数 = 0，否则不予写回磁盘。
 
 ## Loop B 制作纪律（v3.8.0 增补 · 旧课件优化场景）
 
@@ -127,31 +125,19 @@ maxTurns: 50
 > 不由你自行决定。
 
 
-## 接口契约（Interface Contract · 2026-09-30 补齐 · v3.16.0 改为单一数据源引用）
-
-> 🔴 **result_envelope 硬约束**：产出必须以**必填六字段**
-> （`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`）
-> 构成的 JSON 块开头，置于产出正文**最前**。
-> 缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
+## 接口契约（Interface Contract · v3.17.0 单一数据源引用）
 
 **角色分类**：EXECUTOR
 
-### 上行信封（回传必填 · 字段定义见 `references/result-envelope.yaml`，此处不复述）
+### 上行信封（回传必填 · 字段定义唯一源 = `references/result-envelope.yaml`，此处不复述）
 
-必填：`agent_id`=`ppt-producer` / `task_id` / `phase` / `status` / `confidence` / `deliverable_summary`
-选填：`evidence` / `issues` / `next_agent_hint` / `metrics`
+信封必填 6 字段（`agent_id`/`task_id`/`phase`/`status`/`confidence`/`deliverable_summary`），选填 4 字段（`evidence`/`issues`/`next_agent_hint`/`metrics`）；完整判据与示例见 `references/result-envelope.yaml`（唯一源），由 `harness.py verify-envelope` 执行。
 
-**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；
-无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+- 本成员 `agent_id` = `ppt-producer`；**status 自评准则**：完整满足→`success`；部分满足且 issues 非空→`partial`；无法满足需重试→`failed`；前置条件不足或能力不可用→`blocked`。
+- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
+- 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`；信封 JSON 块置于产出正文最前，缺字段/JSON 不可解析 = 主理人 VERIFY 阶段直接判 `partial` 并触发补充重试。
 
-> **v3.16.0 变更**：本节此前逐字复制一份完整 JSON 到本 MD（与 pedagogy/visual 的"只引用"写法不一致，
-> 也与 `references/result-envelope.yaml` 形成两份副本——任一字段增删需改多处）。
-> 现统一由 `references/result-envelope.yaml` 单点定义，本文件只声明必填项与角色身份。
-> 校验命令：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-
-**交接方式（v3.16.0 补齐）**：`config/harness.yaml#context.handoff_mode = path_only`
-——回传只给**落盘路径 + ≤800 字摘要**，全文不进对话；上限见 `budgets.max_artifact_bytes`。
-跨成员问题一律经主理人中转，不得直接找其他成员。
+**交接方式（v3.16.0 补齐 · v3.17.0 修正指向）**：只给落盘路径 + 摘要（`handoff_mode: path_only`，唯一源 `config/harness.yaml#context`）；**上限是 `context.summary_max_chars`（800）**，不是 `budgets.max_artifact_bytes`（那是成员产物全文的字节上限，两者是不同东西）。跨成员问题一律经主理人中转，不得直接找其他成员。
 
 **合规写法示例（v3.16.0）**——`result-envelope.yaml#validation.content_rules` 已接进校验器，以下写法才会被放行：
 
@@ -163,9 +149,6 @@ maxTurns: 50
 
 ❌ **会被退回的反例**：`"confidence":"高"` + `"deliverable_summary":"已优化完成，全部达标"`
 → 命中两条 fail 规则：`confidence_not_bare`（裸标签）与 `deliverable_summary_verifiable`（裸词且无可验证计数）。
-
-- 完整判据唯一源：`references/result-envelope.yaml#validation.content_rules`；执行：`python3 scripts/harness.py verify-envelope --path <产出文件>`
-- ⚠️ `status=success` 时 `issues` **必须为空**；有未决项就填 `partial`（判据 `fields.status.criteria`），否则按自评失真判失败。
 
 **额外预加载（前置门禁）**：
 - `references/harness-engine.md`

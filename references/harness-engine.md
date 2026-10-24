@@ -4,6 +4,16 @@
 > 制定依据：2026-09-29 基线实测——成员不可调度导致整链阻断、静默降级无人察觉、成本与耗时零计量。
 > 原则：**能用代码约束的，绝不靠自觉**。本文件只说明"什么时候跑哪个命令"，规则真身在 yaml。
 
+<!-- 机器比对用镜像块（v3.17.0 新增）：scripts/test_arch_drift.py#T9 把它与
+     config/harness.yaml#stages 逐项比对——改 yaml#stages 必须同步本块，由守卫强制、不靠自觉。 -->
+<!-- STAGE_MIRROR_BEGIN -->
+stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
+stage 1 | 闸2 设计（蓝图∥证据） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
+stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
+stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
+stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
+<!-- STAGE_MIRROR_END -->
+
 ## 1. 开工三步（闸1 内必做，缺一不可）
 
 ```bash
@@ -35,7 +45,7 @@ $H state init --workflow WF-1 --stage 0 --workspace "$W"
 
 ## 3. 状态机纪律
 
-- `current_stage` **只接受 0–3 整数**（v3.0.0 四道闸）；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
+- `current_stage` **只接受 0–4 整数**（唯一源 = `config/harness.yaml#stages`；v3.3.0 起双轨期 0–4 合法）；`M5A2`、`stage_6` 这类便签值一律被 `state set/validate` 拒绝
 - `task_state.json` 只允许 `context.state_allowed_keys` 白名单内的键（防 27KB/32 键式膨胀）
 - 每次阶段切换：`state set --stage N` → 自动追加 `stage_history`，并写 trace
 

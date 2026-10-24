@@ -1,0 +1,493 @@
+# 七维诊断报告 schema（v3.17.0 新建 · 诊断报告的唯一机器可校验结构）
+#
+# 定位：定义「七维精准诊断」产物的声明式结构——字段、必填集、枚举、落盘路径与终止态产物清单。
+# 上位：`references/seven-dimension-rubric.md`（七维定义 / 三级修复路由 / 报告契约的人读骨架）
+#      `references/round-review-sop.md#3.1`（条目八字段）
+#
+# 纪律（违反即返工）：
+#   ① 口径只引用不复制——严重度分级轴、视觉类触发项清单、分级枚举的定义源在别处，
+#      本文件只写 `source:` 指针，不得复制其内容（复制即产生第二规则源）。
+#   ② 八字段不得另立一套——问题条目的必填最小集 = `round-review-sop.md#3.1` 的八字段，
+#      字段名与语义逐字一致；本 schema 另列的补充字段一律可选，不替代、不改名。
+#   ③ 不得另立分级——P0/P1/P2 的口径来自既有源；本文件不产生第四级。
+
+schema_id: vet-med-ppt-team.diagnosis-report
+schema_version: "1.0.0"
+established: "v3.17.0"
+applies_to: 诊断型任务（只诊断不修改）与 Loop B 诊断阶段产物
+
+# ── 口径来源指针（唯一源；本文件不复制其内容）────────────────────────
+sources:
+  rubric: references/seven-dimension-rubric.md          # 七维定义 / 修复路由 / 报告契约
+  findings_8_fields: references/round-review-sop.md#3.1 # 条目八字段（必填最小集）
+  decisions_7: references/round-review-sop.md#4          # 七种用户裁决语义
+  severity_axis: references/round-review-sop.md#3.1     # P0 硬阻断 / P1 交付前清零 / P2 建议（分级轴语义）
+  severity_visual_triggers: config/visual-rules.yaml#severity  # 视觉类 P0/P1/P2 触发项清单（只引用不复制）
+  repair_routing: references/seven-dimension-rubric.md#二 # 三级修复路由（判据 + 对应缺陷来源）
+  judge_modes: references/seven-dimension-rubric.md#一    # 机 / 人 / 机+人（检出≠判定）
+  collapse_roles: references/seven-dimension-rubric.md#五  # 域无关判据与域档案的分工
+  domain_registry: config/domain_config.yaml#domains[]   # 已有域注册表（域 id 取值来源）
+  domain_profiles: config/domain-profiles.yaml           # 域档案（由领域适配批负责创建；本批只引用）
+
+# ── 枚举（全部来自上述源，此处只做取值约束，不做定义）─────────────────
+enums:
+  severity:
+    values: [P0, P1, P2, P3]
+    axis_source: references/round-review-sop.md#3.1
+    visual_trigger_source: config/visual-rules.yaml#severity
+    notes:
+      - P0/P1/P2 的分级轴语义（硬阻断 / 交付前清零 / 建议）以 axis_source 为准。
+      - 视觉类缺陷具体归入哪一级，以 visual_trigger_source 的清单为准（本文件不复制该清单）。
+      - P3 仅来自量规 I5「讲师 AI 教学法」（上游原文即标 P3（建议项）），不是本包新设分级；
+        视觉类无 P3 触发项，故 P3 不得用于任何视觉类缺陷；记录时按 P2 归档并标「建议项=true」。
+      - 本包不新增 P4 或任何第四级。
+  judge_mode:
+    values: [机, 人, 机+人]
+    source: references/seven-dimension-rubric.md#一
+    notes:
+      - 机 = 脚本可判；人 = 人工判读；机+人 = 脚本初筛 + 人工复核（检出≠判定）。
+      - 「round-review-sop.md#3.1」的八字段表格里写作 [机]/[人] 两值，是本枚举的子集；
+        本 schema 为唯一源，条目出现「机+人」时按脚本初筛 + 人工复核记录（不虚报机器覆盖率）。
+  repair_level:
+    values: [大修, 中修, 细节修]
+    source: references/seven-dimension-rubric.md#二
+    notes:
+      - 总修复级 = 取最高级；各条目仍按自身级执行（量规路由规则 2）。
+      - 路由是建议，不等于裁决；须列「若按建议级执行的工作量预估」，由用户整体或逐项降档/升档。
+  dimension_light_5:
+    values: [内容准确性, 知识更新, 教学逻辑, 结构层次, 图文匹配]
+    source: references/round-review-sop.md#3.1
+    notes:
+      - 这是 Loop B 逐轮优化的五维轻量口径，用于问题条目的 `诊断维度` 字段。
+      - 与七维（量规轴）是两条并存的轴，不是同一套：七维走 `scan_matrix`，
+        五维走条目 `诊断维度`；两者靠可选字段 `七维检查项` 关联。
+  owner:
+    values: [dvm, pedagogy, visual]
+    source: references/round-review-sop.md#3.1
+    notes:
+      - 三个值对应本包三类职责：内容/知识更新、教学逻辑/结构层次、图文匹配/视觉。
+      - 「dvm」是历史命名（成员 agent id = dvm-content-expert），其语义是「内容/知识」职责，
+        与具体学科无关；通用化后本枚举不得扩写成学科名（改名属跨批需求，本 schema 不擅改）。
+  user_decision:
+    values: [接受, 部分接受, 返修, 换方向, 暂停, 终止, 沉默]
+    source: references/round-review-sop.md#4
+    notes:
+      - 沉默/超时不构成确认；成员自评与 AI 判断同样不构成确认。
+  conclusion:
+    values: [通过, 存在缺陷, 不适用, 未检查]
+    notes:
+      - 派生规则（确定性，不新增判据）：该维存在 ≥1 条命中条目 → 存在缺陷；无命中且该维全部检查项已判 → 通过；
+        该维在本次课型/任务中不适用 → 不适用；未执行检查 → 未检查（不得写「通过」冒充）。
+
+# ── 报告主体结构 ──────────────────────────────────────────────
+report:
+  meta:
+    report_id:
+      type: string
+      required: true
+      desc: 报告稳定标识（跨轮次不重号），建议 `DR-<deck_id>-<YYYYMMDD>-<序号>`
+    generated_at:
+      type: string
+      required: true
+      format: ISO8601
+      desc: 报告生成时间（必填，无时间戳的诊断报告不得作为增量门禁锚点）
+    generator:
+      type: string
+      required: false
+      desc: 生成者（主理人 / 成员 agent id）
+    deck:
+      type: object
+      required: true
+      desc: 课件标识
+      properties:
+        deck_id:
+          type: string
+          required: true
+          desc: 课件稳定标识（与 `page_id` 命名空间不冲突，建议 `d_<slug>`）
+        title:
+          type: string
+          required: true
+          desc: 课件名（报告标题用）
+        path:
+          type: string
+          required: true
+          desc: 原 PPTX 绝对路径（原件只读，报告只引用不修改）
+        sha256:
+          type: string
+          required: true
+          desc: 原件指纹（增量门禁锚点之一）
+        caliber:
+          type: string
+          required: false
+          values: [single-ppt, course]
+          source: config/visual-rules.yaml#page_caliber_default
+          desc: 页数口径（单次 PPT / 整套课程）；不随场景静默切换
+    collapse:
+      type: object
+      required: true
+      desc: |
+        坍缩选定的域与角色（通用化后必需）：记录本份诊断把「任意教学/培训主题」坍缩到
+        哪个域、激活了哪些角色视角。缺这两项的报告无法复现，也无法被其他域复用。
+      properties:
+        domain_id:
+          type: string
+          required: true
+          source: config/domain_config.yaml#domains[].id
+          desc: 坍缩选定的域 id（取值必须来自域注册表，不得自造）
+        domain_label:
+          type: string
+          required: false
+          desc: 域的中文标签（仅供人读，机器判据取 domain_id）
+        roles:
+          type: array
+          required: true
+          desc: 坍缩激活的角色视角（域无关；缺省按三层复合视角给全）
+          items:
+            role_id:
+              type: string
+              required: true
+              desc: 角色稳定标识（如 `domain-expert` / `instructional-designer` / `meta-architect`）
+            role_label:
+              type: string
+              required: true
+              desc: 角色中文名
+            scope:
+              type: string
+              required: false
+              desc: 该角色负责的检查项范围（如 `A1-A4, S1-S6`）
+    rubric_ref:
+      type: object
+      required: true
+      desc: 本报告使用的量规版本与出处（保证可追溯）
+      properties:
+        path:
+          type: string
+          required: true
+          default: references/seven-dimension-rubric.md
+        version:
+          type: string
+          required: true
+          desc: 量规版本（包内内化版标识）
+        upstream:
+          type: string
+          required: false
+          desc: 内化来源（用于比对上游更新）：`teaching-ppt-studio` v2.6.0 `references/seven-dimension-rubric.md`
+        drift_checked_at:
+          type: string
+          required: false
+          format: ISO8601
+          desc: 最近一次与外部副本比对的时间（外部副本缺失时留空并注明）
+
+  # ── ① 基线（增量门禁锚点）────────────────────────────────────
+  baseline:
+    type: object
+    required: true
+    desc: 增量门禁的锚点——本次诊断所基于的课件物理事实与门禁计数
+    properties:
+      physical_pages:
+        type: integer
+        required: true
+      hidden_pages:
+        type: integer
+        required: true
+      visible_pages:
+        type: integer
+        required: true
+      gate_counts:
+        type: object
+        required: true
+        desc: 门禁原始计数（禁「归零/100%」表述，必须引用原始计数）
+        properties:
+          P0: {type: integer, required: true}
+          P1: {type: integer, required: true}
+          P2: {type: integer, required: true}
+      md5:
+        type: string
+        required: false
+        desc: 原件 md5（与 sha256 二选一或并存）
+      rendered_verified:
+        type: boolean
+        required: true
+        desc: 视觉类结论是否已基于渲染图核实（false 时相关结论必须标注「未经渲染核实」）
+      baseline_ref:
+        type: string
+        required: false
+        desc: 基线快照引用（如 `config/harness.yaml#snapshot` 产出的快照路径）
+
+  # ── ② 七维扫描矩阵 ─────────────────────────────────────────
+  scan_matrix:
+    type: array
+    required: true
+    desc: 全维逐检查项的扫描结果（未命中写 ✓ / hit=false，不得省略未命中项）
+    min_items: 7
+    items:
+      dimension_code:
+        type: string
+        required: true
+        values: ["①", "②", "③", "④", "⑤", "⑥", "⑦"]
+      dimension_name:
+        type: string
+        required: true
+        values: [知识准确性, 教学结构与认知链, 认知负荷与信息密度, 视觉与几何, 学习动力与互动, 评价与岗位对齐, AI 融合与数智素养]
+      conclusion:
+        type: string
+        required: true
+        values_ref: enums.conclusion
+      score:
+        type: number
+        required: false
+        nullable: true
+        desc: |
+          可选数值得分。量规未定义跨维度的数值评分标尺，故默认留空；
+          若填写则必须同时写明 `score_basis`（评分口径来源），不得凭空造 0-100 分。
+      score_basis:
+        type: string
+        required: false
+        desc: 得分口径出处（填了 `score` 才必须填）
+      hit_count:
+        type: integer
+        required: true
+        desc: 该维命中的检查项数（派生：命中条目数）
+      items:
+        type: array
+        required: true
+        desc: 该维的逐检查项结果（检查项编号取量规定义，不得自造编号）
+        items:
+          check_id:
+            type: string
+            required: true
+            desc: 检查项编号（如 `A1`；全集见 `references/seven-dimension-rubric.md#一`）
+          hit:
+            type: boolean
+            required: true
+          hit_count:
+            type: integer
+            required: false
+            desc: 命中处数（未命中可省）
+          severity:
+            type: string
+            required: false
+            values_ref: enums.severity
+          judge_mode:
+            type: string
+            required: false
+            values_ref: enums.judge_mode
+          suggested_repair:
+            type: string
+            required: false
+            values_ref: enums.repair_level
+          evidence:
+            type: string
+            required: false
+            desc: 命中证据摘要（页码/素材/核验来源）
+
+  # ── ③ 问题条目清单（八字段必填最小集）─────────────────────────
+  findings:
+    type: array
+    required: true
+    desc: |
+      命中项的明细条目。必填最小集 = `references/round-review-sop.md#3.1` 的八字段，
+      字段名与语义逐字一致，缺任一项视为条目不合格。
+      本 schema 另列的补充字段一律可选，不替代、不改名、不改语义于八字段。
+    item_required_fields:
+      - item_id
+      - page_id
+      - 原文摘录
+      - 关联素材
+      - 诊断维度
+      - 严重度
+      - 判定方式
+      - 责任人
+    items:
+      item_id:
+        type: string
+        required: true
+        desc: 稳定标识（如 `R2-D3-007`），跨轮次不重号
+      page_id:
+        type: string
+        required: true
+        desc: 稳定页面 ID（如 `s12`），不随改写变化
+      原文摘录:
+        type: string
+        required: true
+        desc: 该页当前实际文字，供用户对照
+      关联素材:
+        type: string
+        required: true
+        desc: 对应 `_assets/` 下的具体文件；无图则写「无」（不得留空）
+      诊断维度:
+        type: string
+        required: true
+        values_ref: enums.dimension_light_5
+        desc: Loop B 五维轻量口径（与七维是两条并存轴）
+      严重度:
+        type: string
+        required: true
+        values_ref: enums.severity
+      判定方式:
+        type: string
+        required: true
+        values_ref: enums.judge_mode
+      责任人:
+        type: string
+        required: true
+        values_ref: enums.owner
+      # ── 以下为可选补充字段（不改变八字段的必填集）────────────
+      七维检查项:
+        type: string
+        required: false
+        desc: 触发本条目的量规检查项编号（如 `A1`），用于把五维条目挂回七维扫描矩阵
+      建议修复级:
+        type: string
+        required: false
+        values_ref: enums.repair_level
+        desc: 量规路由规则 1 要求每条缺陷标修复级；缺失时该项不计入修复级汇总
+      建议项:
+        type: boolean
+        required: false
+        desc: 是否为「建议项」（P3 / 维⑦ P2 默认建议但可整体跳过）
+      证据:
+        type: string
+        required: false
+        desc: 来源定位（PMID/DOI/指南条目 + 适用边界 + 未决项）；无法核验须标 `[待核实]`
+      工作量预估:
+        type: string
+        required: false
+        desc: 若按建议修复级执行的工作量预估（量规路由规则 4 要求）
+      状态:
+        type: string
+        required: false
+        values: [pending, frozen, invalidated, withdrawn]
+        desc: 与 Loop B 状态机对接时使用；纯诊断任务可全部为 `pending`
+
+  # ── ④ 修复级汇总与路由建议 ─────────────────────────────────
+  repair_summary:
+    type: object
+    required: true
+    desc: 修复级汇总 + 路由建议（路由=建议，不是裁决）
+    properties:
+      by_level:
+        type: object
+        required: true
+        desc: 各修复级条目数与条目清单（条目数须与 `findings` 实际一致）
+        properties:
+          大修:
+            type: object
+            required: true
+            properties:
+              count: {type: integer, required: true}
+              item_ids: {type: array, items: {type: string}, required: true}
+              workload_estimate: {type: string, required: false}
+          中修:
+            type: object
+            required: true
+            properties:
+              count: {type: integer, required: true}
+              item_ids: {type: array, items: {type: string}, required: true}
+              workload_estimate: {type: string, required: false}
+          细节修:
+            type: object
+            required: true
+            properties:
+              count: {type: integer, required: true}
+              item_ids: {type: array, items: {type: string}, required: true}
+              workload_estimate: {type: string, required: false}
+      overall:
+        type: string
+        required: true
+        values_ref: enums.repair_level
+        desc: 总建议级 = 取最高级（量规路由规则 2）
+      track_combo:
+        type: string
+        required: false
+        desc: 修复级 × 轨的组合建议（如「大修+B 轨（倒序重写）」）；轨由既有三轨定义给出
+      delta_gate_note:
+        type: string
+        required: false
+        desc: 增量门禁提示（任何修复级施工后自引入缺陷须为 0；不因修复级豁免）
+
+  # ── ⑤ 待用户裁决 ───────────────────────────────────────────
+  pending_decisions:
+    type: array
+    required: true
+    desc: 待用户裁决项（沉默不构成确认，不得自动推进）
+    items:
+      item_id:
+        type: string
+        required: true
+        desc: 关联的问题条目 `item_id`
+      当前建议修复级:
+        type: string
+        required: true
+        values_ref: enums.repair_level
+      可选档位:
+        type: array
+        required: true
+        items: {type: string, values_ref: enums.repair_level}
+        desc: 用户可降档/升档的档位集合
+      工作量预估:
+        type: string
+        required: false
+      user_decision:
+        type: string
+        required: false
+        values_ref: enums.user_decision
+        desc: 用户裁决（未裁决时留空，不得预填）
+      decided_at:
+        type: string
+        required: false
+        format: ISO8601
+      note:
+        type: string
+        required: false
+        desc: 裁决备注（如「维⑦ P2 项整体跳过」）
+
+# ── 落盘路径约定 ───────────────────────────────────────────────
+artifacts:
+  root: <工作区>/<课件名>_wip/_diagnosis/
+  files:
+    - role: machine
+      path: <root>/<deck_id>_diagnosis_<YYYYMMDD-HHMM>.yaml
+      desc: 本 schema 的机器可校验实例（唯一数据源）
+    - role: human
+      path: <root>/<deck_id>_diagnosis_<YYYYMMDD-HHMM>.md
+      desc: 人读渲染版，章节顺序 = 本 schema `report` 段的顺序（基线 → 扫描矩阵 → 条目 → 修复汇总 → 待裁决）
+    - role: index
+      path: <root>/_index.yaml
+      desc: 诊断产物台账（deck_id / report 路径 / sha256 / generated_at），自持，不依赖状态机扩展
+  rules:
+    - 诊断产物一律落 `<课件名>_wip/` 工作区，不得写回原 PPTX 所在目录。
+    - 原件只读；报告只引用原件路径与指纹，不修改原件。
+    - 同名再诊断生成新文件（时间戳区分），不覆盖历史报告。
+    - 台账登记到 `<工作区>/.workbuddy/loopB_state.json` 属跨批需求（状态机字段扩展），
+      在该扩展落地前以 `_index.yaml` 自持，不阻断。
+
+# ── 终止态：诊断完成（只诊断不修改）─────────────────────────────
+termination:
+  id: 诊断完成（只诊断不修改）
+  kind: task_level
+  desc: |
+    合法的任务终态：任务目标是产出诊断结论，不要求修改课件、不要求交付 PPTX。
+    与 Loop B 逐轮优化的五类终止状态（成功完成 / 等待用户 / 能力或证据阻塞 /
+    达到预算但未完成 / 用户取消）是两个层级——诊断型任务在接单阶段即分流，
+    不进入逐轮停等流程，因此不占用那五类状态。
+  scope_note: 终止态仅指「本任务已交付诊断报告」；若用户随后要求修改，则另起 Loop B 任务，
+    诊断报告作为其输入基线（增量门禁锚点）。
+  deliverables:
+    - 诊断报告机器态 YAML（本 schema 实例，路径见 artifacts.files[role=machine]）
+    - 诊断报告人读渲染版 MD（路径见 artifacts.files[role=human]）
+    - 诊断产物台账 `_index.yaml`
+    - 渲染图证据目录 `<课件名>_wip/_render/`（视觉类结论的证据；渲染不可用时报告须标「未经渲染核实」）
+  not_deliverables:
+    - 修改后的 PPTX（纯诊断任务不产出课件）
+    - 逐页修改说明 / 验收自检清单（那是制作阶段的交付三件套，见 references/delivery-spec.md）
+  exit_conditions:
+    - 报告七维扫描矩阵全维逐项齐备（未命中写 hit=false），不得只写命中项
+    - 每条问题条目八字段齐全
+    - 修复级汇总的条目数与 `findings` 实际条数一致
+    - 待裁决项的 `user_decision` 留空（不得预填），等待用户裁决
+    - 基线锚点齐全（页数三口径 + 门禁原始计数 + 原件指纹）
+  forbidden:
+    - 以「看起来没问题」代替未检查项（未检查须显式标注）
+    - 把「检测到」直接写成「判定成立」（检出≠判定）
+    - 在纯诊断任务中产出/改写 PPTX 后声称本报告为「只诊断」终态

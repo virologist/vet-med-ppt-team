@@ -38,6 +38,8 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   19 回退阈值漂移巡检（v3.14.0）                      → _FALLBACK 与 visual-rules.yaml 不一致【只读】★新
   20 跨成员交接落盘契约巡检（v3.14.0）                → 交接指令未给载体（issues/落盘/中转/禁直连）【只读】★新
   21 三源阈值双重声明防线（v3.16.0）                  → harness.yaml#budgets 重复声明 + budget check 运行时值 ≠ domain_config【只读】★新
+  22 闸3 交叉复检领域映射（v3.17.0）                  → sop-stages.md 实际写法 ≠ config/guard.yaml 登记值【只读·阻断】★新
+ 23 域绑定残留巡检（v3.17.0）                       → agents/references 里的学科专有词应下沉到域档案【提示·不阻断】★新
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -110,7 +112,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 21  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源）
+N = 23  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -619,20 +621,39 @@ def check_version_consistency(expert_dir):
 
 
 def check_agent_frontmatter(expert_dir):
-    """v3.8.0：agent frontmatter 闭合巡检（2026-10-21 双平台核验发现的真实缺陷）。
+    """v3.17.0：agent frontmatter 巡检（第 15 项）——判据从「数 `---`」升级为「真解析 YAML」。
 
-    背景：verifier.md 与 vet-med-ppt-team-team-lead.md 的 frontmatter 只有开头
-    一个 `---`、**无闭合符**。WorkBuddy 平台解析器宽容（体检"6 个 agent 齐全"
-    照常通过），但 Claude Code 官方规范明确规定：frontmatter 未正确闭合时
-    文件会被当作普通文档处理——即 name/description/maxTurns 全部失效，
-    极端情况下直接跳过该 agent（含主理人）。双平台行为不一致的隐性缺陷。
+    背景（**为拦截这类缺陷而建的检查，被同一类缺陷骗过**——本包「声明层 ≠ 执行层」典型一例）：
+      v3.8.0 专门为「frontmatter 未闭合」建了本项（修过 verifier.md 与 team-lead.md 无闭合符），
+      但原判据是「首行是 `---` **且**存在第二个 `---` 终止行」——
+      而 `agents/dvm-content-expert.md` 的第二个 `---` **恰好落在正文里**
+      （frontmatter 之后正文就开始了），于是「数到 `---`」即判合规；
+      实则整段 frontmatter **不可 YAML 解析**（yaml.safe_load → ScannerError）：
+      Claude Code 侧该文件被当作普通文档处理 → name/description/maxTurns 全部失效
+      → **签名内容专家在双平台之一上等于不存在**（WorkBuddy 侧解析器宽容，故本机可用）。
 
-    判据：文件首行为 `---` **且** 存在第二个 `---` 终止行；否则不合规。
+    v3.17.0 判据（真解析，不数符号）：
+      ① 首行必须是 `---`；
+      ② 闭合符**逐个候选试解析**：取「首个 `---` 独占行之后、该候选 `---` 之前」的块，
+         用 yaml.safe_load 解析，**能解析成 dict 才算真正的闭合符**；失败就继续试下一个候选
+         ——这样「闭合符位置错了但后面还有对的」也能被正确定位，而不是一律判坏；
+      ③ 解析成功后校验字段：`name` 存在且 == 文件名主干（agents/<name>.md）、
+         `description` 非空、`maxTurns` 为正整数；
+      ④ 缺陷分两类，**文案不同（修法不同）**：
+         · **未闭合**：全文只有 1 个 `---`，找不到任何闭合符候选
+         · **闭合符位置错**：存在多个候选 `---`，但没有一处能解析出合法 frontmatter
+           ——即正文被混进了 frontmatter 段；
+      ⑤ 报错必须带**行号**：frontmatter 段起止行 + 候选闭合符行号 + YAML 报错原文
+         + 该报错在本文件中的绝对行号（让人一眼定位）。
     """
-    import re as _re
     agents_dir = os.path.join(expert_dir, "agents")
     if not os.path.isdir(agents_dir):
         print(f"[15/{N}] – 无 agents/ 目录，跳过")
+        return 0
+    try:
+        import yaml
+    except ImportError:
+        print(f"[15/{N}] – 无 yaml 模块，跳过")
         return 0
     bad = []
     checked = 0
@@ -645,24 +666,73 @@ def check_agent_frontmatter(expert_dir):
         except OSError:
             continue
         checked += 1
-        seps = [i for i, l in enumerate(lines) if l.strip() == "---"]
+        stem = name[:-3]
         if not lines or lines[0].strip() != "---":
-            bad.append((name, "首行不是 ---"))
-        elif len(seps) < 2:
-            bad.append((name, "frontmatter 未闭合（只有一个 ---）"))
-        else:
-            fm = "\n".join(lines[1:seps[1]])
-            m = _re.search(r"^name:\s*(.+)$", fm, _re.M)
-            if not m:
-                bad.append((name, "frontmatter 内无 name 字段"))
+            bad.append((name, "首行不是 `---`（无 frontmatter）", ""))
+            continue
+        cands = [i for i, l in enumerate(lines) if l.strip() == "---" and i > 0]
+        if not cands:
+            bad.append((name,
+                        "frontmatter **未闭合**：全文只有 1 个 `---`，找不到闭合符",
+                        "修法：在 frontmatter 末尾补一行 `---`（正文之前）"))
+            continue
+        fm = None
+        first_err = None
+        for ci in cands:
+            block = "\n".join(lines[1:ci])
+            try:
+                data = yaml.safe_load(block)
+            except Exception as e:
+                if first_err is None:
+                    first_err = (ci, e)
+                continue
+            if isinstance(data, dict):
+                fm = (ci, data)
+                break
+            if first_err is None:
+                first_err = (ci, ValueError(
+                    f"解析成功但结果不是 dict（{type(data).__name__}）"))
+        if fm is None:
+            ci, e = first_err
+            mark = getattr(e, "problem_mark", None)
+            # block 起点是文件第 2 行 → yaml 的 0 基行号 +2 = 本文件 1 基行号
+            abs_line = (mark.line + 2) if mark is not None else None
+            where = (f"候选闭合符行号 {[c + 1 for c in cands]}；最近候选在第 {ci + 1} 行；"
+                     f"YAML 报错：{str(e).splitlines()[0]}")
+            if abs_line:
+                where += f"（该错误落在本文件第 {abs_line} 行）"
+            bad.append((name,
+                        "frontmatter **闭合符位置错**："
+                        f"{len(cands)} 个候选 `---` 均无法解析出合法 frontmatter"
+                        "——正文被混进了 frontmatter 段",
+                        where + "；修法：把闭合 `---` 移到正文开始之前（frontmatter 末尾）"))
+            continue
+        ci, data = fm
+        rng = f"第 2–{ci} 行"
+        nm = data.get("name")
+        if not nm:
+            bad.append((name, f"frontmatter（{rng}）缺 name 字段", ""))
+        elif str(nm).strip() != stem:
+            bad.append((name, f"frontmatter（{rng}）name={nm!r} 与文件名主干 {stem!r} 不一致",
+                        "修法：name 必须等于文件名主干（agents/<name>.md）"))
+        desc = data.get("description")
+        if not desc or not str(desc).strip():
+            bad.append((name, f"frontmatter（{rng}）description 为空", ""))
+        mt = data.get("maxTurns")
+        if isinstance(mt, bool) or not isinstance(mt, int) or mt <= 0:
+            bad.append((name, f"frontmatter（{rng}）maxTurns={mt!r} 不是正整数", ""))
     if bad:
-        print(f"[15/{N}] ⚠ agent frontmatter 不合规：{len(bad)}/{checked} 个文件")
-        for n, why in bad:
+        print(f"[15/{N}] 🔴 agent frontmatter 不合规：{len(bad)}/{checked} 个文件"
+              f"（判据 = 真解析 YAML，不是数 `---`）")
+        for n, why, extra in bad:
             print(f"     {n:34s} {why}")
-        print(f"     → 处置：在 frontmatter 末尾补一行 `---`；未闭合会导致 Claude Code"
-              f"侧按无 frontmatter 处理（name/description/maxTurns 全部失效）")
+            if extra:
+                print(f"     {'':34s} └─ {extra}")
+        print("     → 处置：frontmatter 必须能 yaml.safe_load 成 dict（name/description/maxTurns 齐全）；"
+              "未闭合/闭合符位置错两种缺陷修法不同，闭合符必须落在正文开始之前")
         return 1
-    print(f"[15/{N}] ✓ agent frontmatter 全部合规（{checked} 个文件均闭合且含 name）")
+    print(f"[15/{N}] ✓ agent frontmatter 全部合规（{checked} 个文件均真解析成功"
+          f"且 name/description/maxTurns 齐全）")
     return 0
 
 
@@ -1382,6 +1452,403 @@ def check_handoff_paths(expert_dir):
     return 0
 
 
+# ── 22. 闸3 交叉复检领域映射（v3.17.0）───────────────────────────
+def _agent_display_names(agents_dir):
+    """取 agents/*.md 的成员显示名（displayName.zh）→ {agent_id: 显示名}。
+
+    为何要**容错**解析（v3.17.0 实测到的真实缺陷）：
+      `agents/dvm-content-expert.md` 的 frontmatter **未在 YAML 结束处闭合**——
+      第二个 `---` 落在正文「## v3.4.0 硬约束」之后，于是整个 frontmatter 块里
+      混进了 Markdown 正文，`yaml.safe_load` 直接抛 ScannerError。
+      （体检第 15 项只查「有没有第二个 `---`」+「有没有 name 字段」，不查 YAML 可解析，
+        故该缺陷一直**假绿**——属跨批需求，本函数只做容错读取，不改他人文件。）
+
+    降级链：YAML 可解析 → 取 displayName.zh；否则正则取 displayName 段的 zh；
+    否则取 H1 标题「… - 名字」；再不行用 agent id 兜底。
+    """
+    names = {}
+    if not os.path.isdir(agents_dir):
+        return names
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    for fn in sorted(os.listdir(agents_dir)):
+        if not fn.endswith(".md"):
+            continue
+        mid = fn[:-3]
+        try:
+            lines = open(os.path.join(agents_dir, fn), encoding="utf-8",
+                         errors="replace").read().split("\n")
+        except OSError:
+            continue
+        name = None
+        if lines and lines[0].strip() == "---":
+            seps = [i for i, l in enumerate(lines) if l.strip() == "---"]
+            if len(seps) >= 2:
+                block = "\n".join(lines[1:seps[1]])
+                if yaml is not None:
+                    try:
+                        data = yaml.safe_load(block) or {}
+                        dn = data.get("displayName")
+                        if isinstance(dn, dict):
+                            name = dn.get("zh")
+                        elif isinstance(dn, str):
+                            name = dn
+                    except Exception:
+                        name = None
+                if not name:
+                    m = re.search(r"displayName:[\s\S]{0,200}?zh:\s*[\"']?([^\"'\n]+)", block)
+                    if m:
+                        name = m.group(1).strip()
+        if not name:
+            for l in lines:
+                if l.startswith("# "):
+                    m = re.search(r"-\s*(\S+)\s*$", l)
+                    if m:
+                        name = m.group(1)
+                    break
+        names[mid] = name or mid
+    return names
+
+
+def check_cross_review_mapping(expert_dir):
+    """v3.17.0：第 22 项 —— 闸3「非作者交叉复检」领域↔复检人映射守卫（**阻断**）。
+
+    背景（真实缺陷，非假设）：`references/sop-stages.md` 闸3 迭代回路里的
+    「跨模块改动 → 非作者交叉复检」映射**三处全反**：
+        科学性改动→苏学法 / 教学性改动→严真奥 / 页面性改动→苏学法
+    而这三人各自的 agent MD 都明文写着「你不做…（那是别人的事）」——
+    等于**把把关人派给了被明文禁止接活的人**，把关被整体绕开，且无人察觉
+    （散文里的映射此前没有任何机器拦截）。
+
+    本项三道判据（任一不过 → 阻断，不放行）：
+      ① **映射唯一源** = `config/guard.yaml#cross_review_mapping`
+         （键 = 改动类型，值 = 期望成员 id）；yaml 里没登记 → 阻断（禁硬编码）。
+      ② **SOP 文档的实际写法 == yaml 登记值**：同一条目内出现的成员名必须唯一且正确；
+         写成别人 / 漏写 / 同条目多名字 → 阻断。
+      ③ 复检人 id 必须登记在 `config/harness.yaml#members`（防派给不存在的成员）。
+
+    为何阻断而不是提示：映射写反会把把关**整体**绕开，属"护栏看起来在、实际没设防"
+    ——与第 21 项同级的确定性缺陷（判据确定、假阳性为零）。
+    """
+    guard_path = os.path.join(expert_dir, "config", "guard.yaml")
+    if not os.path.exists(guard_path):
+        print(f"[22/{N}] – 缺 config/guard.yaml（交叉复检映射唯一源），跳过")
+        return 0
+    try:
+        import yaml
+        guard = yaml.safe_load(open(guard_path, encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"[22/{N}] 🔴 读取 config/guard.yaml 失败：{e}")
+        return 1
+
+    mapping = guard.get("cross_review_mapping") or {}
+    pattern = guard.get("cross_review_doc_pattern") or ""
+    doc_rel = guard.get("cross_review_doc") or ""
+    if not isinstance(mapping, dict) or not mapping:
+        print(f"[22/{N}] 🔴 config/guard.yaml 未登记 cross_review_mapping"
+              f"（映射必须落 yaml 作为唯一源，禁在代码/文档里各写一份）")
+        return 1
+    # v3.17.0：yaml 键缺失**判红，不回退到代码内置默认值**。
+    #   缘由（本项自身的盲区）：若这里写成 `guard.get("cross_review_doc_pattern") or "{kind}→{name}视角"`，
+    #   则 yaml 键被改名/删除时**不报错**，检查照跑——但用的是代码里的兜底值，
+    #   yaml 那份就变成"装饰品"：看着有唯一源，实际没消费配置。
+    #   这与第 21 项记录的同一盲区（"读了 fallback 而没读配置"）同型，
+    #   静态判据发现不了，只能靠"缺键即红"把静默失效变成显式失败。
+    if not pattern or not doc_rel:
+        missing = [k for k, v in (("cross_review_doc_pattern", pattern),
+                                  ("cross_review_doc", doc_rel)) if not v]
+        print(f"[22/{N}] 🔴 config/guard.yaml 缺 {' / '.join(missing)}"
+              f"——唯一源不完整，禁回退到代码内置默认值"
+              f"（回退会让 yaml 变成装饰品：检查照跑、但没消费配置）")
+        return 1
+    doc_path = os.path.join(expert_dir, doc_rel)
+    if not os.path.exists(doc_path):
+        print(f"[22/{N}] – 缺 {doc_rel}（交叉复检映射的落地文档），跳过")
+        return 0
+    if not os.path.isdir(os.path.join(expert_dir, "agents")):
+        print(f"[22/{N}] – 无 agents/ 目录（取不到成员显示名），跳过")
+        return 0
+
+    # 成员注册表（复检人 id 必须在册）
+    members = set()
+    hpath = os.path.join(expert_dir, "config", "harness.yaml")
+    if os.path.exists(hpath):
+        try:
+            members = set(((yaml.safe_load(open(hpath, encoding="utf-8")) or {})
+                           .get("members") or {}).keys())
+        except Exception:
+            members = set()
+
+    names = _agent_display_names(os.path.join(expert_dir, "agents"))
+    all_names = {n for n in names.values() if n}
+    try:
+        lines = open(doc_path, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError as e:
+        print(f"[22/{N}] 🔴 读取 {doc_rel} 失败：{e}")
+        return 1
+
+    problems = []
+    for kind, spec in mapping.items():
+        if not isinstance(spec, dict):
+            problems.append(f"cross_review_mapping.{kind} 不是映射（须含 reviewer）")
+            continue
+        reviewer = spec.get("reviewer")
+        if not reviewer:
+            problems.append(f"cross_review_mapping.{kind} 缺 reviewer（期望成员 id）")
+            continue
+        if members and reviewer not in members:
+            problems.append(f"{kind} → {reviewer}：该 id 未登记在 config/harness.yaml#members")
+        expected_name = names.get(reviewer)
+        if not expected_name:
+            problems.append(f"{kind} → {reviewer}：取不到该成员显示名（agents/{reviewer}.md）")
+            continue
+        expected = pattern.format(kind=kind, name=expected_name)
+        seen = 0
+        ok_form = 0
+        for i, line in enumerate(lines, 1):
+            if kind not in line:
+                continue
+            for clause in re.split(r"[；;]", line):
+                if kind not in clause:
+                    continue
+                seen += 1
+                found = sorted(n for n in all_names if n in clause)
+                if expected_name not in found:
+                    problems.append(
+                        f"{doc_rel}:{i} 「{kind}」未指向登记的复检人（应为 {expected_name}）；"
+                        f"实得「{clause.strip()[:50]}」")
+                elif len(found) > 1:
+                    problems.append(
+                        f"{doc_rel}:{i} 「{kind}」同一条目出现多个成员名 {found}（路由不唯一）")
+                if expected in re.sub(r"\s+", "", clause):
+                    ok_form += 1
+        if seen == 0:
+            problems.append(f"{doc_rel} 未出现「{kind}」的交叉复检映射（闸3 迭代回路缺该路由）")
+        elif ok_form == 0:
+            problems.append(f"{doc_rel} 中「{kind}」未按 yaml 登记写法落（应为「{expected}」）")
+
+    if problems:
+        print(f"[22/{N}] 🔴 闸3 交叉复检映射与 yaml 登记不一致 {len(problems)} 处"
+              f"——把关人被派错 = 把关整体失效")
+        for p_ in problems:
+            print(f"     {p_}")
+        print("     → 处置：映射唯一源 = config/guard.yaml#cross_review_mapping；"
+              "改 SOP 文档必须同步改 yaml（或反之），两者不允许各写一份")
+        return 1
+    shown = "、".join(f"{k}→{names.get((v or {}).get('reviewer'), '?')}"
+                      for k, v in mapping.items())
+    print(f"[22/{N}] ✓ 闸3 交叉复检映射与 yaml 登记一致（{len(mapping)} 类改动：{shown}）")
+    return 0
+
+
+# ── 23. 域绑定残留巡检（v3.17.0）───────────────────────────────
+def _exempt_line_set(lines, hy):
+    """算出**豁免行号集合**（全部可判定，不靠关键词猜测）。
+
+    四类豁免（判据见 config/hygiene-words.yaml#scan）：
+      ① 哨兵块：begin…end 之间全部行；
+      ② 章节级：标题命中 exempt_headings.pattern → 该章节内全部行
+         （直到下一个**同级或更高级**标题）；
+      ③ 行级：命中 profile_ref_patterns（该行在说"去域档案里取"）；
+      ④ frontmatter 注释行：YAML frontmatter 内以 # 开头的注释行（变更说明）。
+    """
+    ex = set()
+    # ① 哨兵块
+    for mk in (hy.get("exempt_markers") or []):
+        b, e = mk.get("begin"), mk.get("end")
+        if not b or not e:
+            continue
+        inblk = False
+        for i, ln in enumerate(lines):
+            if b in ln:
+                inblk = True
+                ex.add(i)
+                continue
+            if inblk:
+                ex.add(i)
+                if e in ln:
+                    inblk = False
+    # ② 章节级
+    pats = [p.get("pattern") for p in (hy.get("exempt_headings") or [])
+            if isinstance(p, dict) and p.get("pattern")]
+    if pats:
+        heads = []
+        for i, ln in enumerate(lines):
+            m = re.match(r"^(#{1,6})\s", ln)
+            if m:
+                heads.append((i, len(m.group(1))))
+        for idx, (i, lvl) in enumerate(heads):
+            if not any(re.match(p, lines[i]) for p in pats):
+                continue
+            end = len(lines)
+            for j, l2 in heads[idx + 1:]:
+                if l2 <= lvl:
+                    end = j
+                    break
+            ex.update(range(i, end))
+    # ③ 行级（引用域档案）
+    refs = [p for p in (hy.get("profile_ref_patterns") or []) if p]
+    if refs:
+        for i, ln in enumerate(lines):
+            if any(p in ln for p in refs):
+                ex.add(i)
+    # ④ frontmatter 注释行
+    if (hy.get("scan") or {}).get("frontmatter_comment_exempt", True):
+        if lines and lines[0].strip() == "---":
+            for i, ln in enumerate(lines[1:], 1):
+                if ln.strip() == "---":
+                    break
+                if ln.lstrip().startswith("#"):
+                    ex.add(i)
+    return ex
+
+
+def check_domain_binding_residue(expert_dir):
+    """v3.17.0：第 23 项 —— 域绑定残留巡检（**提示级·不阻断**）。
+
+    目的：把散落在 `agents/` 与 `references/` 里的**学科专有词**揪出来，
+    指出哪些应下沉到域档案（`config/domain-profiles.yaml`）——
+    "该下沉却没下沉"的残留此前没有任何机器可查的地方。
+
+    判据（全部可判定，**不靠关键词猜测**）：
+      ① 词表唯一源 = `config/hygiene-words.yaml#domain_specific_terms`
+         （词表禁硬编码在代码里——改词只改 yaml）；
+      ② 扫描范围 = `hygiene-words.yaml#scan.roots` + `include_suffixes`，
+         排除 `scan.exclude_files`（每条排除都登记了原因）；
+      ③ 豁免 = 哨兵块 / 「历史沿革」章节 / 引用域档案路径的行 / frontmatter 注释行；
+      ④ 每处命中给出 **文件:行号 + 词 + 类别**，并判定该词
+         **是否已下沉到域档案**（词是否出现在 `config/domain-profiles.yaml` 中）——
+         已下沉 → 正文应改为**引用**档案；未下沉 → 建议把该内容写入档案对应字段。
+
+    为何**只报不阻断**：词表天然会误伤正当举例（第一版先积累一轮证据再谈阻断，
+    与本轮「假阳性必须为零」的纪律一致——宁可先不出数，也不出无法解释的数）。
+    """
+    hy_path = os.path.join(expert_dir, "config", "hygiene-words.yaml")
+    if not os.path.exists(hy_path):
+        print(f"[23/{N}] – 缺 config/hygiene-words.yaml（域绑定残留词表唯一源），跳过")
+        return 0
+    try:
+        import yaml
+        hy = yaml.safe_load(open(hy_path, encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"[23/{N}] 🔴 读取 config/hygiene-words.yaml 失败：{e}")
+        return 1
+    terms = []
+    for t in (hy.get("domain_specific_terms") or []):
+        if isinstance(t, dict) and t.get("term"):
+            terms.append((str(t["term"]), t.get("kind") or "", t.get("note") or ""))
+        elif isinstance(t, str) and t.strip():
+            terms.append((t.strip(), "", ""))
+    if not terms:
+        print(f"[23/{N}] 🔴 config/hygiene-words.yaml 未登记 domain_specific_terms"
+              f"（词表必须落 yaml 作为唯一源，禁在代码里硬编码）")
+        return 1
+
+    sc = hy.get("scan") or {}
+    roots = sc.get("roots") or ["agents", "references"]
+    suffixes = tuple(sc.get("include_suffixes") or [".md"])
+    excluded = {}
+    for e in (sc.get("exclude_files") or []):
+        if isinstance(e, dict) and e.get("path"):
+            excluded[str(e["path"])] = e.get("reason") or ""
+
+    # 「是否已下沉」判定：词是否出现在域档案里（可判定），并给出是哪个域
+    prof_path = os.path.join(expert_dir, "config", "domain-profiles.yaml")
+    prof_text = ""
+    prof_domains = {}
+    if os.path.exists(prof_path):
+        prof_text = open(prof_path, encoding="utf-8", errors="replace").read()
+        try:
+            import yaml as _y
+            pdata = _y.safe_load(prof_text) or {}
+            for d in (pdata.get("domains") or []):
+                if isinstance(d, dict) and d.get("id"):
+                    prof_domains[str(d["id"])] = json.dumps(d, ensure_ascii=False)
+        except Exception:
+            prof_domains = {}
+
+    hits = []
+    scanned = 0
+    for root in roots:
+        d = os.path.join(expert_dir, str(root))
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(suffixes):
+                continue
+            rel = f"{root}/{name}"
+            if rel in excluded:
+                continue
+            fp = os.path.join(d, name)
+            try:
+                lines = open(fp, encoding="utf-8", errors="replace").read().split("\n")
+            except OSError:
+                continue
+            scanned += 1
+            ex = _exempt_line_set(lines, hy)
+            for i, ln in enumerate(lines):
+                if i in ex or not ln.strip():
+                    continue
+                matched = [(t, k) for (t, k, _n) in terms if t in ln]
+                if not matched:
+                    continue
+                in_prof = bool(prof_text) and any(t in prof_text for (t, _k) in matched)
+                where = []
+                for did, blob in prof_domains.items():
+                    if any(t in blob for (t, _k) in matched):
+                        where.append(did)
+                hits.append({
+                    "file": rel, "line": i + 1, "matched": matched,
+                    "in_profile": in_prof, "profile_domains": where,
+                    "count": 1,
+                    "snippet": ln.strip()[:70],
+                })
+    # 同一文件同一「词组合」多次命中 → 只保留首个行号 + 计数（报告可读）
+    grouped = {}
+    for h in hits:
+        k = (h["file"], tuple(t for (t, _k) in h["matched"]))
+        if k in grouped:
+            grouped[k]["count"] += 1
+        else:
+            grouped[k] = h
+    hits = list(grouped.values())
+    hits.sort(key=lambda h: (h["file"], h["line"]))
+
+    if hits:
+        print(f"[23/{N}] ℹ 域绑定残留巡检：命中 {len(hits)} 处"
+              f"（提示级·**不阻断**——第一版积累证据；扫描 {scanned} 个文件，"
+              f"排除 {len(excluded)} 个域专有文件）")
+        for h in hits[:40]:
+            if h["profile_domains"]:
+                tip = (f"已下沉到域档案（{'、'.join(h['profile_domains'])}）"
+                       f"→ 正文应改为**引用** config/domain-profiles.yaml，勿复制")
+            elif h["in_profile"]:
+                tip = ("已出现在域档案文件中（**未绑定到具体域**）"
+                       "→ 建议下沉到某域的对应字段")
+            else:
+                tip = "**未下沉** → 建议把该域专有内容写入 config/domain-profiles.yaml 对应字段"
+            terms_s = "".join(f"「{t}」" for (t, _k) in h["matched"])
+            kinds = "、".join(sorted({k for (_t, k) in h["matched"] if k}))
+            print(f"     {h['file']}:{h['line']} {terms_s}"
+                  f"{('（' + kinds + '）') if kinds else ''}"
+                  f"{(' ×' + str(h['count'])) if h.get('count', 1) > 1 else ''}"
+                  f"  {tip}")
+            print(f"        └─ {h['snippet']}")
+        if len(hits) > 40:
+            print(f"     … 还有 {len(hits) - 40} 处")
+        print("     → 处置：① 已在域档案的词 → 正文改为**引用**档案（不复制）；"
+              "② 未下沉的词 → 写入域档案对应字段；"
+              "③ 确属正当用法（举例/历史沿革）→ 用哨兵块 "
+              "<!-- DOMAIN_EXAMPLE_BEGIN -->…<!-- DOMAIN_EXAMPLE_END --> 或"
+              "「## 历史沿革」章节圈起")
+        return 0
+    print(f"[23/{N}] ✓ 域绑定残留巡检：未发现学科专有词残留"
+          f"（扫描 {scanned} 个文件，排除 {len(excluded)} 个域专有文件）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -1445,6 +1912,11 @@ def main():
     rc |= check_handoff_paths(path)
     # v3.16.0：三源阈值双重声明防线（防重复声明复发 + 运行时值断言补 AST 盲区）
     rc |= check_three_source_single_source(path)
+    # v3.17.0：闸3 交叉复检领域↔复检人映射（阻断；防"把关人被派给被禁止接活的人"）
+    rc |= check_cross_review_mapping(path)
+    # v3.17.0：域绑定残留巡检（**提示级·不阻断**——词表天然会误伤正当举例，
+    #   先积累一轮证据再谈阻断；与本轮「假阳性必须为零」的纪律一致）
+    rc |= check_domain_binding_residue(path)
 
     print()
     if rc == 0:

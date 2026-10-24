@@ -25,6 +25,19 @@
 - ✅ **多Agent兼容**——WorkBuddy Team型完整支持；Claude Code/Claude Desktop 通过 TeamCreate/SendMessage 单兵调用
 - ✅ **跨工具协同**——与本地 `teaching-ppt-studio` skill 无缝衔接（路径A/B分流决策表）
 
+## 外部依赖（v3.17.0）
+
+**外部依赖：`teaching-ppt-studio` skill（七维量规的上游副本）——非必需，缺失不阻断本包。**
+
+- **七维量规已内化进本包**：`references/seven-dimension-rubric.md`
+  （内化自 `teaching-ppt-studio` v2.6.0 的同名文件并做了去领域化改造；上游更新时需重新比对）
+- 外部副本**仅用于比对上游更新**；两者不一致时**以包内版本为准**
+- **自查命令**：`python3 references/check_external_deps.py`
+  （缺失会明确打印「未安装 → 本包已内化 …，以包内版本为准」，**不阻断**任何能力）
+- **登记位置**：`references/dependency-manifest.yaml`（外部依赖的包内唯一数据源）
+- **为什么没写进 plugin.json**：WorkBuddy 专家包清单规范（`plugin-json-spec.md`）的字段全集
+  **不存在**依赖声明字段——平台不认的键不写进清单（详见 `references/spawn-protocol.md#4`）
+
 ## 仓库结构
 
 ```

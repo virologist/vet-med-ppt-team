@@ -6,6 +6,163 @@
 
 ---
 
+## [v3.17.0] - 2026-10-24
+
+### 概述（11 维度独立诊断整改：通用化重构 · 治「声明层 ≠ 执行层」与「规则存在 ≠ 规则生效」）
+
+本版起点是一份**从零开始的 11 维度独立诊断**（4 组只读子代理并行 + 主理人交叉核验），
+对标基准是该包的**新定位：可复用于任意教学/培训主题的通用 PPT 诊断与优化工作流**。
+
+**诊断推翻了一条历史断言**：上一版称「三源核验是自证循环、不验证来源真实存在」——**不成立**。
+`harness.py::_pmid_online_check` 真联网 PubMed esearch 验 PMID 存在性，`verify-ref --online/--write-back`
+是受控路径。真问题不是「没有反幻觉能力」，而是**「护栏装在了闸外」**——闸4.5 从不调它，
+且 `--online` 只覆盖 `kind==pubmed`。
+
+**本版贯穿的两条纪律**：
+1. **声明层 ≠ 执行层**——凡是「写在文档里但没有执行者」的，一律治本（实现读取 / 删掉 / 显式登记待办）。
+2. **规则存在 ≠ 规则生效**——凡是「配了但执行者不读 / 读了 fallback 不读配置 / 判据只写在散文里」的，
+   一律补执行者或改为 fail-closed。
+
+### ① 专家团动态坍缩（本版地基 · 规格 P0）
+
+新增 `config/domain-profiles.yaml`（声明式域档案，唯一数据源）与 `harness.py domain list/show`、
+`route --domain`：
+
+```
+$ harness.py route --level L2 --domain computing
+  "role_persona": {"title": "软件工程内容权威", "stance": "能复现的才算数——不编造 API 行为…"}
+  "collapse_artifact": "…/_collapse/collapse_adhoc_computing.json"
+  "collapse_status": "pending_confirmation"   "collapse_effective": false
+  "collapse_note": "待确认，未生效（须经 `collapse confirm` 确认后域人格方可生效）"
+```
+
+**关键设计决策：坍缩不做关键字匹配。** 按本项目分工宪法，「用户主题 → 选哪个域」是**语义判断**，
+绝不能用规则匹配/关键字/正则实现——故脚本只提供**域菜单（给 LLM 选）+ 域档案 + 确定性组装 + 落盘 + 校验**，
+**选域由主理人（LLM）做**。这既满足规格「坍缩结果须主动输出并与我对齐」，又不违反铁律。
+
+坍缩产物落盘 + **进闸1 确认门**（新增第 6 项冻结项），未确认时域人格**不生效**。
+内置 3 域（`animal-medicine` / `computing` / `business-training`）；
+非兽医域的 `knowledge_anchor` **如实写 null 并注明「需联网现查；写 null 是如实登记，不是缺漏」**。
+
+### ② 内容角色去兽医化（规格 P0）
+
+`agents/dvm-content-expert.md` **保留文件名**（专家包铁律：改 `agents/*.md` 文件名 = 专家丢失），
+正文改为「**域无关方法论 + 域人格引用**」：原硬编码的 Ima 七库路由表、检索式模板
+（`chicken AND ("Newcastle disease virus" OR APMV-1) AND (proventriculus...)`）、高风险拒收条款，
+全部外置到域档案；**方法论内核一字未删**（五条铁律、证据分级、双标记制、术语规范、三源核验循环、
+issues 唯一上抛通道）。
+
+### ③ 诊断入口归位（规格 P0 · 「诊断」这一半原本在包外）
+
+- **内化** `references/seven-dimension-rubric.md`（七维量规，原唯一执行源在包外 skill
+  `teaching-ppt-studio`，且 `plugin.json` 无任何依赖声明字段 → 换机器静默失效）。
+  去兽医化：表头「典型病症」→「典型问题」，兽医学例子改域无关表述。**保留来源溯源，不假称原创**。
+- 新增 `references/diagnosis-report-schema.yaml`（诊断报告唯一 schema，与 `round-review-sop.md`
+  的**八字段**逐字段一致，不另立一套；severity 只引用 `visual-rules.yaml` 不复制）。
+- 新增 `scripts/check_external_deps.py` + `references/dependency-manifest.yaml`：
+  外部依赖缺失从**静默失效**变成显式可见，且**不阻断**（内化就是为了自包含）。
+- 「只诊断不修改」成为真出口：交付清单补「纯诊断任务的交付物是诊断报告」分支。
+- 任务包新增第五要素 `acceptance_criteria`（检查项 + 判定方式[机/人] + 阈值）。
+
+### ④ 闸4.5 三源核验：三档判定（治「可被纯编造数据骗过」）
+
+原判据是 `any(src.get("ok") is True)` —— **纯编造数据即可 100% 骗过**。
+现分三档（唯一源 `domain_config.yaml#three_source_check.tiers`）：
+`existence_verified`（PubMed 实查命中）/ `format_only`（ISBN 校验位、国标编号格式合规，
+**未验证存在性，不计入已验证**）/ `unverifiable`。
+
+**判定不读 `sources[].ok` 与 `verified_at`**（自报值不构成证据）；
+网络失败（None）单独计数 + 显式告警 + `network_failure_policy=block` → **整轮不得判 pass**。
+「三源齐备」现要求：三类来源齐备且至少 1 条达「存在性已验证」。
+
+**越权修复（经主理人裁决批准保留）**：`verify-ref --online` 原只核「缺 ok/缺 verified_at」的来源，
+于是编造来源只要写上 ok=true+verified_at 就永远不被实查——**同一缺陷的另一个出口**，一并改为实查所有。
+
+### ⑤ 收敛判据堵漏（治「可注水」）
+
+- `--verify-json` 报告**与被优化课件绑定**（读 `stats.file` 比对，不匹配即 exit 2，
+  报错原文：「拿别处课件的报告喂收敛判据 = 拿别人的成绩单算自己的进度」）；
+- 一旦历史轮次用过手工值，后续轮次**强制** `--verify-json`（逃生口 `--allow-unverified` 留痕 + 记 blocker）；
+- `make-gate` 检查 `quality_history` 的来源（此前 `source` 字段无任何下游消费者）；
+- **判据侧修漏网**：「问题已修复归零」的汉字被证据正则当成计数 → 命中裸词先剔除再判计数。
+
+### ⑥ 状态机持久化加固（治「文档声称有防护、代码是裸写」）
+
+`task_state.json` 原为**非原子裸写**，而两处文档声称有「写入前原子比对 task_id」的并发防护。
+现复用 `_StateLock` + 原子写，并**兑现**该承诺：task_id 不一致 → 拒绝推进 + 报警 + exit 1；
+状态文件损坏 → **拒绝操作、原文件保留（不覆盖不重建）**，不走「按空状态继续跑」；
+`state set --value` 非法 JSON → **显式报错**，不再静默存字符串（那正是 quality_history 静默失效的根因）。
+
+### ⑦ 闸3 交叉复检映射三处全反（治「把关人被全部绕开」）
+
+`sop-stages.md` 原写「科学性改动→苏学法；教学性改动→严真奥；页面性改动→苏学法」，
+而两份 agent MD 明文禁止对方做对方的事。已订正为
+**科学性→严真奥 / 教学性→苏学法 / 页面性→屠明熙**，
+并新增**体检第 22 项**把该映射登记进 `config/guard.yaml`（唯一源）并双向校验：
+文档写法 == yaml 登记 == 各成员 MD「你不做…」边界取反。
+
+### ⑧ 前置元问题：frontmatter 实际不可解析，而体检对它假绿
+
+**为拦截这类缺陷而建的检查，被同一类缺陷骗过。**
+体检第 15 项（v3.8.0 专为「frontmatter 未闭合」而建）判据是「数 `---`」——
+而 `dvm-content-expert.md` 的第二个 `---` 恰好落在**正文里**（第 21 行），
+`yaml.safe_load` 直接 ScannerError → **Claude Code 侧该 agent 被当作普通文档，
+name/description/maxTurns 全部失效 → 包里的签名内容专家在一个目标平台上等于不存在**。
+
+现第 15 项改为**真解析 YAML**（逐个候选闭合符试解析，能解析出合法 frontmatter 才算真闭合符），
+并**区分两种缺陷**（「未闭合」vs「闭合符位置错」——修法不同，报错也不同）+ 报行号。
+
+### ⑨ 文档口径归一 + 防漂移守卫扩面
+
+`references/sop-stages.md` 整份停在「四道闸 / 只认 0–3」而 yaml 是 stage 0–4 —— 已全份同步为
+**五闸 stage 0–4** 并补闸4.5 章节（此前完全缺失，而 `iron-rules.md` 承诺该文件含闸1-闸4.5 完整流程）。
+`test_arch_drift.py` 从只比 `docs/architecture.md` 扩到**多文档**（T7–T10），
+口径唯一源为新增的 `config/guard.yaml`。
+
+### ⑩ 工程卫生
+
+- 成员 MD 的**同源副本压缩**（信封契约块 6 份 × ~12 行 ≈ 70 行 → 1 处定义 + N 处一行引用）；
+  顺带发现「消除重复」的整改说明本身被复制 4 次——**整改动作成了新的重复源**，一并清除。
+- 修正「≤800 字摘要」指向错误（原指向 `budgets.max_artifact_bytes`，实为 `context.summary_max_chars`）；
+  dvm 补齐交接方式声明（此前是唯一缺失的成员，而它恰是 issues 唯一通道的重度使用者）。
+- 依赖检查脚本从 `references/` 归位 `scripts/`（原位置会被体检第 17 项漏扫、回归套件未必收录）。
+
+### ⑪ 回传信封承载域与坍缩（规格 P0）
+
+新增选填字段 `domain`（枚举取自 `domain-profiles.yaml`）与 `routing`（`level`/`members`/`collapse_artifact`），
+`metrics.keys` 硬限 2 键 → 放宽为 `known_keys` 白名单 + 未知键只告警
+（原硬限会把成员逼到「删指标」或「谎报键名」，比不登记更糟）。
+
+### ⑫ 外部权威资源的真实联网核验
+
+三源核验新增 `api_key` 支持（**真值只从环境变量读，yaml 只存变量名，包内任何文件都不含真 key**）、
+可配限速、**指数退避 + 疑似速率限制的显式告警**、以及 `abort_batch_on_rate_limit` 熔断
+（默认开：一条退避耗尽即中止本批剩余实查并显式告警，整批从 ~56s 降到 15.3s，**仍 fail-closed**）。
+
+### 工程状态
+
+- 版本**五处**同步 **3.17.0**
+- 体检 **23/23 全绿**（新增第 22 项闸3映射守卫、第 23 项域绑定残留巡检）
+- 回归 **120 passed / 3 skipped**；`test_loop_state.py` **33 → 74 例**（v3.16.0 招牌特性此前**零覆盖**）
+- 双树逐字节一致（`packages/vet-med-ppt-team/` ← 用户实际加载的那份，`marketplace.json` 的 source 指向它）
+
+### 已知瑕疵（如实登记，未修）
+
+1. **三源中只有 pubmed 有存在性核验能力**——textbook/regulation 无权威可查端点，
+   永远只到「仅格式合规」档，**不计入已验证**。口径限制，非实现缺陷。
+2. **NCBI 对无 key 的匿名访问有速率限制**，批量清单会触发封禁 → 判 `network_incomplete`
+   （fail-closed，不静默通过）。跑清单须分批 + 批间留间隔 + 配 `NCBI_API_KEY`。
+3. **`domain` 的选域仍是 LLM 决策**（脚本不自动选域）——这是分工宪法的要求，不是能力缺失；
+   但意味着选域质量依赖主理人判断，无机器兜底。
+4. **闸2 仍是伪并行**（dvm 证据与 pedagogy 蓝图存在双向数据依赖，却声明「边界互斥」）——本版只记录未改。
+5. **9 个声明的 trace 事件仍无代码产出**（`preflight`/`degrade`/`member_return` 等），
+   `require_disclosure: true` 的消费者仍是人不是代码。
+6. **坍缩产物默认写在包根 `.harness-runs/`**（已 gitignore，不入版本库/不进第二副本），
+   但更干净的形态是落在工作区而非已安装的包目录。
+7. **V3（取色比对）与 C5（数字来源）仍未实现**；三源仍是部分自证（pubmed 有实查，另两类无）。
+
+---
+
 ## [v3.16.0] - 2026-10-23
 
 ### 概述（九维度独立诊断整改：F1–F9 全部落地 · 治「声明层与执行层两张皮」）

@@ -1,0 +1,74 @@
+# guard.yaml — 文档↔yaml 防漂移守卫 + 闸3 交叉复检映射（唯一数据源，v3.17.0）
+# ══════════════════════════════════════════════════════════
+# 缘由（2026-10-24 批次 B1 实测，两处真实缺陷、非假设）：
+#   ① `references/sop-stages.md` 闸3 迭代回路里的「跨模块改动 → 非作者交叉复检」映射
+#      **三处全反**：科学性改动→苏学法 / 教学性改动→严真奥 / 页面性改动→苏学法。
+#      而这三人各自的 agent MD 都明文写着「你不做…（那是别人的事）」——
+#      等于把把关人派给了**被明文禁止接活的人**，把关被整体绕开，且无人察觉
+#      （散文里的映射没有任何机器拦截）。
+#   ② 上一轮只把 `docs/architecture.md` 修成五闸，同型的 `references/sop-stages.md`
+#      仍停在四闸 / 只认 0–3 → 同型漂移复发无人拦（守卫覆盖面只有一个文件）。
+#
+# 原则：**阈值 / 词表 / 映射一律落 yaml，代码只读不算**（禁硬编码）。
+# 消费方（两处都必须读本文件，不得各自再写一份）：
+#   · scripts/ensure_settings.py#check_cross_review_mapping（第 22 项 · 阻断）
+#   · scripts/test_arch_drift.py（T8 / T9 / T10 · pytest 回归 · 阻断）
+#
+# ⚠️ 与 `config/harness.yaml` 的分工（互不覆盖、各自单一源）：
+#   harness.yaml = 编排状态机（stages / members / 预算 / 降级 / 状态白名单）
+#   本文件      = 文档防漂移守卫的口径 + 闸3 交叉复检映射
+#
+# ⚠️ 迁移说明：若主理人决定把 cross_review_mapping 并入 harness.yaml，
+#   则改 scripts/ensure_settings.py 与 scripts/test_arch_drift.py 里
+#   GUARD_YAML / HARNESS_YAML 两个路径常量即可，本文件其余内容不动。
+
+version: "3.17.0"
+
+# ── 受守卫文档清单（防漂移比对范围；改这张表 = 改守卫覆盖面）────────
+# 判据：清单里的每个文档都必须含 STAGE_MIRROR 镜像块（缺块 = 守卫对它失效 → 判红）。
+# 镜像块格式与 docs/architecture.md 完全一致（sentinel 包裹的竖线分隔行）。
+# v3.17.0（D1 批）：新增 `agents/vet-med-ppt-team-team-lead.md`——
+#   该文件是闸号表述的编排源头，却一直在守卫覆盖面之外（闸表改了没人拦）。
+#   纳入前先补齐内容：① STAGE_MIRROR 镜像块（否则 T9 判红）
+#   ② v3.16.0「四道闸」历史纠正说明包进 LEGACY_HISTORY 哨兵（否则 T10 把正当历史记录判成旧口径复活）。
+guarded_docs:
+  - "docs/architecture.md"
+  - "references/sop-stages.md"
+  - "references/harness-engine.md"
+  - "agents/vet-med-ppt-team-team-lead.md"
+
+# ── 旧口径词表（正文出现即判红）────────────────────────────────────
+# 豁免区判定（可判定、不靠关键词猜测）：
+#   ① 标题行以「## 历史沿革」开头的章节 → 直到下一个一级/二级标题为止（其下的 ### 子标题仍在区内）
+#   ② <!-- LEGACY_HISTORY_BEGIN --> … <!-- LEGACY_HISTORY_END --> 哨兵块
+# 注：「六阶段」不在本表——它由 test_arch_drift.py#T6 单独判
+#   （只允许出现在「历史沿革」章节之后），否则守卫自身的说明文字会被误判。
+legacy_wording:
+  - "只认 0–3"
+  - "只接受 0–3"
+  - "四道闸"
+
+# ── 闸3「非作者交叉复检」：改动类型 → 复检人（唯一源，v3.17.0）────────
+# 语义依据（各成员 agent MD 自述边界的**取反**，即「谁拥有该领域」）：
+#   科学性改动 → 严真奥（dvm-content-expert）：其 MD 自述「你不做教学设计、不做版式设计」，
+#                科学性归他；pedagogy MD 明文「你不回答内容科学性问题（找严真奥）」
+#   教学性改动 → 苏学法（pedagogy-architect）：其 MD 自述「你不回答内容科学性问题、不管版式像素」
+#   页面性改动 → 屠明熙（visual-slide-designer）：其 MD 自述「你不做教学设计、不做制作落地」
+# reviewer：复检人 agent id（须登记在 config/harness.yaml#members）
+# md_area_terms：该领域在各 agent MD 里的用词（供「取反」校验：
+#   复检人自己的 MD 不得声明「不做」该领域，且必须有人声明该领域归其所有）
+cross_review_mapping:
+  科学性改动:
+    reviewer: "dvm-content-expert"
+    md_area_terms: ["科学性"]
+  教学性改动:
+    reviewer: "pedagogy-architect"
+    md_area_terms: ["教学"]
+  页面性改动:
+    reviewer: "visual-slide-designer"
+    md_area_terms: ["版式", "页面"]
+
+# ── 交叉复检映射在 SOP 文档里的落地位置与写法模板（供第 22 项比对）──
+# {kind} = 改动类型键；{name} = 复检人显示名（取自 agents/<id>.md 的 displayName.zh）
+cross_review_doc: "references/sop-stages.md"
+cross_review_doc_pattern: "{kind}→{name}视角"

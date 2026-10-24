@@ -33,6 +33,9 @@ optional:
   - issues
   - next_agent_hint
   - metrics
+  # v3.17.0 新增（通用化追溯所需；缺省不判失败）
+  - domain
+  - routing
 
 status_enum: [success, partial, failed, blocked]
 
@@ -82,8 +85,25 @@ fields:
   metrics:
     type: object
     required: false
-    keys: [duration_ms, retry_count]
-    rule: "耗时与重试次数，供预算判定"
+    # v3.17.0 放宽：原为硬限 2 键 [duration_ms, retry_count]，属**过度收紧**——
+    #   metrics 是选填的自增字段，硬限会把成员逼到「删指标」或「谎报键名」，
+    #   比不登记更糟。改为「已知键白名单 + 未知键只告警不失败」，
+    #   与 content_rules.metrics_keys_subset 的既有行为一致（severity=warn）。
+    known_keys: [duration_ms, retry_count]
+    rule: "耗时与重试次数等度量，供预算判定；未知键只告警不失败（见 content_rules.metrics_keys_subset）"
+  # ── v3.17.0 新增：通用化后信封必须承载的域与坍缩信息 ──────────────
+  # 缘由：坍缩机制落地后，一次产出必须能回答「这批是哪个域、选了哪些角色、
+  #   依据哪份坍缩产物」。此前信封无此三项，只能塞进 issues（语义超载）
+  #   或 next_agent_hint（选填 string，装不下结构化信息）。
+  domain:
+    type: string
+    required: false
+    rule: "本次产出所属的领域 id，枚举值取自 config/domain-profiles.yaml#domains[].id；未坍缩时留空"
+  routing:
+    type: object
+    required: false
+    keys: [level, members, collapse_artifact]
+    rule: "本次任务的路由与坍缩上下文：level=复杂度档(L0-L3)；members=本次实际参与的成员 id 列表；collapse_artifact=坍缩产物落盘路径（由 harness.py route --domain 产出，用于把产出与坍缩决策串起来）"
 
 # ── 历史字段别名（v3.11.0 前的旧 schema，保留映射以便回溯既有 trace）────
 # 旧 → 新。**不得**在新产出中使用旧名；读到旧名时 harness 自动归一。
@@ -188,12 +208,36 @@ validation:
       field: metrics
       enabled: true
       severity: warn
-      rule_ref: "fields.metrics.keys"
-      reason: "metrics 是选填自增字段；未知键说明新增了未登记的指标，应留痕供主理人决定是否补进 keys"
-      message: "metrics 出现 fields.metrics.keys 之外的键——请补登记或改用已登记键名"
+      rule_ref: "fields.metrics.known_keys"
+      reason: "metrics 是选填自增字段；未知键说明新增了未登记的指标，应留痕供主理人决定是否补进 known_keys"
+      message: "metrics 出现 fields.metrics.known_keys 之外的键——请补登记或改用已登记键名"
       # 取舍：只告警不失败——判失败会逼成员删指标或谎报键名（比不登记更糟），
       #   而"未登记指标"本身不造成自评失真，属可追溯性瑕疵。
-      allowed_keys_from: "fields.metrics.keys"
+      allowed_keys_from: "fields.metrics.known_keys"
+
+    # ── v3.17.0 新增：通用化追溯所需的两条域相关判据 ────────────────
+    - id: domain_in_profile
+      field: domain
+      enabled: true
+      severity: fail
+      rule_ref: "fields.domain.rule"
+      reason: "通用化后信封必须自证『这批产出属于哪个域』；域 id 写错会让 trace 与台账按域聚合时归错桶，且域 id 是坍缩决策的锚"
+      message: "domain 不在 config/domain-profiles.yaml 的域 id 集合内——请用 `harness.py domain list` 查合法域 id"
+      # 取舍：判失败而非告警——域 id 写错是**事实性错误**（枚举成员资格），
+      #   不存在"合理解释但域不对"的空间，判据完全确定，无假阳性空间。
+      #   另：域枚举源读不到时同样判失败（不得静默放行，否则 domain 字段形同装饰品）。
+      enum_source: "config/domain-profiles.yaml#domains[].id"
+
+    - id: routing_structure
+      field: routing
+      enabled: true
+      severity: fail
+      rule_ref: "fields.routing.rule"
+      reason: "routing 把『本次产出属于哪次路由与哪次坍缩』钉在信封里；缺子键则产出与坍缩决策断链，通用化后无法追溯"
+      message: "routing 结构不合规——须含 level / members / collapse_artifact 三键（见 references/result-envelope.yaml#fields.routing）"
+      # 取舍：判失败——子键有无是布尔事实，无歧义；且坍缩链路刚落地，
+      #   此处不拦住就等于让『坍缩了但产出没带路由信息』畅通无阻。
+      required_keys: [level, members, collapse_artifact]
 
     # ── 显式禁用（不是偷偷跳过）───────────────────────────────────────
     - id: confidence_requires_evidence_array
