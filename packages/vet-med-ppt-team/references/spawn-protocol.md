@@ -42,7 +42,7 @@
   任务包只写「源 <文件>#<键>」，避免出现第二份数值
 
 > ⚠️ **代码侧尚未强制（跨批需求，v3.17.0 如实标注，不粉饰）**
-> 装配脚本 `shared-core/assemble_spawn_prompt.py` 的 `check_task_package()` 目前**只校验四要素**：
+> 装配脚本 `vendor/shared-core/assemble_spawn_prompt.py` 的 `check_task_package()` 目前**只校验四要素**：
 > 常量 `TASK_PACKAGE_FIELDS`（该文件第 63 行）与函数体（第 210–217 行）做的是
 > 「**字段名是否作为子串出现在任务包文本里**」的字符串包含判断——
 > `"objective": "x"` 这类**占位写法同样能过**，且**没有验收标准字段**。
@@ -151,13 +151,24 @@ python3 scripts/check_external_deps.py --json
 **纪律**：依赖缺失**不得阻断**本包的正常使用（内化就是为了自包含），
 但**不得**因此假装依赖存在——「未安装」这句必须真的打出来。
 
-### 4.4 与体检的衔接（跨批需求，本批不改 scripts/）
+### 4.4 与体检的衔接（v3.17.0 如实登记：**未接入**）
 
-体检第 23 项由 `scripts/ensure_settings.py` 维护（属另一批次）。
-落地方式（主理人派单时可直接照抄）：
+**当前实况：本检查尚未并入体检**——它是一个独立可执行脚本，需手动或由 CI 调用：
 
-- 在体检中调用 `scripts/check_external_deps.py` 的 `main([])`，或直接以子进程方式执行
-- **必须按「提示级·不阻断」接入**（与第 18 项死配置巡检同级）——依赖缺失**不阻断**发布
-- **假阳性为零**：只认 `references/dependency-manifest.yaml` 里登记的依赖，
-  **不做目录名猜测**、不扫全盘 skills 目录
-- 建议输出格式与既有项一致：`[23/22] ✓/ℹ …`（提示级，不改 `N = 22`）
+```bash
+python3 scripts/check_external_deps.py            # 默认不阻断；缺失时明确打印提示
+python3 scripts/check_external_deps.py --strict   # 严格模式：缺失 exit 1
+python3 scripts/check_external_deps.py --json     # 机器可读输出
+```
+
+- 登记表（唯一源）：`references/dependency-manifest.yaml`
+- 判据边界：只认登记表里登记的依赖，**不做目录名猜测**、不扫全盘 skills 目录；
+  依赖缺失**不阻断**本包使用（量规已内化到 `references/seven-dimension-rubric.md`，以包内版本为准）
+- ⚠️ **不要再写「待并入体检第 23 项」这类承诺**：
+  体检第 23 项现为「域绑定残留巡检」，与依赖检查无关；
+  `references/dependency-manifest.yaml#checker.integration_status` 已明令「勿再写待并入第 23 项」。
+  若将来要接入体检，须**新开一项**（体检当前共 **23** 项），并同步改那一行登记。
+- 副作用登记：`references/dependency-manifest.yaml` 的 `checker.path` / `invocation` /
+  `scripts/check_external_deps.py` 的文件头，是**同一件事的三处副本**——
+  改路径须三处同改，体检第 17 项（悬空脚本引用）只保证「引用的文件存在」，
+  **不保证「三处指向同一处」**。

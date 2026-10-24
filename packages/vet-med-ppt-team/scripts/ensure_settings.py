@@ -602,6 +602,24 @@ def check_version_consistency(expert_dir):
         htxt = open(hpath, encoding="utf-8", errors="replace").read()
         m = _re.search(r'"version":\s*"(v[0-9.]+)"', htxt)
         rows.append(("scripts/harness.py doctor 常量", _norm(m.group(1)) if m else "<无 version 常量>"))
+        # ⑤ harness.py 文件头 docstring（v3.17.0 补：独立测试发现第 6 处未同步）
+        m = _re.search(r"^harness\.py .*?(v[0-9.]+)\s*$", htxt, _re.M)
+        rows.append(("scripts/harness.py 文件头", _norm(m.group(1)) if m else "<无版本串>"))
+        # ⑥ harness.py argparse 描述（v3.17.0 补：独立测试发现此处曾停在 v3.4.2）
+        m = _re.search(r"description=[\"'][^\"']*?编排内核（确定性工程层）(v[0-9.]+)", htxt)
+        rows.append(("scripts/harness.py argparse 描述", _norm(m.group(1)) if m else "<无版本串>"))
+
+    # ⑦⑧ 本轮新增维护的 yaml version 键（v3.17.0 补）
+    #   缘由（独立测试 N6）：F3/F4 修了「harness.py argparse 描述」「两个 yaml 的 version 键」，
+    #   但**改回去体检照样全绿**——即这些修复**没有回归门禁**，等于随时可能复发。
+    #   现把它们纳入第 14 项：任何一处漂移即判红。
+    for rel in ("references/result-envelope.yaml", "config/domain_config.yaml"):
+        p = os.path.join(expert_dir, *rel.split("/"))
+        if not os.path.isfile(p):
+            continue
+        txt = open(p, encoding="utf-8", errors="replace").read()
+        m = _re.search(r'^version:\s*"?v?([0-9.]+)"?\s*$', txt, _re.M)
+        rows.append((rel, _norm(m.group(1)) if m else "<无 version 段>"))
 
     if not main_ver:
         print(f"[14/{N}] ⚠ 主清单无 version 字段，无法做一致性巡检")
@@ -612,9 +630,10 @@ def check_version_consistency(expert_dir):
         for src, v in bad:
             print(f"     {src:34s} {v}≠ {main_ver}")
         print(f"     → 处置：以 .codebuddy-plugin/plugin.json 为权威，同步其余各处"
-              f"（.claude-plugin/plugin.json / config/harness.yaml / scripts/harness.py 常量+文件头）")
+              f"（.claude-plugin/plugin.json / config/harness.yaml / scripts/harness.py "
+              f"常量+文件头+argparse / references/result-envelope.yaml / config/domain_config.yaml）")
         return 1
-    print(f"[14/{N}] ✓ 版本号四处一致：{main_ver}")
+    print(f"[14/{N}] ✓ 版本号 {len(rows)} 处一致：{main_ver}")
     for src, v in rows:
         print(f"     {src:34s} {v}")
     return 0
@@ -855,26 +874,64 @@ def check_dangling_script_ref(expert_dir):
         return 0
     local = {f for f in os.listdir(scripts_dir) if f.endswith(".py")}
     # 显式登记的外部脚本（课程工作区等），登记即"承认这是外部依赖"
-    known_external = {"registry_rebuild.py", "repair_p0_v200.py"}
+    known_external = {"registry_rebuild.py", "repair_p0_v200.py",
+                      "validate_expert.py"}   # 外部：WorkBuddy 内置 expert-manager skill
 
     import re as _re
-    # v3.17.0 补强：原正则只匹配**裸文件名**（`name.py`），
-    #   于是**带路径的引用**（`references/xxx.py` / `scripts/xxx.py`）完全不被扫到——
-    #   独立测试实测：把本包脚本从 references/ 归位 scripts/ 后，文档里残留的
-    #   `references/check_external_deps.py` 是**悬空引用**（按文档执行 EXIT=2），
-    #   而本检查却报「✓ 无悬空脚本引用」。**为拦截这类缺陷而建的检查，看不见同类缺陷。**
-    #   改法：同时匹配带相对路径的引用，并按「相对包根是否存在」判定。
+    # v3.17.0 补强（两轮，共三个盲区——**这个检查连自己的同类缺陷都抓不住，
+    #   它给出的绿灯就不值钱**）：
+    #   盲区①（原版）：正则只匹配**裸文件名**（`name.py`），
+    #     于是**带路径的引用**（`references/xxx.py` / `scripts/xxx.py`）完全不被扫到。
+    #     实测：把本包脚本从 references/ 归位 scripts/ 后，文档里残留的
+    #     `references/check_external_deps.py` 是**悬空引用**（按文档执行 EXIT=2），
+    #     而本检查却报「✓ 无悬空脚本引用」。
+    #   盲区②（第 1 轮补强后仍漏）：扫描范围只有 `agents/` 与 `references/`，
+    #     **包根的 README.md / INSTALL.md / CHANGELOG.md 根本不在范围内**——
+    #     而这三个恰是用户最先看的文档。实测：README.md:35 的「自查命令」是
+    #     `python3 references/check_external_deps.py`，用户换机后第一入口就撞墙。
+    #   盲区③（第 1 轮补强后仍漏）：匹配形态只认**反引号紧包路径**。
+    #     实测 4 形态对照：`` `no_such_a.py` `` 抓到、`` `scripts/no_such_b.py` `` 抓到，
+    #     而 `python3 scripts/no_such_c.py`（命令行，无反引号）**没抓到**、
+    #     `scripts/no_such_d.py`（裸路径）**没抓到**——
+    #     即**文档里真正会被照抄执行的那两种形态都漏**。
+    #   改法：范围扩到包根三份文档；形态扩到「命令行/裸路径」；
+    #     统一以「相对包根是否存在」为准，避免靠形态猜。
     pat_bare = _re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.py)`")
-    pat_path = _re.compile(r"`((?![/~])[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z0-9_.-]+)+\.py)`")
+    # 带相对路径的引用：反引号紧包 或 裸路径 或 python3 命令行（v3.17.0 三形态合一）
+    #   盲区④（第 2 轮补强后仍漏）：**首段字符类不含连字符**，
+    #     于是 `shared-core/assemble_spawn_prompt.py` 这类**带连字符的目录**整体逃逸。
+    #     且若只放宽字符类，会在 "shared-core/x.py" 内部再匹配出 "core/x.py"（子串误配）。
+    #     修法：首段允许连字符 + 加负向边界断言 `(?<![\w/-])`（前面不是词字符/连字符/斜杠）。
+    #   盲区⑤（补强后仍漏，且属**假阳性**）：**变量/占位符路径静态不可判定**——
+    #     `"$EXPERT_DIR/scripts/assemble_spawn_prompt.py"`（shell 变量前缀）与
+    #     `<WorkBuddy>/resources/.../validate_expert.py`（尖括号占位符），
+    #     剥掉前缀后看似"相对包根不存在"，但**它们本就是合法引用**。
+    #     处置：**跳过**这类路径（前面紧邻 `$` / `<` 时不判），并在此登记为人工复核项——
+    #     静默跳过不等于放行，路径真断时用户按文档执行会立刻撞墙（那属于文档责任，不是本检查能判的）。
+    pat_path = _re.compile(
+        r"(?<![\w/$-<>])(?![/~])[A-Za-z_][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)+\.py")
     dangling = []
+    # 扫描范围：agents/ 与 references/ 各目录 + 包根的三份用户文档
+    targets = []
     for sub in ("agents", "references"):
         d = os.path.join(expert_dir, sub)
         if not os.path.isdir(d):
             continue
         for name in sorted(os.listdir(d)):
-            if not name.endswith((".md", ".yaml", ".yml")):
-                continue
-            fp = os.path.join(d, name)
+            if name.endswith((".md", ".yaml", ".yml")):
+                targets.append((f"{sub}/{name}", os.path.join(d, name)))
+    # ⚠️ **CHANGELOG.md 刻意不在扫描范围内**（v3.17.0 定案）：
+    #   它是**历史变更日志**，里面提到旧脚本名（如 `verify_three_source_config.py`、
+    #   `ghost_script_xyz.py`）、正则示例（`name.py`）是**记录**，不是会被照抄执行的命令——
+    #   把它们判成"悬空引用"是**假阳性**。本项目铁律：假阳性必须为零，否则门禁会被绕过。
+    #   README.md / INSTALL.md 则**必须**扫：那是用户上手的第一入口，
+    #   里面的破命令会让用户换机后第一步就撞墙（这正是 F1 的实际危害）。
+    for name in ("README.md", "INSTALL.md"):
+        fp = os.path.join(expert_dir, name)
+        if os.path.isfile(fp):
+            targets.append((name, fp))
+    for label, fp in targets:
+            sub, name = label.split("/") if "/" in label else ("", label)
             try:
                 txt = open(fp, encoding="utf-8", errors="replace").read()
             except OSError:
@@ -883,12 +940,13 @@ def check_dangling_script_ref(expert_dir):
             for m in set(pat_bare.findall(txt)):
                 if m in local or m in known_external:
                     continue
-                dangling.append(f"{sub}/{name} 引用 `{m}`（包内 scripts/ 无此文件）")
-            # ② 带相对路径的引用：按「相对包根是否存在」判定（v3.17.0 新增）
+                dangling.append(f"{label} 引用 `{m}`（包内 scripts/ 无此文件）")
+            # ② 带相对路径的引用：按「相对包根是否存在」判定（v3.17.0 新增，
+            #   覆盖反引号紧包 / 裸路径 / python3 命令行三种形态）
             for rel in set(pat_path.findall(txt)):
                 if os.path.exists(os.path.join(expert_dir, rel)):
                     continue
-                dangling.append(f"{sub}/{name} 引用 `{rel}`（相对包根不存在该文件）")
+                dangling.append(f"{label} 引用 `{rel}`（相对包根不存在该文件）")
 
     if dangling:
         print(f"[17/{N}] ⚠ 悬空脚本引用 {len(dangling)} 处")

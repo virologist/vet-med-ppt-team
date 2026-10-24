@@ -193,7 +193,7 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 | **是否必需** | **否**——v3.17.0 起，七维量规已**内化**进本包：`references/seven-dimension-rubric.md` |
 | **缺失时的行为** | **不阻断**本包任何能力；诊断入口照常工作，量规以**包内版本**为准 |
 | **安装位置** | `~/.workbuddy/skills/teaching-ppt-studio/`（或 `~/.codebuddy/skills/teaching-ppt-studio/`） |
-| **检查命令** | `python3 references/check_external_deps.py`（缺失时明确打印提示；`--strict` 才返回非零码） |
+| **检查命令** | `python3 scripts/check_external_deps.py`（缺失时明确打印提示；`--strict` 才返回非零码） |
 | **登记位置** | `references/dependency-manifest.yaml`（外部依赖的包内唯一数据源） |
 
 **为什么没有把它写进 plugin.json**：WorkBuddy 专家包清单规范（`plugin-json-spec.md`）
@@ -203,7 +203,7 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 
 ```bash
 # 一键检查外部依赖状态（默认不阻断；缺失只影响「与上游比对更新」）
-python3 references/check_external_deps.py
+python3 scripts/check_external_deps.py
 ```
 
 ---
@@ -273,7 +273,7 @@ python3 references/check_external_deps.py
 随时可自查外部依赖状态：
 
 ```bash
-python3 references/check_external_deps.py
+python3 scripts/check_external_deps.py
 # 缺失时会明确打印：外部 skill teaching-ppt-studio 未安装 → 本包已内化
 # references/seven-dimension-rubric.md，以包内版本为准；外部副本仅用于比对上游更新
 ```

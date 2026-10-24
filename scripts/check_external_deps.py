@@ -15,9 +15,11 @@
 #   python3 scripts/check_external_deps.py --json     # 机器可读输出
 #   VETPPT_SKILLS_ROOT=/tmp/empty python3 scripts/check_external_deps.py   # 覆盖探针根（反例测试用）
 #
-# 注意：本脚本刻意**不放在 scripts/**——scripts/ 由另一批次维护，本批不改他文件。
-#       待体检第 23 项落地后，可由 ensure_settings.py 调用本模块（跨批需求，见
-#       references/dependency-manifest.yaml#checker.integration_status）。
+# v3.17.0：本脚本**已归位 scripts/**（原置于 references/，会漏出体检第 17 项与回归套件的扫描范围）。
+#       **未并入体检**——请按 `python3 scripts/check_external_deps.py` 手动调用或由 CI 调用。
+#       ⚠️ 不要再写「待体检第 23 项落地后…」这类失效承诺：
+#         dependency-manifest.yaml#checker.integration_status 已明令「勿再写待并入第 23 项」
+#         （第 23 项现为域绑定残留巡检，与依赖检查无关），此处若留同一句话就是同一个错误漏一处。
 
 from __future__ import annotations
 

@@ -32,7 +32,7 @@
 - **七维量规已内化进本包**：`references/seven-dimension-rubric.md`
   （内化自 `teaching-ppt-studio` v2.6.0 的同名文件并做了去领域化改造；上游更新时需重新比对）
 - 外部副本**仅用于比对上游更新**；两者不一致时**以包内版本为准**
-- **自查命令**：`python3 references/check_external_deps.py`
+- **自查命令**：`python3 scripts/check_external_deps.py`
   （缺失会明确打印「未安装 → 本包已内化 …，以包内版本为准」，**不阻断**任何能力）
 - **登记位置**：`references/dependency-manifest.yaml`（外部依赖的包内唯一数据源）
 - **为什么没写进 plugin.json**：WorkBuddy 专家包清单规范（`plugin-json-spec.md`）的字段全集
