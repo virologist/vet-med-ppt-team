@@ -1216,13 +1216,52 @@ def check_dead_config_keys(expert_dir):
 # 后者必须靠**运行时断言**（配置值 == 运行时值）覆盖，即
 # `verify_three_source_config.py` 这类逐键断言脚本——静态判据原理上做不到。
 
+    # ── v3.19.2·G-B：同一路径去重（一键一计）──────────────────────
+    # 缺陷（第七次从零诊断·实测）：walk 对列表的每个标量项都用同一路径走到底，
+    #   `license_uncertain_markers` 的 3 个枚举值被计为 3 个"无读取者"（×4 实为
+    #   3 值 + 1 下标形态）、`channels[].probe` 的 7 个通道各计 1 条 ⇒ 13 条展示
+    #   中 9 条是同一键的重复虚增——**计数口径失真会稀释真长尾的信号**。
+    # 修法：展示与计数都按**唯一路径**算（同键多值只报 1 次，附值个数）。
+    seen = {}
+    for fname, full, node in dead:
+        key = f"{fname}#{full}"
+        if key not in seen:
+            seen[key] = (fname, full, node)
+        else:
+            # 保留首个；列表多值场景记录值个数供展示
+            _f, _p, _n = seen[key]
+            if isinstance(_n, (str, int, float, bool)):
+                seen[key] = (_f, _p, [ _n ])  # 升级为列表便于统计
+    # 统计列表键的值个数（用于展示"该键共 N 个枚举值"）
+    list_valued = {}
+    import yaml as _yaml_for_list
+    for cf in cfg_files:
+        try:
+            _d = yaml.safe_load(open(os.path.join(cfg_dir, cf), encoding="utf-8"))
+        except Exception:
+            continue
+        _stack = [("", _d)]
+        while _stack:
+            _path, _node = _stack.pop()
+            if isinstance(_node, dict):
+                for _k, _v in _node.items():
+                    _stack.append((f"{_path}.{_k}" if _path else str(_k), _v))
+            elif isinstance(_node, list) and _node and all(
+                    not isinstance(_x, (dict, list)) for _x in _node):
+                list_valued[f"{cf}#{_path}"] = len(_node)
+
     if dead:
-        print(f"[18/{N}] ℹ 提示：{len(dead)} 个配置键在 scripts/ 中无读取者"
-              f"（代码读取 {alive} 项 · 人读型登记 {textual} 项）")
-        for fname, path, val in dead[:12]:
-            print(f"     · {fname}#{path} = {val!r}")
-        if len(dead) > 12:
-            print(f"     · … 还有 {len(dead) - 12} 项")
+
+        uniq = list(seen.values())
+        print(f"[18/{N}] ℹ 提示：{len(uniq)} 个配置键在 scripts/ 中无读取者"
+              f"（代码读取 {alive} 项 · 人读型登记 {textual} 项 · "
+              f"另有 {len(dead) - len(uniq)} 条为同键多值重复，已按唯一键计）")
+        for fname, path, val in uniq[:12]:
+            _n = list_valued.get(f"{fname}#{path}")
+            _extra = f"（该键共 {_n} 个枚举值，按 1 键计）" if _n and _n > 1 else ""
+            print(f"     · {fname}#{path} = {val!r}{_extra}")
+        if len(uniq) > 12:
+            print(f"     · … 还有 {len(uniq) - 12} 项")
         print("     → 本项为**提示不阻断**（人工复核用）：多数是主理人/流程消费的人读型配置，"
               "如成员工具权限、快照策略、AI 素养判据。")
         print("     → 若确认某个键**本该被脚本消费**却无人读（如本次修掉的 three_source 阈值），"

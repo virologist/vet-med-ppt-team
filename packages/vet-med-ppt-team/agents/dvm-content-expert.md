@@ -237,6 +237,11 @@ maxTurns: 50
 1. **凭据**：走环境变量 `IMA_OPENAPI_CLIENTID` / `IMA_OPENAPI_APIKEY`（真值只从环境读）。
    **未设置 ⇒ 通道降级**：改走联网现查机构权威源（`scripts/fetch_authority.py --plan`
    看编排决策），并**向用户声明降级**——不得静默当同等能力；
+   **用户指定源优先**（v3.19.2）：用户在对话里给过 URL/PDF/网页 ⇒ 先写入
+   `sources.json`（`[{"type":"url","url":"…","purpose":"…","access":"confirmed"}]`）再跑
+   `fetch_authority.py --source-json sources.json`（access ≠ confirmed 会**阻断** rc=4）；
+   L2 实调 MCP（pubmed/fetch/firecrawl）拿到结果后用
+   `fetch_authority.py --record <channel> --result-file <path>` 回填记账；
 2. **找库**：不确定库 ID 时用 `search_knowledge_base`（按库名搜）或
    `get_addable_knowledge_base_list`（列我有权限的库）；
 3. **检索**：`search_knowledge` 必填 `query` + `cursor`（**首次传空字符串**）+
