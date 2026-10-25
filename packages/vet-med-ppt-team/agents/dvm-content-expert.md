@@ -244,10 +244,14 @@ maxTurns: 50
 4. ⚠ **shareId 不是库 ID**：分享链接里的 shareId（64 位 hex）仅供人工导航，
    **不可**填入 `knowledge_base_id`（全部接口只收数字 ID）；
 5. **选库纪律**（`ima.selection_discipline`）：每次任务只选 1–3 个最相关库；跨物种最多 3 库；
+   <!-- DOMAIN_EXAMPLE_BEGIN -->
    查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四维度，
    **库选错比查询串写得糙影响更大**；
+   <!-- DOMAIN_EXAMPLE_END -->
 6. **降级路径**：凭据缺失/通道不可达 ⇒ 联网现查机构权威源
+   <!-- DOMAIN_EXAMPLE_BEGIN -->
    （MSD/WOAH/FAO 端点已在域档案 `evidence_hierarchy.institutional_endpoints` 登记）
+   <!-- DOMAIN_EXAMPLE_END -->
    + 声明降级。
 
 **查询串的写法（与布尔检索式是两套语法，不要互相照抄）**：
