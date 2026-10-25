@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.18.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -4884,7 +4884,7 @@ def cmd_doctor(args):
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.18.0", "executable": __file__,
+    out = {"version": "v3.19.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            "pending_work": _pending_work(wkspace(args)),
@@ -5206,7 +5206,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.18.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

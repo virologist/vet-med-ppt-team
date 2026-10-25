@@ -214,8 +214,8 @@ maxTurns: 50
 
 ## 知识检索路由（按域档案取值 · 本文件不写死库表）
 
-**取值方式**：库清单与「何时调用」取自域档案 `knowledge_bases`；
-调用纪律取自域档案 `knowledge_bases_discipline`（如有）；
+**取值方式**：库清单与「何时调用」取自 **`config/external-tools.yaml#knowledge_bases`**（v3.19.0 起**唯一源**，域档案只留 `knowledge_bases_ref` 指针）；
+调用纪律取自 `config/external-tools.yaml#ima.selection_discipline`；
 取图通道取自域档案 `image_channel.channels`。
 
 **通用兜底（域档案缺失时）**：按 `config/domain-profiles.yaml#fallback.generic_evidence_hierarchy`
@@ -223,14 +223,36 @@ maxTurns: 50
 ❌ **不得静默使用任何其他域的知识库**。
 
 **工具探针优先（每次任务开始时执行）**：
-1. 先确认当前会话的**域档案所指知识库工具**可用（用 ToolSearch 查工具名，如 `mcp__ima-mcp__search_knowledge`）；
-2. 同步探测 UpNote MCP（如 `mcp__upnote` 或 ReadMcpResource 形式），可用则后续闸1/闸2可检索用户个人笔记；
-   不可用明说，不编造检索结果，不空转重试；
-3. 探测结果记入任务状态（task_state.json），避免后续阶段重复探测。
+1. 机器探针：`python3 scripts/harness.py preflight --probe-channels --domain <域id>`
+   —— 探测通道可用性 + **库归属**（库属其他专业 ⇒ **阻断级提醒**）+ 产出**主动更换提醒**；
+   结果落 `task_state.json#tool_probe_results`，同任务不重复探测；
+2. ⚠ **Ima 是 skill 形态，不是 MCP**（v3.19.0 实测修正——本行旧版写 `mcp__ima-mcp__search_knowledge`
+   是错误引用：本机 connector `ima-mcp` 为 disabled，包内从未有该 MCP）。
+   真实调用形态见下节「Ima 知识库调用规程」；
+3. UpNote MCP 同步探测（如 `mcp__upnote`），可用则闸1/闸2 可检索用户个人笔记；
+   不可用明说，不编造检索结果，不空转重试。
+
+**Ima 知识库调用规程（v3.19.0 · 按 `external-tools.yaml#ima` 的 API 契约）**：
+
+1. **凭据**：走环境变量 `IMA_OPENAPI_CLIENTID` / `IMA_OPENAPI_APIKEY`（真值只从环境读）。
+   **未设置 ⇒ 通道降级**：改走联网现查机构权威源（`scripts/fetch_authority.py --plan`
+   看编排决策），并**向用户声明降级**——不得静默当同等能力；
+2. **找库**：不确定库 ID 时用 `search_knowledge_base`（按库名搜）或
+   `get_addable_knowledge_base_list`（列我有权限的库）；
+3. **检索**：`search_knowledge` 必填 `query` + `cursor`（**首次传空字符串**）+
+   `knowledge_base_id`；翻页用返回的 `next_cursor`；
+4. ⚠ **shareId 不是库 ID**：分享链接里的 shareId（64 位 hex）仅供人工导航，
+   **不可**填入 `knowledge_base_id`（全部接口只收数字 ID）；
+5. **选库纪律**（`ima.selection_discipline`）：每次任务只选 1–3 个最相关库；跨物种最多 3 库；
+   查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四维度，
+   **库选错比查询串写得糙影响更大**；
+6. **降级路径**：凭据缺失/通道不可达 ⇒ 联网现查机构权威源
+   （MSD/WOAH/FAO 端点已在域档案 `evidence_hierarchy.institutional_endpoints` 登记）
+   + 声明降级。
 
 **查询串的写法（与布尔检索式是两套语法，不要互相照抄）**：
 
-- **形态不同**：语义召回型知识库是**选库 + 语义召回**（按库 ID 调对应 MCP 工具传查询串），
+- **形态不同**：语义召回型知识库是**选库 + 语义召回**（按库 ID 调 Ima OpenAPI 传查询串），
   **包内未记录其布尔检索语法**；另一条通道（Europe PMC 类）用的是**布尔检索式**
   （`AND` / `OR` / 引号短语 / 年份区间）。
   ❌ **不得把布尔式原样套进语义召回通道**——套上去不会报错，但会静默降低召回、且看不出来失效
@@ -243,6 +265,15 @@ maxTurns: 50
   ③ 查询串是否写进 `evidence[]`；**不要求**布尔语法与年份区间。
 - **取证分工不变**：语义召回走**文本型知识核验**；图像类素材命中率低，
   **图注要素的取证仍以布尔检索通道为准**（见下）。
+
+**术语与交付语言（v3.19.0 · 维度 6）**：
+- 术语标注形态与英语场景判据取 `config/language-profile.yaml`（**唯一源**）；
+- 本域**词条**取域档案 `glossary`（{zh, en, abbr} 三元组）——关键词汇**首次出现**
+  按「中文（English, Abbreviation）」标注；glossary 没有的术语按同形态自行标注并**入证据包**；
+- PPT 默认交付语言 `zh-CN`；仅当命中 `english_allowed_when` 判据
+  （受众语言为 en / 用户明确要求）时才产出英语 PPT，
+  且英语场景下**疾病中文名/药名/法规条款号/数值单位**仍保留中文
+  （`english_minimum.keep_chinese_for`）。
 
 ### 图像素材获取通道（按域档案 `image_channel`）
 

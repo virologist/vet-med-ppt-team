@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.18.0"
+version: "3.19.0"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -195,6 +195,18 @@ gate1_freeze:
     required: true
     source: "config/domain-profiles.yaml + 坍缩产物（route --domain 落盘 → collapse confirm）"
     note: "未确认前域人格**不生效**（脚本只组装、落盘待确认态，不注入人格）"
+  # ── v3.19.0 新增第 7 项：**PPT 交付语言**（维度 6）────────────────
+  - id: delivery_language
+    label: "交付语言（默认中文 + 术语中英标注 + 英语场景判据）"
+    required: true
+    source: "config/language-profile.yaml"
+    note: "PPT 默认语言为中文；关键术语首现按「中文（English, Abbreviation）」标注；受众为全英文授课/留学生班时可产出英语 PPT"
+  # ── v3.19.0 新增第 8 项：**知识库/外部通道路由**（维度 10/13）────
+  - id: knowledge_channel
+    label: "知识库与外部通道路由（库归属 + 通道可用性 + 可更换提醒）"
+    required: true
+    source: "config/external-tools.yaml"
+    note: "知识库组**仅动物医学专业**可用；其他专业须**主动提醒**用户更换/更新；库属其他专业时**阻断**"
 
 # ── 坍缩（把「用哪个域 / 哪些专家」坍缩成一份可确认的专家团配置）────
 # 规格原文：「坍缩结果须**主动输出**并与我对齐、**经确认后生效**」。

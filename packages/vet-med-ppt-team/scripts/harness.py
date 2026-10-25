@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.18.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -469,6 +469,60 @@ def cmd_preflight(args):
                                 f"（成员人格/红线未注入 = 静默降级）"),
                 "detected_by": "preflight", "task_id": getattr(args, "task_id", "") or "",
                 "disclosure_required": bool(fb.get("require_disclosure", True))})
+
+    # ── v3.19.0：外部通道探针（维度 10/11/13）────────────────────
+    # 此前 preflight **只查成员**（agentType 是否被平台回落），**不查任何外部通道**
+    #   ⇒ Ima 凭据缺失、库不可达、MCP 未登记等状态**无人报告**（静默降级的老毛病）。
+    # 探针异常**不崩 preflight**（preflight 是开工前预检，不能因探针挂了就开不了工）：
+    #   探针失败 ⇒ verdict 标 degraded + 告警，按降级路径处置。
+    if getattr(args, "probe_channels", False):
+        report["channels"] = {"status": "skipped"}
+        try:
+            sys.path.insert(0, HERE)
+            import probe_channels as _pc
+            _cfg, _err = _pc._load_yaml(_pc.PKG / "config" / "external-tools.yaml")
+            if _err:
+                report["channels"] = {"status": "unavailable", "detail": _err}
+                report["verdict"] = "degraded"
+                print(f"⚠ 外部通道探针不可用：{_err}", file=sys.stderr)
+            else:
+                _probe = _pc.probe_channels(_cfg, getattr(args, "domain", "") or "")
+                report["channels"] = _probe
+                # 落 task_state.json#tool_probe_results（该键已在 state_allowed_keys 白名单内）
+                try:
+                    sp = os.path.join(os.path.abspath(w), ".workbuddy", "task_state.json")
+                    os.makedirs(os.path.dirname(sp), exist_ok=True)
+                    st = {}
+                    if os.path.isfile(sp):
+                        with open(sp, encoding="utf-8") as f:
+                            st = json.load(f)
+                    if not isinstance(st, dict):
+                        st = {}
+                    st.setdefault("task_id", getattr(args, "task_id", "") or "adhoc")
+                    st.setdefault("workflow", "WF-1")
+                    st.setdefault("current_stage", 0)
+                    st["tool_probe_results"] = _probe
+                    tmp = sp + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(st, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp, sp)
+                except Exception as e:
+                    print(f"⚠ 探针结果落盘失败（{e}）——不影响 preflight 结论", file=sys.stderr)
+                if _probe.get("scope_mismatches"):
+                    report["verdict"] = "degraded"
+                _sugg = _probe.get("replace_suggestions") or []
+                if _sugg:
+                    print("", file=sys.stderr)
+                    print("── 外部通道主动提醒（可配置/可更换）──", file=sys.stderr)
+                    for s in _sugg:
+                        print(f"  [{s.get('severity')}] {s.get('target')}：{s.get('detail')}",
+                              file=sys.stderr)
+        except Exception as e:
+            report["channels"] = {"status": "error", "detail": str(e)[:200]}
+            report["verdict"] = "degraded"
+            print(f"⚠ 外部通道探针异常（{e}）——按降级路径处置，不得静默",
+                  file=sys.stderr)
+
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if bad else 0
 
@@ -518,6 +572,24 @@ def cmd_route(args):
             "red_team": r.get("red_team", False),
             "budgets": cfg.get("budgets", {}),
             "handoff_mode": cfg.get("context", {}).get("handoff_mode")}
+    # ── v3.19.0：闸的**并行/串行**语义进 plan（此前 parallel 字段**零消费者**）──
+    # 缺陷（第五次从零诊断·维度 2 实测）：`config/harness.yaml#stages` 每闸都声明了
+    #   `parallel: yes|no`，但**全包无任何代码读它** ⇒ 该字段是纯声明，
+    #   主理人无法从 route 输出看出「本闸成员该同时派还是排队」，
+    #   而 stage 1 已因伪并行被改过（v3.17.0 批次 B）——正说明这字段有用却没人用。
+    # 处置：把**本次 route 对应的闸**的 parallel 与成员清单写进 plan（消费方 = 主理人）。
+    #   ⚠ L0/L1 走 routing 段（不经过 stages 闸），此时 parallel 无意义 → 不输出该键。
+    _stages = cfg.get("stages") or {}
+    _stage_no = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}.get(str(args.level))
+    if _stage_no is not None and str(_stage_no) in _stages:
+        _st = _stages[str(_stage_no)] or {}
+        plan["stage"] = _stage_no
+        plan["stage_name"] = _st.get("name")
+        plan["parallel"] = bool(_st.get("parallel", False))
+        plan["parallel_members"] = list(_st.get("members") or [])
+        plan["parallel_policy"] = (
+            "本闸成员**并行**派发（互相无数据依赖）" if _st.get("parallel")
+            else "本闸成员**串行**派发（有数据依赖，按 stages 顺序）")
     domain_id = (getattr(args, "domain", None) or "").strip()
     if domain_id:
         # ── v3.17.0：域坍缩（追加域字段 + 落盘坍缩产物）─────────────────
@@ -1095,6 +1167,105 @@ def cmd_collapse(args):
 
 
 # ─────────────────────── gate1 冻结清单校验 ───────────────────────
+def _language_profile():
+    """读 config/language-profile.yaml（PPT 交付语言唯一源）。
+
+    读不到 → 回退**内置最小集**（zh-CN + 术语标注形态），并显式告警
+    （不静默：静默回退等于"声明层≠执行层"的老毛病）。
+    """
+    p = os.path.join(PKG, "config", "language-profile.yaml")
+    try:
+        import yaml
+        with open(p, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if isinstance(data, dict) and data:
+            return data, ""
+    except Exception as e:
+        return ({"default_language": "zh-CN",
+                 "terminology": {"format": "中文（English, Abbreviation）"}},
+                f"语言规格读取失败（{e}）——已回退内置最小集")
+    return ({"default_language": "zh-CN",
+             "terminology": {"format": "中文（English, Abbreviation）"}},
+            "语言规格为空——已回退内置最小集")
+
+
+def _delivery_language_state(intake):
+    """闸1 第 7 项：交付语言就绪度（维度 6）。
+
+    判据（v3.19.0）：
+      ① 语言规格文件可读（有 default_language）；
+      ② 交付语言与受众语言**一致性**检查——受众 zh-CN 而交付 en 时报不一致。
+         级别取 language-profile.yaml#consistency.mismatch_policy（默认 warn，
+         即不阻断：允许给中国学生出英文课件）。
+    返回 (ready, detail)。
+    """
+    spec, warn = _language_profile()
+    if warn:
+        return False, warn
+    default_lang = str(spec.get("default_language") or "zh-CN")
+    term = spec.get("terminology") or {}
+    fmt = str(term.get("format") or "")
+    if not fmt:
+        return False, "语言规格缺 terminology.format（术语标注形态未定义）"
+
+    # 受众语言：intake.audience.language（可缺省 → 不判不一致）
+    aud = (intake or {}).get("audience") or {}
+    aud_lang = ""
+    if isinstance(aud, dict):
+        aud_lang = str(aud.get("language") or "").strip()
+    elif isinstance(aud, str):
+        aud_lang = aud.strip()
+
+    cons = spec.get("consistency") or {}
+    policy = str(cons.get("mismatch_policy") or "warn")
+    detail = f"默认交付语言 {default_lang}；术语标注形态「{fmt}」"
+    if aud_lang and aud_lang.lower() != default_lang.lower():
+        detail += f"；⚠ 受众语言为 {aud_lang}，与默认交付语言不一致（策略 {policy}）"
+        if policy == "block":
+            return False, detail
+    return True, detail
+
+
+def _knowledge_channel_state(w):
+    """闸1 第 8 项：知识库路由就绪度（维度 10/13）。
+
+    判据（v3.19.0）：
+      ① 外部工具配置可读；
+      ② 若工作区有探针结果（task_state.json#tool_probe_results）⇒ 读它；
+         无探针结果时**不做阻断**（探针是可选的开工前检查，不是闸1 必过项），
+         只报"未探测"提示；
+      ③ 探针结果里若存在 **scope_mismatch**（库属其他专业）⇒ **阻断**
+         （管家节点裁决 #4：不得静默使用其他专业的库）。
+    返回 (ready, detail)。
+    """
+    p = os.path.join(PKG, "config", "external-tools.yaml")
+    if not os.path.isfile(p):
+        return False, f"外部工具配置缺失：{p}"
+    probe = {}
+    sp = os.path.join(os.path.abspath(w), ".workbuddy", "task_state.json")
+    if os.path.isfile(sp):
+        try:
+            with open(sp, encoding="utf-8") as f:
+                st = json.load(f)
+            if isinstance(st, dict) and isinstance(st.get("tool_probe_results"), dict):
+                probe = st["tool_probe_results"]
+        except Exception:
+            probe = {}
+    if not probe:
+        return True, ("外部工具配置就位；**尚未探测**通道"
+                      "（建议开工前跑 `preflight --probe-channels`）")
+    mism = probe.get("scope_mismatches") or []
+    if mism:
+        names = "、".join(str(m.get("library_name") or m.get("library_id")) for m in mism)
+        return False, (f"⛔ 知识库属其他专业（{names}）——**不得静默使用**；"
+                       f"须提醒用户更换/更新为其所在专业的库")
+    unavailable = probe.get("unavailable_channels") or []
+    if unavailable:
+        return True, (f"外部通道探测：{len(unavailable)} 条不可用"
+                      f"（{', '.join(unavailable)}）——须按降级路径处置并向用户声明")
+    return True, "外部通道探测全部可用；知识库归属无冲突"
+
+
 def cmd_gate1_check(args):
     """闸1 冻结清单的**机器校验**（v3.18.0 新增）。
 
@@ -1203,6 +1374,10 @@ def cmd_gate1_check(args):
         "acceptance": _intake_ready("acceptance"),
         "template": (template_state["ready"], template_state["detail"]),
         "collapsed_team_config": (collapse_state["ready"], collapse_state["detail"]),
+        # ── v3.19.0 新增第 7 项：交付语言（维度 6）────────────────
+        "delivery_language": _delivery_language_state(intake),
+        # ── v3.19.0 新增第 8 项：知识库路由就绪度（维度 10/13）────
+        "knowledge_channel": _knowledge_channel_state(w),
     }
 
     rows, not_ready = [], []
@@ -1984,7 +2159,19 @@ def cmd_gate(args):
         if getattr(args, "strict", False):
             lint_cmd += ["--strict"]
         t1 = time.time()
-        lp = subprocess.run(lint_cmd, capture_output=True, text=True)
+        # v3.19.0：subprocess 加 timeout（此前三处全部裸跑——子进程挂死 ⇒ gate 永久阻塞；
+        #   上限取 harness.yaml#budgets.max_stage_minutes ×60，语义同源）
+        _stage_timeout = int((cfg.get("budgets") or {}).get("max_stage_minutes", 20)) * 60
+        try:
+            lp = subprocess.run(lint_cmd, capture_output=True, text=True,
+                                timeout=_stage_timeout)
+        except subprocess.TimeoutExpired:
+            _trace(w, cfg, "lint_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": 4,
+                    "seconds": _stage_timeout, "stderr_tail": f"timeout>{_stage_timeout}s"})
+            print(f"\n[harness.gate] ooxml_lint 超时（>{_stage_timeout}s）——按运行错误（exit 4）"
+                  f"走缺陷回流，不当课件红灯。", file=sys.stderr)
+            return 4
         lint_secs = round(time.time() - t1, 2)
         # 输出 lint 报告
         if lp.stdout:
@@ -2016,13 +2203,44 @@ def cmd_gate(args):
                     "--gate-exit", "0"]
         if getattr(args, "tag", None):
             snap_cmd += ["--tag", args.tag]
-        sp = subprocess.run(snap_cmd, capture_output=True, text=True)
+        # v3.19.0：加 timeout + **补 returncode 检查**——此前 snapshot 失败会被
+        #   **静默跳过**（不查 sp.returncode ⇒ 快照没打上也继续跑门禁，
+        #   "写回前自动打点"这个安全网形同虚设）
+        try:
+            sp = subprocess.run(snap_cmd, capture_output=True, text=True,
+                                timeout=_stage_timeout)
+        except subprocess.TimeoutExpired:
+            _trace(w, cfg, "snapshot_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "seconds": _stage_timeout,
+                    "stderr_tail": f"timeout>{_stage_timeout}s"})
+            print(f"\n[harness.gate] snapshot 超时（>{_stage_timeout}s）——按运行错误（exit 4）。"
+                  f"写回前打点失败**不得**静默继续。", file=sys.stderr)
+            return 4
+        if sp.returncode != 0:
+            _trace(w, cfg, "snapshot_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": sp.returncode,
+                    "stderr_tail": (sp.stderr or "")[-300:]})
+            print(f"\n[harness.gate] snapshot 失败（exit {sp.returncode}）——写回前自动打点"
+                  f"未完成，按运行错误（exit 4）走缺陷回流，**不得静默继续**。",
+                  file=sys.stderr)
+            if sp.stderr:
+                print(sp.stderr, end="", file=sys.stderr)
+            return 4
 
     cmd = [sys.executable, vd, args.deck, "--hours", str(args.hours), "--level", args.level]
     if args.json:
         cmd += ["--json", args.json]
     t0 = time.time()
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_stage_timeout)
+    except subprocess.TimeoutExpired:
+        _trace(w, cfg, "gate", args.actor or "ppt-producer",
+               {"deck": os.path.basename(args.deck), "level": args.level, "exit": 4,
+                "meaning": "运行错误——verify_deck 超时", "seconds": _stage_timeout,
+                "stderr_tail": f"timeout>{_stage_timeout}s"})
+        print(f"\n[harness.gate] verify_deck 超时（>{_stage_timeout}s）——按运行错误（exit 4）"
+              f"走缺陷回流，不当课件红灯。", file=sys.stderr)
+        return 4
     secs = round(time.time() - t0, 2)
     meaning = cfg.get("gate_exit_codes", {}).get(str(p.returncode), "未知退出码")
     print(p.stdout, end="")
@@ -4666,7 +4884,7 @@ def cmd_doctor(args):
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.18.0", "executable": __file__,
+    out = {"version": "v3.19.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            "pending_work": _pending_work(wkspace(args)),
@@ -4988,7 +5206,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.18.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -5003,6 +5221,12 @@ def main():
     p.add_argument("--team", default="", help="团队名（读 ~/.workbuddy/teams/<team>/config.json）")
     p.add_argument("--task-id", dest="task_id", default="",
                    help="任务 id（写入 preflight / degrade 事件，便于事后对账）")
+    # v3.19.0：外部通道探针（维度 10/11/13）——此前 preflight 只查成员，不查通道
+    p.add_argument("--probe-channels", dest="probe_channels", action="store_true",
+                   help="同时探测外部 skill/MCP 通道（Ima 库 / PubMed / fetch / 机构端点），"
+                        "结果落 task_state.json#tool_probe_results，并输出**主动更换提醒**")
+    p.add_argument("--domain", default="",
+                   help="配合 --probe-channels：当前任务域 id（用于知识库归属核对）")
     _ws(p)
     p.set_defaults(func=cmd_preflight)
 

@@ -376,40 +376,59 @@ domains:
         - "分辨率不足的放大图"
         - "未标来源图"
       image_science_ownership: "图片承载的科学准确性由内容专家核验；标注位置/字号/版式归视觉设计成员"
-      knowledge_channel_ref: "knowledge_bases（本域的**文本型**知识库路由，与本节图片通道并列，不混用）"
+      knowledge_channel_ref: "config/external-tools.yaml#knowledge_bases（本域的**文本型**知识库路由，与本节图片通道并列，不混用）"
 
-    # 文本型知识库路由（**原 agent MD 第 47–53 行七库硬编码表原样迁入**）
-    # 库 ID 为既有账号内资源标识，非编造；调用时机为路由说明。
-    knowledge_bases:
-      - name: "《禽病》Avian Disease（主力库）"
-        id: "7372985916737739"
-        when: "所有禽类疾病主题"
-      - name: "《猪病》"
-        id: "7372995890793583"
-        when: "猪病主题"
-      - name: "《牛羊病》"
-        id: "7408748326814899"
-        when: "反刍动物疾病主题"
-      - name: "《伴侣动物疾病》"
-        id: "7408031432200206"
-        when: "犬猫等宠物疾病主题"
-      - name: "病毒学-免疫学-细胞学"
-        id: "7372987669968501"
-        when: "机制类、免疫类、疫苗类内容"
-      - name: "流感"
-        id: "7372987141486120"
-        when: "流感病毒深入专题"
-      - name: "动物疫病诊断技术（WOAH/FAO/WHO）"
-        id: "7408735592931220"
-        when: "诊断标准、采样送检、国际规范"
-    knowledge_bases_discipline:
-      - "每次任务只选 1–3 个最相关库；跨物种主题最多 3 库（**库选错比查询串写得糙影响更大**）"
-      - "查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四个维度，**不必写成布尔式**"
-      - "每次任务开始先做工具探针（ima-mcp / UpNote 可用性），探针结果记入 task_state.json，不得重复探测"
+    # ── v3.19.0：文本型知识库路由**已迁出**到 config/external-tools.yaml ──
+    # 迁出理由（第五次从零诊断·维度 10/13）：Ima 是**外部工具**，其路由配置
+    #   （库 ID / 归属专业 / 可否更换 / 调用形态 / 凭据）与「域语义」是两类东西。
+    #   混在域档案里会让「换外部工具配置」变成「改域档案」，且两处并存即两份真相
+    #   ——这正是本项目「同一口径两处漂移」的病灶。
+    # 现状：7 库的 id/name/when **原样迁入** external-tools.yaml#knowledge_bases，
+    #   并新增 owner_scope（仅动物医学专业）/ replaceable（可提醒更换）/ share_url。
+    #   选库纪律迁入 external-tools.yaml#ima.selection_discipline。
+    # ⚠ 本域**不再**保留 knowledge_bases 键——避免两份真相。
+    knowledge_bases_ref: "config/external-tools.yaml#knowledge_bases"
+    knowledge_bases_scope: "animal-medicine"
+    knowledge_bases_note: "本域库路由见 external-tools.yaml（唯一源）；该库组**仅动物医学专业**可用，其他专业须提醒用户更换"
 
     # 术语规范
     terminology:
       - "关键术语首次出现按「中文（English, Abbreviation）」标注"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——
+    #   default_language: zh-CN（PPT 默认中文）
+    #   terminology.format: 中文（English, Abbreviation）（关键词汇**首现补英文**）
+    #   english_allowed_when: 受众为全英文授课/留学生班 等（**只写判据**）
+    # ⚠ 本域只列**词条**（glossary），标注形态与英语判据一律引用 language-profile.yaml。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "禽流感", en: "Avian Influenza", abbr: "AI"}
+      - {zh: "高致病性禽流感", en: "Highly Pathogenic Avian Influenza", abbr: "HPAI"}
+      - {zh: "血凝素", en: "Hemagglutinin", abbr: "HA"}
+      - {zh: "神经氨酸酶", en: "Neuraminidase", abbr: "NA"}
+      - {zh: "糖基化", en: "Glycosylation", abbr: ""}
+      - {zh: "抗原漂移", en: "Antigenic Drift", abbr: ""}
+      - {zh: "抗原转变", en: "Antigenic Shift", abbr: ""}
+      - {zh: "新城疫", en: "Newcastle Disease", abbr: "ND"}
+      - {zh: "传染性支气管炎", en: "Infectious Bronchitis", abbr: "IB"}
+      - {zh: "法氏囊病", en: "Infectious Bursal Disease", abbr: "IBD"}
+      - {zh: "鸭病毒性肝炎", en: "Duck Viral Hepatitis", abbr: "DVH"}
+      - {zh: "禽白痢", en: "Avian Pullorum Disease", abbr: ""}
+      - {zh: "鸡球虫病", en: "Avian Coccidiosis", abbr: ""}
+      - {zh: "沙门氏菌病", en: "Salmonellosis", abbr: ""}
+      - {zh: "大肠杆菌病", en: "Colibacillosis", abbr: ""}
+      - {zh: "支原体病", en: "Mycoplasmosis", abbr: ""}
+      - {zh: "疫苗", en: "Vaccine", abbr: ""}
+      - {zh: "母源抗体", en: "Maternal Antibody", abbr: ""}
+      - {zh: "动物福利", en: "Animal Welfare", abbr: ""}
+      - {zh: "生物安全", en: "Biosecurity", abbr: ""}
+      - {zh: "病死畜禽无害化处理", en: "Harmless Treatment of Dead Livestock and Poultry", abbr: ""}
+      - {zh: "动物疫病监测", en: "Animal Disease Surveillance", abbr: ""}
+      - {zh: "临床表现", en: "Clinical Signs", abbr: ""}
+      - {zh: "剖检病变", en: "Gross Lesions", abbr: ""}
+      - {zh: "实验室诊断", en: "Laboratory Diagnosis", abbr: ""}
+
       - "同一课件术语前后一致"
       - "缩写（IBV/ND/AI 等）首次出现给中文全称 + 一次解释"
       - "近义概念须区分（如抗原漂移 vs 抗原转变），不得混用"
@@ -600,13 +619,39 @@ domains:
         - "无来源截图"
         - "与所述版本不符的界面截图"
         - "AI 生成图冒充真实工具界面或运行结果"
-      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库，**不得回落动物医学库**；走本节官方文档通道）"
+      knowledge_channel_ref: "config/external-tools.yaml#domains_without_knowledge_bases（本域无账号内知识库，**不得回落动物医学库**；走本节官方文档通道）"
 
-    knowledge_bases: []
-    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查官方文档」，**严禁**静默回落动物医学知识库"
+    knowledge_bases_ref: "config/external-tools.yaml#domains_without_knowledge_bases"
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查官方文档」，**严禁**静默回落动物医学知识库；触发知识库检索时须**主动提醒**用户更换/更新（见 external-tools.yaml#domains_without_knowledge_bases[].reminder）"
 
     terminology:
       - "API / 缩写首次出现给全称"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——本域只列**词条**。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "抽象数据类型", en: "Abstract Data Type", abbr: "ADT"}
+      - {zh: "时间复杂度", en: "Time Complexity", abbr: ""}
+      - {zh: "空间复杂度", en: "Space Complexity", abbr: ""}
+      - {zh: "算法", en: "Algorithm", abbr: ""}
+      - {zh: "数据结构", en: "Data Structure", abbr: ""}
+      - {zh: "哈希表", en: "Hash Table", abbr: ""}
+      - {zh: "二叉搜索树", en: "Binary Search Tree", abbr: "BST"}
+      - {zh: "深度优先搜索", en: "Depth-First Search", abbr: "DFS"}
+      - {zh: "广度优先搜索", en: "Breadth-First Search", abbr: "BFS"}
+      - {zh: "动态规划", en: "Dynamic Programming", abbr: "DP"}
+      - {zh: "贪心算法", en: "Greedy Algorithm", abbr: ""}
+      - {zh: "面向对象编程", en: "Object-Oriented Programming", abbr: "OOP"}
+      - {zh: "应用程序接口", en: "Application Programming Interface", abbr: "API"}
+      - {zh: "持续集成", en: "Continuous Integration", abbr: "CI"}
+      - {zh: "单元测试", en: "Unit Testing", abbr: ""}
+      - {zh: "代码审查", en: "Code Review", abbr: ""}
+      - {zh: "技术债", en: "Technical Debt", abbr: ""}
+      - {zh: "重构", en: "Refactoring", abbr: ""}
+      - {zh: "依赖注入", en: "Dependency Injection", abbr: "DI"}
+      - {zh: "缓存", en: "Cache", abbr: ""}
+
       - "命令、代码片段、配置项一律**逐字可复制**，不给伪代码冒充实操"
       - "同一课件同一概念用同一名称；近义库名须区分"
       - "版本敏感术语必须标注适用版本"
@@ -799,13 +844,38 @@ domains:
         - "含真实客户/员工个人信息的截图（未脱敏）"
         - "无授权的他人内部资料"
         - "与所述制度版本不符的流程图"
-      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库；走本节官方指引与制度原文通道）"
+      knowledge_channel_ref: "config/external-tools.yaml#domains_without_knowledge_bases（本域无账号内知识库；走本节官方指引与制度原文通道）"
 
-    knowledge_bases: []
-    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查制度原文与官方指引」，**严禁**静默回落动物医学知识库"
+    knowledge_bases_ref: "config/external-tools.yaml#domains_without_knowledge_bases"
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查制度原文与官方指引」，**严禁**静默回落动物医学知识库；触发知识库检索时须**主动提醒**用户更换/更新（见 external-tools.yaml#domains_without_knowledge_bases[].reminder）"
 
     terminology:
       - "流程环节名与岗位名统一；同一概念不混用「制度名 / 俗称」"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——本域只列**词条**。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "岗前培训", en: "Preboarding Training", abbr: ""}
+      - {zh: "入职培训", en: "Onboarding Training", abbr: ""}
+      - {zh: "在岗培训", en: "On-the-job Training", abbr: "OJT"}
+      - {zh: "合规红线", en: "Compliance Red Line", abbr: ""}
+      - {zh: "关键风险", en: "Key Risk", abbr: ""}
+      - {zh: "内部控制", en: "Internal Control", abbr: ""}
+      - {zh: "操作风险", en: "Operational Risk", abbr: ""}
+      - {zh: "情景演练", en: "Scenario Drills", abbr: ""}
+      - {zh: "行为学习", en: "Behavioral Learning", abbr: ""}
+      - {zh: "岗位胜任力", en: "Job Competency", abbr: ""}
+      - {zh: "绩效考核", en: "Performance Appraisal", abbr: ""}
+      - {zh: "新员工导师制", en: "New Employee Mentorship", abbr: ""}
+      - {zh: "客户投诉处理", en: "Customer Complaint Handling", abbr: ""}
+      - {zh: "跨部门协作", en: "Cross-departmental Collaboration", abbr: ""}
+      - {zh: "职业素养", en: "Professional Literacy", abbr: ""}
+      - {zh: "劳动法", en: "Labor Law", abbr: ""}
+      - {zh: "适用法域", en: "Applicable Jurisdiction", abbr: ""}
+      - {zh: "业务域", en: "Business Domain", abbr: ""}
+      - {zh: "流程关键节点", en: "Critical Process Node", abbr: ""}
+
       - "首次出现的制度简称给全称与出处"
       - "法域相关术语必须标注适用法域"
 

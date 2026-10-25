@@ -1,0 +1,252 @@
+# external-tools.yaml — 外部 skill / MCP 通道唯一源
+# ═══════════════════════════════════════════════════════════════════════
+# v3.19.0 新增。消费方：scripts/probe_channels.py（通道探针 + 主动提醒）、
+#   scripts/fetch_authority.py（L1 HTTP 通道执行 + 编排决策输出）。
+#
+# 立项依据（2026-10-25 第五次从零诊断·维度 10/13 实测）：
+#   · 本机 44 个 MCP 服务（含 pubmed / fetch / fetch-mcp / firecrawl / tavily-search），
+#     但包内对 `ima-mcp` / `mcp__pubmed` / `firecrawl` / `mcp__fetch` 的引用
+#     **全部 0 命中**——全是「文档里写过」，无一条代码路径能调；
+#   · 域档案登记了 7 个 Ima 库 ID，但**没有任何代码消费它**；
+#   · Ima 是 **skill 形态**（非 MCP）：~/.workbuddy/skills/腾讯ima/
+#     （SKILL.md + ima_api.cjs + knowledge-base/references/api.md）；
+#   · 凭据环境变量 IMA_OPENAPI_CLIENTID / IMA_OPENAPI_APIKEY 本机**未设置**
+#     ⇒ 7 个库 ID 目前是死数据（换账号/换机器即失效且无检测）。
+#
+# ★ 分层契约（L1/L2）——**本文件最重要的一条纪律**：
+#   MCP 工具是**宿主会话级**工具（主理人/成员在会话里用 ToolSearch + DeferExecuteTool 调），
+#   **不是 scripts/*.py 能 import 的库** ⇒ 脚本里调 MCP 是做不到的。
+#   故通道按执行层分两类：
+#     · layer: L1（脚本层）—— kind: http，由 scripts/*.py 直接执行（urllib）；
+#     · layer: L2（会话层）—— kind: mcp_tool，由主理人/成员在会话内执行，
+#                   脚本**只判定与记账**（落通道状态与证据账本）。
+#   这不是缺陷，是分工宪法的必然：「谁来调」是语义问题 → LLM；
+#   「调什么 / 失败了怎么办」是确定性问题 → 脚本。
+#
+# 纪律：
+#   · 本文件是外部通道的**唯一源**；domain-profiles.yaml 的 knowledge_bases
+#     **已迁出**（v3.19.0），不留两份真相；
+#   · 每个通道必须有 probe（可用性探针）与 capability（能力声明）；
+#   · 降级必须**显式标注能力降级**，不得静默当同等能力（ML-4「默认假绿」）。
+
+version: "3.19.0"
+
+# ═══════════════════════════════════════════════════════════════
+# ① 联网通道（维度 13）
+# ═══════════════════════════════════════════════════════════════
+channels:
+
+  # ── 文献检索：MCP 优先 + esearch 兜底（管家节点裁决 2026-10-25）──
+  - id: pubmed_mcp
+    kind: mcp_tool
+    tool: "mcp__pubmed__search_articles"
+    layer: L2
+    priority: 1
+    capability: ["文献检索", "元数据", "全文", "相关文献", "按引文反查"]
+    probe: "tool_available"        # 探针：ToolSearch 能否命中该工具
+    note: "MCP 版能力**显著强于** esearch（有元数据/全文/相关文献/按引文反查）"
+
+  - id: pubmed_esearch
+    kind: http
+    layer: L1
+    priority: 2
+    endpoint_ref: "config/domain_config.yaml#three_source_check.source_verification.pubmed"
+    capability: ["PMID 存在性核验"]     # ⚠ 能力弱于 MCP 版（无元数据/全文）
+    probe: "http_endpoint"
+    fallback_for: pubmed_mcp
+    degraded_capability: ["元数据", "全文", "相关文献", "按引文反查"]
+
+  # ── 机构权威源抓取（默沙东 / FAO / WOAH / 用户指定 URL）──
+  - id: firecrawl_scrape
+    kind: mcp_tool
+    tool: "mcp__firecrawl__firecrawl_scrape"
+    layer: L2
+    priority: 1
+    capability: ["URL 抓取", "PDF 抓取", "定向问答", "站点 URL 枚举", "多页爬取"]
+    probe: "tool_available"
+    options:
+      parsers: ["pdf"]
+      maxAge: 0          # ★ 0 = 实时抓。权威源**禁用缓存**
+    note: "工具文档明说「成功响应本身不证明页面仍是当前版本」⇒ maxAge 必须为 0"
+
+  - id: fetch_http
+    kind: mcp_tool
+    tool: "mcp__fetch__fetch"
+    layer: L2
+    priority: 2
+    capability: ["URL 抓取"]
+    probe: "tool_available"
+    fallback_for: firecrawl_scrape
+    degraded_capability: ["PDF 抓取", "定向问答"]
+
+  - id: firecrawl_parse
+    kind: mcp_tool
+    tool: "mcp__firecrawl__firecrawl_parse"
+    layer: L2
+    priority: 2
+    capability: ["本地文档解析"]
+    probe: "tool_available"
+    note: "本地 PDF/DOCX → markdown；**优先用包内 markitdown**（自带、零外部依赖）"
+
+  # ── 书籍存在性核验（国图 / OpenLibrary）──
+  - id: textbook_nlc
+    kind: http
+    layer: L1
+    priority: 1
+    # textbook 段的端点是**列表**（endpoints[]，各含 url 键）⇒ 解析器取第一个可解析项
+    endpoint_ref: "config/domain_config.yaml#three_source_check.source_verification.textbook"
+    endpoint_placeholder: "{isbn}"
+    probe_value: "9787020002207"
+    capability: ["ISBN 存在性核验"]
+    probe: "http_endpoint"
+
+  # ── 法规/标准核验（全国标准信息公共服务平台）──
+  - id: regulation_samr
+    kind: http
+    layer: L1
+    priority: 1
+    endpoint_ref: "config/domain_config.yaml#three_source_check.source_verification.regulation"
+    capability: ["标准号格式与存在性核验"]
+    probe: "http_endpoint"
+
+  # ── 开放获取配图（Europe PMC 补充文件）──
+  - id: europepmc_supplementary
+    kind: http
+    layer: L1
+    priority: 1
+    # 取图端点**逐域不同**（写在域档案 image_channel 里）⇒ 引用路径用列表通配，
+    # 探针按当前 domain_id 选对应域的通道；端点模板含 {PMCID} 占位，
+    # 探针只做**可达性**判断（把占位符替换成探测用 ID）。
+    endpoint_ref: "config/domain-profiles.yaml#domains[].image_channel.channels[].endpoint"
+    endpoint_placeholder: "{PMCID}"
+    probe_value: "PMC00000000"
+    capability: ["OA 补充文件下载"]
+    probe: "http_endpoint"
+    per_domain: true
+    note: "端点模板化（含 {PMCID}）⇒ 探针用 probe_value 占位做可达性判断"
+
+# ═══════════════════════════════════════════════════════════════
+# ② Ima 知识库（维度 10/13 核心）
+# ═══════════════════════════════════════════════════════════════
+# ⚠ **从 domain-profiles.yaml 迁入**（v3.19.0）——旧处已删，不留两份真相。
+#   迁入理由：Ima 是**外部工具**，其路由配置与「域语义」是两类东西，
+#   混在域档案里会让"换工具配置"变成"改域档案"。
+
+ima:
+  kind: skill                     # ★ 是 skill，**不是 MCP**
+  skill_dir_candidates:
+    - "~/.workbuddy/skills/腾讯ima"
+    - "~/.workbuddy/skills/ima-skills"
+  api:
+    base_url: "https://ima.qq.com"
+    base_path: "/openapi/wiki/v1"
+    method: POST
+    auth_header:
+      client_id: "ima-openapi-clientid"
+      api_key: "ima-openapi-apikey"
+  credentials_env: ["IMA_OPENAPI_CLIENTID", "IMA_OPENAPI_APIKEY"]
+  credentials_note: "真值**只从环境变量读**，严禁写进包内任何文件；未设置 = 通道降级"
+  endpoints:
+    search_knowledge:
+      path: "/search_knowledge"
+      required: ["query", "cursor", "knowledge_base_id"]
+      pagination: "next_cursor"
+    search_knowledge_base:
+      path: "/search_knowledge_base"
+      required: ["query", "cursor", "limit"]
+      note: "按库名反查 knowledge_base_id 的正路"
+    get_addable_knowledge_base_list:
+      path: "/get_addable_knowledge_base_list"
+      required: ["cursor"]
+      note: "列出当前用户有权限的库"
+    get_knowledge_list:
+      path: "/get_knowledge_list"
+      required: ["cursor", "limit", "knowledge_base_id"]
+  # ★ shareId **不是** API 可用标识——全部接口只收 knowledge_base_id（数字）。
+  #   shareId 是**人工导航链接**（浏览器打开、核对库名与内容），不可填入 knowledge_base_id。
+  share_id_note: "shareId 仅供人工导航/备查，**不可**填入 knowledge_base_id"
+  # 库选择纪律（沿用原 domain-profiles.yaml#knowledge_bases_discipline）
+  selection_discipline:
+    - "每次任务只选 1–3 个最相关库；跨物种主题最多 3 库（库选错比查询串写得糙影响更大）"
+    - "查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四个维度，不必写成布尔式"
+    - "每次任务开始先做工具探针（ima 可用性），探针结果记入 task_state.json，不得重复探测"
+  # 无凭据/不可达时的降级路径
+  fallback:
+    when: "凭据缺失或通道不可达"
+    to: "联网现查机构权威源（firecrawl_scrape / fetch_http）+ 包内域档案的机构端点"
+    disclose: true          # ★ 降级必须声明（不得静默当同等能力）
+
+# ── 知识库路由（7 库，从 domain-profiles.yaml 迁入）────────────────
+# owner_scope：仅该域专业可用（管家节点裁决 #4：教学标准与知识库均仅动物医学专业）
+# replaceable：用户可灵活更换 → 探针据此产出「主动提醒更换」
+knowledge_bases:
+  - id: "7372985916737739"
+    name: "《禽病》Avian Disease（主力库）"
+    share_url: "https://ima.qq.com/wiki/?shareId=7ccf467e59453f5e7a7a2179219edc742a1bf253e1599bbacc5fd897d1fbe5d6"
+    when: "所有禽类疾病主题"
+    owner_scope: "animal-medicine"
+    is_user_default: true
+    replaceable: true
+    update_policy: "持续更新"
+  - id: "7372995890793583"
+    name: "《猪病》"
+    when: "猪病主题"
+    owner_scope: "animal-medicine"
+    replaceable: true
+  - id: "7408748326814899"
+    name: "《牛羊病》"
+    when: "反刍动物疾病主题"
+    owner_scope: "animal-medicine"
+    replaceable: true
+  - id: "7408031432200206"
+    name: "《伴侣动物疾病》"
+    when: "犬猫等宠物疾病主题"
+    owner_scope: "animal-medicine"
+    replaceable: true
+  - id: "7372987669968501"
+    name: "病毒学-免疫学-细胞学"
+    when: "机制类、免疫类、疫苗类内容"
+    owner_scope: "animal-medicine"
+    replaceable: true
+  - id: "7372987141486120"
+    name: "流感"
+    when: "流感病毒深入专题"
+    owner_scope: "animal-medicine"
+    replaceable: true
+  - id: "7408735592931220"
+    name: "动物疫病诊断技术（WOAH/FAO/WHO）"
+    when: "诊断标准、采样送检、国际规范"
+    owner_scope: "animal-medicine"
+    replaceable: true
+
+# ── 无账号内知识库的域：必须**主动提醒**换库，不得静默回落 ──────
+domains_without_knowledge_bases:
+  - id: computing
+    fallback: "现查官方文档"
+    reminder: "当前配置的知识库属**动物医学专业**，用于编程主题时请更换/更新为你所在专业的知识库"
+  - id: business-training
+    fallback: "现查制度原文与官方指引"
+    reminder: "当前配置的知识库属**动物医学专业**，用于企业内训主题时请更换/更新为你所在专业的知识库"
+
+# ═══════════════════════════════════════════════════════════════
+# ③ 教学标准（维度 10）
+# ═══════════════════════════════════════════════════════════════
+# 管家节点裁决 #4：教育部《动物医学专业教学标准》**进包**，但**仅为动物医学专业**使用；
+#   其他专业/领域使用时**要提醒用户更换/更新**；同时保持「只记标尺来源 + 现查原文」口径。
+# ⇒ 落地形态：references/standards/animal-medicine-teaching-standard.md 是**结构化摘要**
+#   （非全文转录）；需要精确条款时**现查 source_url**。
+standards:
+  - id: animal-medicine-teaching-standard-zk
+    title: "动物医学专业教学标准（高等职业教育专科）"
+    owner_scope: "animal-medicine"        # ★ 仅动物医学专业
+    replaceable: true                     # 其他专业须提醒更换
+    source_url: "https://www.moe.gov.cn/s78/A07/zcs_ztzl/2017_zt06/17zt06_bznr/bznr_zyjyzyjxbz/gdzyjy_zk/zk_nlmydl/nlmydl_xmyl/202502/P020250207521200573443.pdf"
+    source_org: "教育部政府门户网站 moe.gov.cn"
+    published: "2025-02"
+    professional_code: "410301"
+    summary_ref: "references/standards/animal-medicine-teaching-standard.md"
+    verify:
+      method: "sha256"
+      note: "远端文件哈希与摘要登记值不符 ⇒ 标准已更新 ⇒ 提醒用户确认"
+    undergraduate_note: "**本科版直链未核实**——本轮只收录已核实的专科版；本科版现查教育部站点"
+    disclaimer: "本摘要**不替代原文**；需要精确条款时以现查 source_url 为准"

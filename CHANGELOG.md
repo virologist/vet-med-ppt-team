@@ -6,6 +6,127 @@
 
 ---
 
+## [v3.19.0] - 2026-10-25（第五次从零诊断：交付语言规格 + 外部工具唯一源 + 联网权威编排）
+
+> **诊断方式**：不沿用任何历史结论，按管家节点最新 13 维度需求为唯一基准重新取证。
+> **管家节点 4 项裁决**（已全部落地）：① Ima 库可灵活配置 + **主动提醒更换/更新**；
+> ② PubMed **MCP 优先 + esearch 兜底**；③ 英语场景**只写判据**（受众全英文授课/留学生班
+> → 允许英语 PPT），不列具体场景；④ 教育部教学标准**进包但仅动物医学专业**，
+> 其他专业**提醒更换**，保持「只记标尺来源 + 现查原文」。
+> **执行约束**：本会话 Token Plan 配额耗尽（429），子代理三连失败 ⇒ 全部由主理人接管
+> （团队已建、成员已派，按撞限协议处理——阶段产出标注「未经成员产出」）。
+
+### 诊断期决定性实测（全部真跑，非推断）
+
+1. **外部工具引用面 = 0**：包内对 `ima-mcp` / `mcp__pubmed` / `firecrawl` / `mcp__fetch`
+   的引用**全包 0 命中**；域档案 7 个 Ima 库 ID **零消费者**；
+   `IMA_OPENAPI_CLIENTID/APIKEY` 本机**未设置** ⇒ 库 ID 是死数据且无检测。
+2. **维度 6 语言规格 = 0**：「英文PPT」「默认语言」「英语场景」三类关键词**全包零命中**；
+   唯一语言规则是 domain-profiles.yaml 一条泛化术语标注。
+3. **Ima 形态澄清**：Ima 是 **skill**（`~/.workbuddy/skills/腾讯ima/`，OpenAPI:
+   POST https://ima.qq.com/openapi/wiki/v1/*，Header 认证），**不是 MCP**；
+   本机 connector `ima-mcp` 为 disabled——dvm.md 旧版引用 `mcp__ima-mcp__search_knowledge`
+   是**错误形态**（从未存在）。
+4. **shareId ≠ knowledge_base_id**：全部 Ima 接口只收数字库 ID；
+   管家节点给的 shareId 链接是**人工导航链接**，不可填入 API。
+5. **教育部标准可落地**：官方 PDF 直链实测 HTTP 200（10 页，sha256 已登记）；
+   pypdf 可提取 10,418 字符；行为动词实测「了解×9 / 理解×7 / 掌握×24」
+   ⇒ 包内 `audience_depth_scale` **源头可核**。
+6. **探针实现中抓到 3 个真缺陷**（假红/假绿类）：国图端点 HEAD→000 而 GET→200
+   ⇒ 改 GET；OpenLibrary 带 Range 头 → SSL EOF ⇒ Range 失败去 Range 重试；
+   endpoint_ref 实际有 **4 种形态**（原解析器只认 2 种 ⇒ 4 通道被误判不可用）。
+
+### ① 【P0·维度6】新增 config/language-profile.yaml（交付语言唯一源）
+
+`default_language: zh-CN` · `terminology.format「中文（English, Abbreviation）」` ·
+`english_allowed_when`（**只判据**）· `english_minimum`（英语场景的中文保留项：
+疾病中文名/药名/法规条款号/数值单位）· `consistency`（受众-交付语言一致性策略）。
+
+### ② 【P0·维度10/13】新增 config/external-tools.yaml（外部 skill/MCP 唯一源）
+
+`channels[]`（按能力组织 + **L1/L2 分层契约**：MCP 通道 layer=L2 声明式可达、
+HTTP 通道 layer=L1 脚本实探）/ `ima`（完整 API 契约：endpoints 必填参数、
+凭据环境变量、**shareId 约束**、selection_discipline、降级路径）/
+`knowledge_bases`（7 库**从域档案迁入**，增 owner_scope / replaceable /
+share_url / is_user_default）/ `standards`（教育部标准 + owner_scope）/
+`domains_without_knowledge_bases`（无库域的**主动提醒**文案）。
+
+### ③ 【P0·维度11/13】新增 scripts/probe_channels.py（通道探针 + 主动提醒）
+
+8 通道三态探测（available/degraded/unavailable）；**replace_suggestions** 主动提醒
+（四级判据：库属其他专业=**block** / 凭据缺失=warn 可降级 / 标准更新=warn /
+replaceable 常驻 info）；探针结果落 `task_state.json#tool_probe_results`
+（**已在 state_allowed_keys 白名单内**）。
+实测：**8/8 通道 available**。
+
+### ④ 【P0】harness.py preflight 增 `--probe-channels`（此前**只查成员不查通道**）
+
+gate1-check 增两项冻结检查：**delivery_language**（语言规格可读 + 受众一致性）与
+**knowledge_channel**（配置就位 + scope 冲突**阻断**）；`gate1_freeze` 6 → **8 项**。
+探针异常**不崩 preflight**（预检不能因探针挂了开不了工 → verdict=degraded）。
+
+### ⑤ 【P0·维度10】domain-profiles.yaml：knowledge_bases **迁出**
+
+三域旧键全清（改 `knowledge_bases_ref` 指向唯一源）——**不留两份真相**；
+`knowledge_channel_ref` 同步改指 external-tools.yaml。
+
+### ⑥ 【P1·维度13】新增 scripts/fetch_authority.py（统一编排层）
+
+**L1/L2 分层契约**（脚本**不可能**调 MCP ⇒ L1 执行 HTTP 通道 + 出编排决策；
+L2 由会话层实调后 `--record` 回填记账）；用户指定源**优先于**默认通道；
+`access != confirmed` ⇒ **阻断**（rc=4）；esearch 实测走通且标 `degraded`。
+
+### ⑦ 【P1·维度10/13】agents/dvm-content-expert.md：Ima 调用规程重写
+
+修正旧错误引用（`mcp__ima-mcp__*` 从未存在）；按实测 API 契约写规程
+（凭据 → 找库 → 检索（cursor 首传空串）→ shareId 约束 → 降级声明）；
+新增术语与交付语言段。
+
+### ⑧ 【P1·维度6】三域 glossary + delivery_language
+
+29/23/21 条 `{zh, en, abbr}` 词条（动物医学按其 6 条内容轴覆盖）；
+规格唯一源在 language-profile.yaml，域档案只列词条。
+
+### ⑨ 【P1·维度2】`stages.parallel` 首次接线
+
+route 的 plan 增 `stage` / `parallel` / `parallel_members` / `parallel_policy`
+（此前该字段**零消费者**——纯声明；stage 1 曾因伪并行返工，正说明字段有用却没人读）。
+
+### ⑩ 【P1·维度7】extract_assets_usage.md §11：新下载图落盘规范
+
+抽取素材与下载素材**物理隔离**（`_assets/images/` vs `_assets/images_new/`）、
+**共用同一 manifest**（channel 字段区分——不建第二个清单）、三条纪律。
+
+### ⑪ 【P1·维度10】references/standards/animal-medicine-teaching-standard.md
+
+教育部标准结构化摘要（源 URL + sha256 + 原文摘录 + 行为动词档位实测 +
+owner_scope + **本科版未核实不编造 URL**）；保持「摘要不替代原文，现查为准」。
+
+### ⑫ 【P2】死配置处置（诊断点名的 4 组，逐一实测消费者=0）
+
+- `font.title_min_pt` → **接线** verify_deck（run 级判定加标题分支：标题占位符
+  用 28pt 阈值——此前屠明熙 MD 当红线写而机器不设防）；
+  反例A（对照法）：删 yaml 键 vs 不删键行为一致 ⇒ 回退默认值生效。
+- `density.shrink_order` / `theme.*` / `overlay_injection.*` → **登记人读型白名单**
+  （第 18 项 known_textual）：给 LLM/人的执行指令本就不该由脚本读。
+- 页数矛盾项**实查否决**：pedagogy.md:55 与 course-profile-defaults 口径表一致，
+  1.5 课时缺位是显式记录的已知限制——非缺陷（诊断报告误报）。
+
+### ⑬ 【P2·维度9】cmd_gate 三处 subprocess 加 timeout + snapshot 校验补漏
+
+TimeoutExpired → exit 4（运行错误走缺陷回流，不当课件红灯）；
+**补 snapshot returncode 检查**——此前 snapshot 失败被**静默跳过**
+（"写回前自动打点"安全网形同虚设）。
+
+### 回归
+
+`pytest scripts/` **200 passed / 3 skipped**（基线 187 → +13，零失败）；
+新增 `scripts/test_external_tools.py` 13 用例全绿（**每条新判据都有反例**）；
+体检第 14 项 10 处版本一致（3.19.0）；批次 1（`2c72782`）与批次 2+3（`04ceb1b`）
+独立提交、可单独 revert。
+
+---
+
 ## [v3.18.0] - 2026-10-25（第四次从零独立诊断：坍缩真专家团 + 确认强制化 + 联网端点入 prompt）
 
 > **诊断方式**：不沿用任何历史结论，按最新 12 维度需求为唯一基准重新编排
