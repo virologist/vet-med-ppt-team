@@ -21,6 +21,16 @@
 
   配置改动一律走「读原文 → 改文本 → 重载 dict」；**从不写回包内真实 yaml**，
   模块级 setUpModule/tearDownModule 用 sha256 前后比对守住这一点。
+
+── 假阴性自检记录（2026-10-26）──────────────────────────────────────────
+  做法：随机挑 4 条反向例，把它们断言的"破坏"去掉（恢复成正常配置/正常数据），
+  跑该文件 → 这 4 条**必须转红**。转红 = 反例真的在测东西；不转红 = 恒真断言。
+    · test_T1_reverse_loop_b_disabled（loop_b.enabled 改回 true）  → 转红 ✅
+    · test_T9_reverse_limit_from_yaml（retrieval_budget 上限改回 30） → 转红 ✅
+    · test_T16_reverse_missing_source_element（补回「来源与许可」）  → 转红 ✅
+    · test_T13_reverse_p0_rises_blocks（p0 由 7 改回 6）            → 转红 ✅
+  另由 TestImplementationBreak 从**代码侧**做了 5 组双向验证（破坏实现 ⇒ 判定翻转），
+  两侧合起来才敢说"判的是这件事本身"。
 """
 import hashlib
 import importlib.util
