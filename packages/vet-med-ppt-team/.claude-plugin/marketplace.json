@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "vet-med-ppt-team",
-      "version": "3.19.2",
+      "version": "3.19.3",
       "source": "./packages/vet-med-ppt-team",
       "description": "Five-member veterinary teaching-PPT team: stage-gated pipeline, evidence verification via Ima knowledge bases, pedagogy alignment, projection-ready slide solutions."
     }

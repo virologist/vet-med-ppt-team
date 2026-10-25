@@ -6,6 +6,82 @@
 
 ---
 
+## [v3.19.3] - 2026-10-25（第八轮：H1/M1/M2 落地 + L3 死配置 75 键全量处置）
+
+> **执行方式**：轻量型快速通道。子代理 `agent-harness-coder` 派出后先落盘第一步
+> （第 18 项全量输出，已被主理人误提交进 d650d66），后续**因网络 socket 错误失败**
+> ⇒ 按撞限协议由**主理人接管**完成第二步/第三步。阶段产出未经成员产出，已披露。
+
+### ① 【P0】第 18 项人读型白名单机制**全面失效**（L3 确证的核心判据缺陷）
+
+三条证据链（均实跑）：
+- `known_textual` 登记的是**段名**（`overlay_injection`），而 walk 判据查**末段键名**
+  （`max_overlap_ratio`）⇒ 永不匹配，登记形同虚设；
+- `path_prefixes` 是**硬编码 7 个老段**元组，不含任何 v3.19.0 新增段 ⇒ `seg_hit` 兜底也失效；
+- 结果：v3.19.3 批次3 声称"已登记人读型"的 4 组键，**实际全部仍在 dead 清单里**
+  ——体检第 18 项自己没守住自己的白名单。
+
+**修复**：
+- 判据新增 `_is_textual()`：末段键名命中 **或** 任一路径前缀段命中 **或** 带文件前缀的限定路径命中
+  （如 `visual-rules.gate` 只豁免该文件的 gate 段，避免与 `harness.yaml#gate.*` 混淆）；
+- `path_prefixes` 改为**自动派生** = 原 7 段 ∪ known_textual 中的裸段名。
+
+### ② 【P0】75 键全量定性（结构发现：33 键整批"声明了但没接线"）
+
+**结构性结论**：`loop_a`(4) + `loop_b`(20) + `delta_gate`(9) = **33 键 / 占 75 键的 44%**
+整批声明未接线。根因：v3.9.0「双层 Loop 契约下沉批」只把**动作层**下沉为代码
+（loop 子命令 13 个动作），而 yaml 里的**默认值段 / 轮次复核判据 / delta 门禁判据**
+三类仍是纯声明（代码字面量 0 处；`delta_gate` 在 harness.py 的 2 次出现是文件头 docstring）。
+
+**处置（75 键逐条，理由据实）**：
+- 33 键 → 登记人读型，理由写「**声明未接线**」（不谎称"由会话层消费"）；
+  实际接线留 v3.20.0（残留登记·中严重度）；
+- 5 键（`stages.0..4.next`）→ 人读型顺序说明（`next_stage` 代码 0 次），
+  **另加第 24 项漂移守卫**防双份真相；
+- 2 键（`caption_five_elements` / `caption_base_elements_note`）→ v3.19.0 G4 明确标注的
+  **历史键**（向后兼容保留，不可删）；
+- 其余按段名/限定路径登记（ima / standards / channels / terminology /
+  english_allowed_when / consistency / english_minimum / visual-rules.gate /
+  collapse / observability / report_only / license_uncertain_markers）。
+
+**结果**：第 18 项 **75 → 0**（人读型登记 211 → 309），且全量输出不再截断
+（原只列前 12 条，其余 63 条**永远不可见** = 体检项形同虚设）。
+
+### ③ 【P1】新增第 24 项：阶段顺序漂移守卫（阻断）
+
+`stages.{i}.next == i+1`（末级为 None）。理由：yaml 的 `next` 与代码的
+`current_stage+1` 是**同一事实的两处写法**，不一致即「配置说走 A、代码走 B」的静默分叉。
+⚠ **守卫首版踩坑记录**：YAML 的 `0:` 键被解析成 **int**，`stages.get("0")` 恒取到 None
+⇒ 把「所有 next 都是 None」误报成漂移（**假红**）。harness.py 里早有同款归一化注释，
+未参照 ⇒ 修正为 `{str(k): v for k, v in stages.items()}`。**教训：写守卫先看同文件已有的同类归一化。**
+
+### ④ H1 / M1 / M2（上一轮核对发现的 2 处未闭环项，本轮落地）
+
+- **H1**：OneDrive 镜像 `GPT/Claude/vet-med-ppt-team` 从 9cfd228 (v3.15.0)
+  fast-forward 到 d650d66 (v3.19.2)，180 → 238 文件，v3.16–3.19 全部资产到位。
+  **该镜像有 origin remote（同一 GitHub 仓库）⇒ 直接 git pull，无需 rsync**。
+  三副本（私有源 / 镜像 / GitHub）现全为 d650d66，逐字节 0 差异。
+- **M1**：补 `docs/v3.19.2-verification-report.md`（前三版都有独立报告，唯 v3.19.2 缺
+  = 审计链断一环）。
+- **M2**：2 份 v3.17.0 批次历史报告经 diff 核实**包内无对应资产（非重复）**⇒ 补入 docs/；
+  删项目侧空目录 `03-code/`；项目侧 `04-test/` 补 v3.19.2 报告 ⇒ **5 份报告双向 sha256 一致**。
+
+### ⑤ 主理人失误记录（已入日志）
+
+**成员并行工作时用 `git add -A`，把 coder 正在进行的改动卷入了 d650d66**。
+⇒ 纪律：成员并行期间，提交必须**按文件精确 add**，禁止 `git add -A`。
+
+### 回归
+
+`pytest scripts/` **218 passed / 3 skipped**（基线 212 → +6，零失败）；
+新增 `scripts/test_dead_config_disposition.py` 6 用例全绿，**含 3 个反例**：
+- T1b 去掉段名登记 ⇒ overlay_injection.* 4 键**重现**（证明登记真实生效，非假绿）；
+- T3b 注入 stages.2.next=5 ⇒ 第 24 项**精确报红**；
+- T4 75 键处置后残留 = 0。
+validate_expert 0 errors · 体检 **24/24** · 双树 0 差异。
+
+---
+
 ## [v3.19.2] - 2026-10-25（第七次从零诊断 · 前六轮未覆盖取证面 + 2 低严重度收口）
 
 > **诊断性质**：不沿用任何历史结论，与前六轮的实质差异在取证面——

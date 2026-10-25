@@ -112,7 +112,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 23  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射）
+N = 24  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -1121,9 +1121,57 @@ def check_dead_config_keys(expert_dir):
         #   （ISBN 校验位算法、GB 标准号格式），由**会话层**执行，不由脚本算
         #   ⇒ 登记人读型（与 shrink_order 同判据）。
         "format_fallback",
+        # ── v3.19.3：L3 逐键定性（75 键全量处置，主理人接管实施）──────────
+        # 结构性发现：`loop_a`(4) + `loop_b`(20) + `delta_gate`(9) = 33 键
+        #   （占 75 键的 44%）**整批"声明了但没接线"**——v3.9.0「双层 Loop 契约下沉批」
+        #   只把**动作层**下沉为代码（loop 子命令 13 个动作），而 yaml 里的
+        #   **默认值段 / 轮次复核判据 / delta 门禁判据**三类仍是纯声明
+        #   （代码字面量 0 处；`delta_gate` 在 harness.py 的 2 次出现是文件头 docstring）。
+        #   处置：登记人读型（保留声明），理由**据实写"声明未接线"**，不谎称"由会话层消费"；
+        #   实际接线留 v3.20.0（残留登记）。
+        "loop_a", "loop_b", "delta_gate",
+        # harness.yaml#stages.{0..4}.next —— 阶段顺序的人读说明；实际推进由
+        #   `task_state.json#current_stage`（数值）驱动，`next_stage` 在代码中 0 次出现。
+        #   ⚠ 双份真相风险：yaml 的 `next` 与代码的 `current_stage+1` 是同一事实两处写法
+        #     ⇒ 已加漂移守卫（check_stage_order_drift，见第 24 项）。
+        "stages",
+        # visual-rules.yaml#caption_five_elements —— v3.19.0 G4 图注要素统一时
+        #   明确标注的**历史键**（向后兼容保留，下游若有引用不报错），同源
+        #   CHANGELOG:455 记载「保留为历史键并标 deprecated」⇒ 不可删。
+        "caption_five_elements", "caption_base_elements_note",
+        # external-tools.yaml#ima.* / #standards.* / #channels.* —— Ima API 契约、
+        #   教育部标准元数据、通道编排参数。消费方是**会话层**（成员按契约调
+        #   search_knowledge / 按通道参数编排）；本文件只声明契约与参数。
+        #   ⚠ `channels` 段下被 probe_channels.py 消费的键（id/kind/priority/
+        #     endpoint_ref 等）走 alive 分支优先，不受本登记影响。
+        "ima", "standards", "channels",
+        # language-profile.yaml#terminology.* / #english_allowed_when.* /
+        #   #consistency.* / #english_minimum.* —— 术语标注规则、英语场景判据、
+        #   语言一致性策略、英语场景的中文保留项（疾病中文名/学名/法规条款号/数值单位）。
+        #   消费方是**会话层**（dvm-content-expert 按规则标注术语、按判据决定交付语言）；
+        #   被 gate1-check 消费的 default_language 走 alive 分支优先。
+        "terminology", "english_allowed_when", "consistency", "english_minimum",
+        # visual-rules.yaml#gate.deliver_gate_level / #gate.write_gate_level ——
+        #   写回/交付门禁级别的**人读档位说明**（P0/P1/P2/P3 的语义由成员执行）。
+        #   ⚠ 用**带文件前缀**的完整路径登记，避免与 harness.yaml#gate.*
+        #     （退出码定义，被 cmd_gate 消费）混淆。
+        "visual-rules.gate",
+        # hygiene-words.yaml#report_only / #report_only_reason —— 卫生词表的
+        #   「只报不修」模式开关与理由说明；由成员按 flag 执行，脚本不判。
+        "report_only", "report_only_reason",
+        # domain_config.yaml#image_fetch.license_uncertain_markers —— 许可不明标记词
+        #   （待核实/未明/未知）；供成员判断"许可是否可信"，语义判断不由脚本做。
+        "license_uncertain_markers",
+        # harness.yaml#collapse.rationale_filled_by / #observability.report_on_finish ——
+        #   坍缩理由填写方 / 观测收尾上报策略；流程说明，无脚本判定。
+        "collapse", "observability",
     }
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────
+    # v3.19.3：改为**自动派生**——原硬编码 7 段不含任何 v3.19.0 新增段
+    #   （overlay_injection / theme / loop_b / delta_gate / stages / language-profile
+    #   各段 …）⇒ 新段的登记**从未生效**（这是 L3 确证的核心判据缺陷）。
+    #   现改为：原有 7 段 ∪ known_textual 中的裸段名（不含点号的条目）。
     path_prefixes = (
         ".disease_modules",     # 课程目录内容（case_extract.py 按域整体读取疾病名）
         ".gates",               # 五闸人读判据（机器判据在 verify_deck）
@@ -1132,7 +1180,38 @@ def check_dead_config_keys(expert_dir):
         ".fallback",            # 降级通道说明（主理人按条款执行）
         ".members",             # 成员能力/权限声明（供 spawn 前判断）
         ".domains",             # 域标签与命名规范（展示元数据）
-    )
+    ) + tuple(f".{_seg}" for _seg in sorted(known_textual)
+              if "." not in _seg and not _seg.startswith("_"))
+
+    # v3.19.3：人读型判据补强——除末段键名外，**任一路径前缀段**命中
+    #   known_textual 即算人读型（修复：原判据只查末段键名，而登记写的是段名
+    #   ⇒ `overlay_injection.max_overlap_ratio` 的末段是 max_overlap_ratio，
+    #   与登记的 "overlay_injection" **永不匹配**，登记形同虚设）。
+    #   支持两种登记形态：
+    #     · 裸段名（`loop_b`）        → 匹配任一文件的该段
+    #     · 带文件前缀（`visual-rules.gate`）→ 只匹配该文件的该段（防同名段歧义）
+    _kt_bare = {k for k in known_textual if "." not in k}
+    _kt_qualified = {k for k in known_textual if "." in k}
+
+    def _is_textual(fname: str, full: str) -> bool:
+        segs = [s for s in full.split(".") if s]
+        # ① 末段键名命中（原有判据）
+        if segs and segs[-1].lower() in known_textual:
+            return True
+        # ② 任一路径前缀段命中裸段名
+        for s in segs[:-1]:
+            if s.lower() in _kt_bare:
+                return True
+        # ③ 带文件前缀的限定路径命中（如 visual-rules.gate 只豁免该文件的 gate 段）
+        stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+        for q in _kt_qualified:
+            qf, _, qp = q.partition(".")
+            if qf == stem:
+                qsegs = [s for s in qp.split(".") if s]
+                if segs[:len(qsegs)] == qsegs:
+                    return True
+        return False
+
 
     dead, alive, textual = [], 0, 0
 
@@ -1167,7 +1246,7 @@ def check_dead_config_keys(expert_dir):
             # AST 判据：整条路径或末段键名任一命中真实读取点即算"有人消费"
             if (n_full and n_full in norm_reads) or (n_leaf and n_leaf in norm_reads):
                 alive += 1
-            elif seg_hit or leaf.lower() in known_textual:
+            elif seg_hit or _is_textual(fname, full):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
             else:
                 dead.append((fname, full, node))
@@ -2025,6 +2104,64 @@ def check_domain_binding_residue(expert_dir):
     return 0
 
 
+def check_stage_order_drift(expert_dir):
+    """v3.19.3（L3）：第 24 项 —— 阶段顺序漂移守卫（**阻断**）。
+
+    背景（L3 逐键定性时发现的双份真相）：
+      `config/harness.yaml#stages.{i}.next` 是**人读型**阶段顺序说明
+      （`next_stage` 在代码中 0 次出现，实际推进由 `task_state.json#current_stage`
+      数值驱动）。但 yaml 的 `next` 与代码的 `current_stage+1` 是**同一事实的两处写法**
+      ——若有人改了 yaml 的 `next` 顺序而代码仍按数值推进，会出现
+      「配置说闸2 后接闸 5、代码实际去闸 3」的**静默不一致**。
+
+    判据（确定、可反例验证）：
+      `stages.{i}.next == i+1`（最后一级的 `next` 应为 None/空）。
+    漂移即报错并指出该同步哪一项——与第 19 项 check_fallback_drift 同模式
+    （后者防"两份同源数据不一致"，本项防"两处同一事实不一致"）。
+    """
+    hp = os.path.join(expert_dir, "config", "harness.yaml")
+    if not os.path.exists(hp):
+        print(f"[24/{N}] – 缺 harness.yaml，跳过")
+        return 0
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(hp, encoding="utf-8"))
+    except Exception as e:
+        print(f"[24/{N}] ⚠ harness.yaml 解析失败：{e}")
+        return 1
+    stages = cfg.get("stages") or {}
+    if not isinstance(stages, dict) or not stages:
+        print(f"[24/{N}] – stages 段缺失或非 dict，跳过")
+        return 0
+    # ⚠ 键归一化：YAML 里 `0:` 会被解析成 **int**，直接 stages.get("0") 恒取到 None
+    #   （harness.py 里早有同款归一化与注释，此处必须照做——否则守卫会把
+    #   「所有 next 都是 None」误报成漂移，属**假红**。本守卫首版即踩此坑，
+    #   实测抓到后修正——记：写守卫必须先看同文件已有的同类归一化）。
+    stages = {str(k): v for k, v in stages.items()}
+    problems = []
+    nums = sorted(int(k) for k in stages if str(k).isdigit())
+    for i in nums:
+        st = stages.get(str(i)) or {}
+        nxt = st.get("next")
+        name = st.get("name", f"闸{i}")
+        if i == nums[-1]:
+            if nxt not in (None, "", 0):
+                problems.append(f"stages.{i}.next={nxt!r} 应为 None（末级无后继）")
+        elif nxt != i + 1:
+            problems.append(f"stages.{i}.next={nxt!r} ≠ {i + 1}"
+                            f"（{name} 的后继应为 {i + 1}）")
+    if problems:
+        print(f"[24/{N}] ✗ 阶段顺序漂移 {len(problems)} 处：")
+        for p in problems:
+            print(f"     · {p}")
+        print("     → stages.N.next 是**人读型**顺序说明，但必须与代码的 "
+              "current_stage+1 推进一致；不一致即「配置说走 A、代码走 B」的静默分叉。")
+        return 1
+    print(f"[24/{N}] ✓ 阶段顺序一致（{len(nums)} 级："
+          + " → ".join(f"{i}" for i in nums) + "，next 均等于 i+1）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -2096,6 +2233,8 @@ def main():
     # v3.17.0：域绑定残留巡检（**提示级·不阻断**——词表天然会误伤正当举例，
     #   先积累一轮证据再谈阻断；与本轮「假阳性必须为零」的纪律一致）
     rc |= check_domain_binding_residue(path)
+    # v3.19.3（L3）：阶段顺序漂移守卫（阻断；防 stages.N.next 与 current_stage+1 分叉）
+    rc |= check_stage_order_drift(path)
 
     print()
     if rc == 0:
