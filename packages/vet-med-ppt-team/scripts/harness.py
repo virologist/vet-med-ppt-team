@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.4
-
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.20.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -113,7 +112,7 @@ v3.17.0（单一数据源 / 裁判规则落地 / 质量收敛批）：
     python3 scripts/harness.py stage     --action enter|exit --stage 0-4 [--task-id <id>] [--note <备注>] [--workspace <路径>]
     python3 scripts/harness.py gate --deck <课件.pptx> [--hours 2] [--level P0|P1|all] [--workspace <路径>]
     python3 scripts/harness.py template-audit --root <课件根目录> [--json <出>] [--require-registered] [--workspace <路径>]
-    python3 scripts/harness.py loop start|intake|add-item|status|resume|continue|rework|freeze|verify|make-gate|block|terminate|check-path [--loop a|b] [--workspace <路径>]
+    python3 scripts/harness.py loop start|intake|add-item|status|resume|continue|rework|freeze|verify|make-gate|block|terminate|check-path|batch-open|batch-close|batch-status|review|retrieval|baseline|delta|geo-baseline|defaults [--loop a|b] [--actor <写者>] [--workspace <路径>]
 
 退出码：0=正常  1=存在需处置项（降级/预算超/状态非法）  2=用法错误  3=依赖缺失
 """
@@ -136,6 +135,97 @@ PKG = os.path.dirname(HERE)
 HARNESS_YAML = os.path.join(PKG, "config", "harness.yaml")
 AGENTS_DIR = os.path.join(PKG, "agents")
 TEAMS_DIR = os.path.expanduser("~/.workbuddy/teams")
+
+# ── v3.20.0：Loop 契约判定层（scripts/loop_contract.py）──────────────────
+# loop_a / loop_b / delta_gate 三段 34 个叶子键里**可判定的 32 个**，唯一执行者就是它。
+# 为什么延迟导入（不放在文件头 `import loop_contract`）：本文件常被当模块
+#   import（test_* 用 importlib 加载），顶层硬导入失败会让**整个 harness 不可用**，
+#   而契约层只服务 loop/gate 两个子命令——失败应降级这两处，不该拖垮 preflight/state。
+# 导入失败**不得静默**：相关判据全部无执行器，必须显式告警（本包铁律：降级必须可见）。
+_LC = None
+_LC_WARNED = False
+# v3.20.0：note 去重集合（进程内）——见 _lc_note 的说明。
+_LC_NOTE_SEEN = set()
+
+
+def _lc():
+    """取 loop_contract 模块；不可用时返回 None 并**显式告警**（每进程只告警一次）。
+
+    返回 None 意味着"这一层判据**没有执行**"——调用方必须把这句话写进输出，
+    不得当成"判定通过"。
+    """
+    global _LC, _LC_WARNED
+    if _LC is not None:
+        return _LC
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    try:
+        import loop_contract as _m
+        _LC = _m
+        _LC_WARNED = False
+    except Exception as e:
+        _LC = None
+        if not _LC_WARNED:
+            _LC_WARNED = True
+            print(f"⚠ loop_contract.py 导入失败（{e}）——loop_a/loop_b/delta_gate 的 32 个"
+                  f"判据键**无执行器**，相关校验全部跳过（跳过 ≠ 通过）。"
+                  f"请检查 scripts/loop_contract.py 是否存在且可导入。", file=sys.stderr)
+    return _LC
+
+
+def _lc_scalar(v):
+    """把 loop_contract 的标量型返回值归一化（**哨兵，不是适配层**）。
+
+    v3.20.0 背景：loop_contract 的 enabled / original_readonly / geo_baseline_required /
+      image_caption_requires_reading / retrieval_budget 五个函数在重构期曾返回
+      `(值, 是否回落)` 元组（内部 `_bool`/`_int` 漏了一层解包），而调用点是
+      `if not enabled(...)` —— 非空元组恒真 ⇒ **环启用检查永不拦截**，
+      正是"接线了却不设防"。现已统一为标量。
+
+    ⚠ 为什么保留这个函数（它当前是恒等函数，不是死代码）：
+      它的作用是**哨兵**——如果上游哪天又返回元组，这里**告警**而不是静默拆包。
+      静默拆包 = 掩盖上游形态漂移 = 下一个"开关恒真"缺陷的入口。
+      ⇒ 遇到元组即打 stderr 告警，仍返回首元素（保证旧调用点不崩），
+      但这条告警会让人立刻去修上游，而不是让缺陷潜伏。
+    """
+    if isinstance(v, tuple):
+        print(f"⚠ loop_contract 返回了元组 {v!r}（标量接口约定被破坏）——"
+              f"已取首元素，但**这是上游形态漂移**，请修 scripts/loop_contract.py："
+              f"标量函数必须直接返回标量，否则 `if not <开关>` 类调用点恒真。",
+              file=sys.stderr)
+        return v[0]
+    return v
+
+
+def _lc_note(notes):
+    """把 loop_contract 记的 note 全部打到 stderr——回落/降级必须可见，不得吞掉。
+
+    v3.20.0 加**进程内去重**：同一条 note 文本只打印一次。
+    为什么需要去重：note 现在在**产生处**（`_loop_path_for` 等底层函数）就打印，
+    调用方还会把同一批 note 透出一次——不去重则同一条回落提示打两遍，
+    真正的新告警会被重复噪音淹没（本包已有的教训：告警一多就没人看）。
+    去重键 = note 全文；同一进程内重复出现无信息增量。
+    ⚠ 局限（如实标注）：跨进程不共享（harness 每次 CLI 调用是独立进程），
+      故跨动作的同一回落会各打一次——这是有意的，不跨进程累积状态。
+    """
+    for n in notes or []:
+        if n in _LC_NOTE_SEEN:
+            continue
+        _LC_NOTE_SEEN.add(n)
+        print(f"⚠ {n}", file=sys.stderr)
+
+
+def _judge_sources(notes, where, keys):
+    """判据键的取值来源：'取自 yaml' / '回落内置值（原因）'。
+
+    依据 loop_contract 自己记的 note 判定（note 前缀 = `<段>.<键>`），
+    **不另立一份**"这些键配了没配"的判定——另立即又是一处双源。
+    """
+    out = {}
+    for k in keys:
+        hit = next((n for n in (notes or []) if n.startswith(f"{where}.{k}")), "")
+        out[k] = {"source": ("回落内置值" if hit else "取自 yaml"), "note": hit}
+    return out
 
 # yaml 缺失时的兜底（与 harness.yaml 同值；仅用于不阻断运行，且必须打印告警）
 _FALLBACK = {
@@ -2237,6 +2327,22 @@ def cmd_trace(args):
 
 
 # ─────────────────────────── gate ───────────────────────────
+def _lint_supports(lint_path, flag):
+    """ooxml_lint 是否接受某个命令行参数（读源码探测，不靠记忆/不靠猜）。
+
+    为什么需要：把执行器**不认**的参数塞进 lint_cmd，argparse 会直接 exit 2 ⇒
+    门禁被一个"声明了却没实现"的能力打成运行错误——与本包反复治理的
+    "声明层≠执行层"同型。宁可显式告警说"没做"，也不要静默失败或误报红灯。
+    """
+    try:
+        with open(lint_path, encoding="utf-8") as f:
+            return flag in f.read()
+    except Exception as e:
+        print(f"⚠ 读 {lint_path} 失败（{e}）——无法确认其是否支持 {flag}，按**不支持**处理",
+              file=sys.stderr)
+        return False
+
+
 def cmd_gate(args):
     """包装 verify_deck：统一退出码语义 + 抓 traceback + 写入 trace。
     关键：exit 4（运行错误）必须与 exit 1（P0 阻断）分流处置——
@@ -2257,6 +2363,44 @@ def cmd_gate(args):
         lint_cmd = [sys.executable, lint, args.deck]
         if getattr(args, "baseline", None):
             lint_cmd += ["--baseline", args.baseline]
+        # ── v3.20.0 E：几何基线自动注入（loop_b.defaults.geo_baseline_required）──
+        #   未显式 --geo-baseline 时，从 Loop B 状态里登记的 geo_baseline.path 取。
+        #   登记都没有 → 只告警不阻断（gate 也用于非 Loop B 场景）。
+        # ⚠ 传入前**先探执行器能力**：ooxml_lint 若不认这个参数，argparse 会直接
+        #   exit 2 ⇒ gate 被一个"根本没实现的能力"打成运行错误（本包最忌的
+        #   "声明了能力、执行器不存在"）。不支持即显式告警告知，不硬塞。
+        gb = (getattr(args, "geo_baseline", "") or "").strip()
+        gb_src = "命令行 --geo-baseline"
+        if not gb:
+            lcg = _lc()
+            if lcg is not None:
+                notes = []
+                req = _lc_scalar(lcg.geo_baseline_required(cfg, notes))
+                _lc_note(notes)
+                if req:
+                    pth, nts = _loop_path_for(cfg, w, "b")
+                    _lc_note(nts)
+                    stb = _read_json_readonly(pth)
+                    reg = ((stb or {}).get("geo_baseline") or {}).get("path")
+                    if reg and os.path.isfile(reg):
+                        gb, gb_src = reg, "Loop B 状态登记（`loop geo-baseline`）"
+                        print(f"[harness.gate] --geo-baseline 取自{gb_src}：{gb}",
+                              file=sys.stderr)
+                    else:
+                        print(f"⚠ loop_b.defaults.geo_baseline_required=true，但本工作空间"
+                              f"**未登记**几何基线 → 本次 lint 不带 --geo-baseline，"
+                              f"V7「插入物新增重叠」判定不成立。先跑 "
+                              f"`loop geo-baseline --path <模板.pptx>`。", file=sys.stderr)
+            else:
+                print("⚠ loop_contract 不可用 → 未做几何基线注入", file=sys.stderr)
+        if gb:
+            if _lint_supports(lint, "--geo-baseline"):
+                lint_cmd += ["--geo-baseline", gb]
+                print(f"[harness.gate] --geo-baseline 来源：{gb_src}", file=sys.stderr)
+            else:
+                print(f"⚠ ooxml_lint.py **不接受** --geo-baseline → 几何基线 {gb} "
+                      f"未传入（来源：{gb_src}）。GEO-003「新增重叠」审计**无执行器**，"
+                      f"本次不做空间避让判定（不做 ≠ 无重叠）。", file=sys.stderr)
         if getattr(args, "strict", False):
             lint_cmd += ["--strict"]
         t1 = time.time()
@@ -3940,14 +4084,49 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
+def _loop_path_for(cfg, w, loop, notes=None):
+    """状态文件路径（**唯一源**：loop_contract.state_path）+ 回落 note 交调用方透出。
+
+    v3.20.0 修一处**真实漂移**：配置写 Loop A 状态在 `<包>/.workbuddy/loopA_state.json`，
+    而代码此前硬写 `<工作区>/.workbuddy/loopA_state.json` —— 两处不一致，
+    "改 loop_a.state_file 不生效"。Loop B 两者恰好同值（`<工作区>/.workbuddy/`），
+    故此漂移长期无人发现。改完后 Loop A 状态落到包目录（`.workbuddy/` 已被 .gitignore 忽略）。
+    """
+    notes = notes if notes is not None else []
+    lc = _lc()
+    if lc is None:
+        notes.append("loop_contract 不可用 → 状态文件路径回落到 "
+                     "<工作区>/.workbuddy/loop{X}_state.json"
+                     "（此时改 loop_a/loop_b.state_file 不生效）")
+        p = os.path.join(w, ".workbuddy", f"loop{loop.upper()}_state.json")
+    else:
+        _before = len(notes)
+        p, notes = lc.state_path(cfg, w, loop, notes)
+        # v3.20.0：note 在**产生处**就打到 stderr——不依赖调用方记得透出。
+        # 理由：note 只放在返回值里，一旦某个调用方忘了传出去，这条回落就静默消失，
+        # 而"静默回落"正是本包反复吃亏的形态（看起来有护栏、实际没设防）。
+        # _lc_note 自带进程内去重 ⇒ 外层再透出一次不会重复刷屏。
+        _lc_note(notes[_before:])
+    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+    return p, notes
+
+
 def _loop_state_path(w, loop):
-    p = os.path.join(w, ".workbuddy")
-    os.makedirs(p, exist_ok=True)
-    return os.path.join(p, f"loop{loop.upper()}_state.json")
+    """兼容既有 20+ 处调用点：内部取 cfg 转调 loop_contract，回落 note 打到 stderr。"""
+    cfg, _ = load_cfg()
+    p, notes = _loop_path_for(cfg, w, loop)
+    _lc_note(notes)
+    return p
 
 
 def _state_lock_path(w, loop):
     return _loop_state_path(w, loop) + ".lock"
+
+
+def _loop_mark_writer(st, actor):
+    """写者留痕（loop_b.single_writer 的配套面：谁改的状态必须可查）。"""
+    st["last_writer"] = (actor or "").strip() or "未声明"
+    return st
 
 
 class _StateLock:
@@ -4225,8 +4404,106 @@ def _loop_counts(st):
 
 
 def _resolve_placeholders(p, w):
-    """把 harness.yaml 里的 <包> / <工作区> 占位符解析成真实绝对路径。"""
-    return p.replace("<包>", PKG).replace("<工作区>", w)
+    """把 harness.yaml 里的 <包> / <工作区> 占位符解析成真实绝对路径。
+
+    v3.20.0：转调 `loop_contract.resolve_placeholders`（**替换规则的唯一源**）。
+      两处各写一份 = 同口径双源（本包已多次吃亏：改一边另一边不知道）。
+      仅当 loop_contract 导入失败时才走下面的降级分支——此时 `_lc()` 已显式告警。
+    """
+    lc = _lc()
+    if lc is None:
+        return str(p).replace("<包>", PKG).replace("<工作区>", w)
+    return lc.resolve_placeholders(p, w)
+
+
+def _in_scope_dirs(t, ps):
+    """t 是否落在目录白名单 ps 内。
+
+    scope 写的是**目录**（`<包>/scripts`），须按"目录内"判定而非精确相等——
+    否则 `<包>/scripts/harness.py` 永远不在白名单里。
+    """
+    return any(t == p or t.startswith(p.rstrip("/") + "/") for p in ps)
+
+
+def _loop_a_scope_check(cfg, w, target):
+    """Loop A 写前越界校验（loop_a.forbidden_paths + loop_a.scope）——**唯一实现**。
+
+    同一份判定供两处消费：`loop check-path` 与 `loop batch-open` 的声明文件校验。
+    若各写一份，改 scope 时只改一处 ⇒ 另一处的"越界拦截"就成了摆设
+    （dual-loop-governance.md §8 第 3 项自认"非代码级强制"的同型病）。
+
+    返回 (ok, msg, detail)；ok=False 时 msg 可直接打印。
+    """
+    la = cfg.get("loop_a", {}) or {}
+    t = os.path.abspath(target)
+    forb = [_resolve_placeholders(p, w) for p in (la.get("forbidden_paths") or [])]
+    hits = [p for p in forb if _glob_match(t, p)]
+    if hits:
+        return False, (f"Loop A 越界：{t}\n   命中禁区 {hits}——"
+                       f"Loop A 只许改专家团自身，不得触碰用户课件目录。"), \
+            {"kind": "forbidden", "path": t, "hits": hits}
+    scope = [_resolve_placeholders(p, w) for p in (la.get("scope") or [])]
+    if scope and not _in_scope_dirs(t, scope):
+        return False, f"Loop A 越权：{t} 不在白名单 scope 内（{scope}）。", \
+            {"kind": "out_of_scope", "path": t, "scope": scope}
+    return True, "", {"kind": "ok", "path": t, "scope": scope, "forbidden": forb}
+
+
+def _parse_csv(s):
+    """逗号分隔列表（--files / --regression / --elements 共用）。"""
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+
+def _git_pkg(argv):
+    """在**包目录**跑 git；返回 (stdout, 失败原因)。失败时 stdout=None。
+
+    Loop A 改的是包内文件，故工作副本状态只能问包目录的 git——不能拿 cwd 的
+    仓库状态冒充（那正是"拿别人的成绩单算自己的进度"同型错误）。
+    """
+    try:
+        p = subprocess.run(["git", "-C", PKG] + list(argv),
+                           capture_output=True, text=True, timeout=20)
+    except Exception as e:
+        return None, f"git 不可用（{type(e).__name__}: {e}）"
+    if p.returncode != 0:
+        return None, ((p.stderr or p.stdout or "").strip()[:200] or f"git exit {p.returncode}")
+    return p.stdout, ""
+
+
+def _git_changed_files():
+    """包目录当前改动文件的**绝对路径**集合。不可得时返回 (None, 原因)。
+
+    ⚠ 必须转成绝对路径：声明文件（--files）是绝对路径，两边口径不一致 ⇒
+      集合差集把"确实声明过的文件"也算成越界改动（实测即踩到：声明
+      scripts/harness.py 却被判 undeclared_changes）——假阳性与漏判同样致命。
+    """
+    out, why = _git_pkg(["status", "--porcelain"])
+    if out is None:
+        return None, why
+    changed = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        rest = line[3:].strip()
+        if " -> " in rest:          # 重命名：R  old -> new
+            old, new = rest.split(" -> ", 1)
+            changed += [old.strip().strip('"'), new.strip().strip('"')]
+        else:
+            changed.append(rest.strip().strip('"'))
+    return [os.path.abspath(os.path.join(PKG, c)) for c in changed if c], ""
+
+
+def _resolve_declared_file(f):
+    """声明文件解析：绝对路径原样；相对路径优先按 cwd，其次按**包根**（Loop A 改的是包内文件）。"""
+    if os.path.isabs(f):
+        return os.path.abspath(f)
+    c = os.path.abspath(f)
+    if os.path.exists(c):
+        return c
+    pk = os.path.abspath(os.path.join(PKG, f))
+    if os.path.exists(pk):
+        return pk
+    return c
 
 
 def _glob_match(path, pattern):
@@ -4270,6 +4547,248 @@ def _parse_kv_list(s):
     return out
 
 
+# ── v3.20.0 B：Loop A 批次门（loop_a 三件套的执行者）────────────────────
+def _loop_a_state(cfg, w):
+    """读 Loop A 状态（不存在 → 空字典）；返回 (st, path)。"""
+    p, notes = _loop_path_for(cfg, w, "a")
+    _lc_note(notes)
+    if not os.path.exists(p):
+        return {}, p
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return (d if isinstance(d, dict) else {}), p
+    except Exception as e:
+        print(f"⚠ loopA_state.json 解析失败（{e}），按空状态处理", file=sys.stderr)
+        return {}, p
+
+
+def _loop_batch(args, cfg, w, actor=""):
+    """Loop A 批次门：batch-open / batch-close / batch-status。
+
+    为什么这三条必须由代码执行（此前它们是 harness.yaml#loop_a 里的纯声明，零读取者）：
+      · confirm_before_each_batch —— "每批修改前停一次"无人拦就等于没写；
+      · patch_discipline=minimal —— **改动集合 ⊆ 声明集合**是可判定的；
+        "改得多不多、该不该改"不可判定（代码不碰，也不宣称自己判了）；
+      · regression_required —— 缺一即不合格："跑了两项就算了"是 Loop A 最典型的
+        自评失真入口（自评失真在本包已反复造成返工）。
+
+    ⚠ 状态文件走 loop_a.state_file（**包目录**下），与 Loop B 状态互不干扰。
+    """
+    lc = _lc()
+    st, path = _loop_a_state(cfg, w)
+    batches = st.setdefault("batches", {}) if isinstance(st.get("batches"), dict) \
+        else st.setdefault("batches", {})
+
+    # ── batch-status：当前批次 + **每个判据键的取值来源**（回落必须可见）──
+    if args.action == "batch-status":
+        notes = []
+        bcfg = lc.loop_a_batch_cfg(cfg, notes)
+        src = _judge_sources(notes, "loop_a", list(bcfg.keys()))
+        judge = {k: {"value": bcfg[k], "source": src[k]["source"], "note": src[k]["note"]}
+                 for k in bcfg}
+        bid = (getattr(args, "batch", "") or "").strip()
+        pick = {bid: batches[bid]} if bid and bid in batches else dict(batches)
+        out = {"loop": "A", "state_file": path, "batches": pick, "judge": judge,
+               "notes": notes}
+        if bid and bid not in batches:
+            out["warning"] = f"批次 {bid} 未登记（已登记的：{sorted(batches)}）"
+        _lc_note(notes)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── batch-open：开工前声明 + 越界校验 + 起基线 commit ────────────────
+    if args.action == "batch-open":
+        files = _parse_csv(getattr(args, "files", ""))
+        if not files:
+            print("用法错误：batch-open 必须带 --files a.py,b.py——"
+                  "loop_a.patch_discipline=minimal 要求**开工前**声明本批将改动的文件"
+                  "（不声明即无从判定是否最小）", file=sys.stderr)
+            return 2
+        declared, rejected = [], []
+        for f in files:
+            ap = _resolve_declared_file(f)
+            ok, msg, detail = _loop_a_scope_check(cfg, w, ap)
+            if ok:
+                declared.append(ap)
+            else:
+                rejected.append({"file": f, "resolved": ap, "kind": detail.get("kind"),
+                                 "reason": msg})
+        if rejected:
+            print(json.dumps({"ok": False, "rejected": rejected,
+                              "note": "声明文件必须先过 Loop A 越界校验"
+                                      "（loop_a.scope / loop_a.forbidden_paths）"},
+                             ensure_ascii=False, indent=2))
+            print(f"⛔ {len(rejected)} 个声明文件越界/越权 → 批次未开"
+                  f"（Loop A 只许改专家团自身，不得触碰用户课件目录）", file=sys.stderr)
+            return 1
+        notes = []
+        bcfg = lc.loop_a_batch_cfg(cfg, notes)
+        _lc_note(notes)
+        bid = (getattr(args, "batch", "") or "").strip() or f"b{int(time.time())}"
+        commit, why = _git_pkg(["rev-parse", "HEAD"])
+        if commit is None:
+            print(f"⚠ 取 start_commit 失败：{why}——本批**无起始 commit**，"
+                  f"事后无法机器回溯「本批改动了什么」", file=sys.stderr)
+            commit = ""
+        batches[bid] = {
+            "id": bid,
+            "theme": getattr(args, "note", "") or "",
+            "declared_files": declared,
+            "patch_discipline": bcfg["patch_discipline"],
+            "regression_required": list(bcfg["regression_required"]),
+            "opened_at": now_iso(),
+            "start_commit": (commit or "").strip() or None,
+            "confirmed": False, "closed": False,
+        }
+        _loop_mark_writer(st, actor)
+        _loop_hist(st, "batch_open", {"batch": bid, "files": declared,
+                                      "theme": getattr(args, "note", "") or ""})
+        _atomic_write_json(path, st)
+        print(json.dumps({"ok": True, "batch": batches[bid], "state_file": path,
+                          "notes": notes}, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── batch-close：确认 → 回归 → 最小补丁 → 收批 ──────────────────────
+    bid = (getattr(args, "batch", "") or "").strip()
+    if not bid:
+        opened = [k for k, v in batches.items()
+                  if isinstance(v, dict) and not v.get("closed")]
+        if len(opened) == 1:
+            bid = opened[0]
+        elif not opened:
+            print("用法错误：当前无未关闭批次；batch-close 须带 --batch <id>", file=sys.stderr)
+            return 2
+        else:
+            print(f"用法错误：有 {len(opened)} 个未关闭批次（{opened}）——"
+                  f"须用 --batch <id> 明确指定（不得猜）", file=sys.stderr)
+            return 2
+    b = batches.get(bid)
+    if not isinstance(b, dict):
+        print(f"用法错误：批次 {bid} 未登记（已登记：{sorted(batches)}）", file=sys.stderr)
+        return 2
+
+    notes_all = []
+    notes = []
+    bcfg = lc.loop_a_batch_cfg(cfg, notes)
+    notes_all.extend(notes)
+    _lc_note(notes)
+
+    # ① 每批修改前停一次（confirm_before_each_batch）
+    if bcfg["confirm_before_each_batch"] and not getattr(args, "confirmed", False):
+        print(f"⛔ 批次 {bid} 未获确认（loop_a.confirm_before_each_batch=true）——"
+              f"**每批修改前停一次，未确认不动手**；确认后加 --confirmed 重跑。",
+              file=sys.stderr)
+        print(json.dumps({"ok": False, "batch": bid, "reason": "not_confirmed",
+                          "judge_source": "取自 yaml#loop_a.confirm_before_each_batch",
+                          "notes": notes_all}, ensure_ascii=False, indent=2))
+        return 1
+
+    # ② 回归必跑齐（regression_required）
+    ran = _parse_csv(getattr(args, "regression", ""))
+    notes = []
+    okr, missing, required, extra = lc.regression_check(cfg, ran, notes)
+    notes_all.extend(notes)
+    _lc_note(notes)
+    if not okr:
+        print(json.dumps({"ok": False, "batch": bid, "reason": "regression_incomplete",
+                          "missing": missing, "required": required, "ran": ran,
+                          "extra": extra, "notes": notes_all},
+                         ensure_ascii=False, indent=2))
+        print(f"⛔ 回归缺 {len(missing)} 项（共需 {len(required)} 项）：{missing}——"
+              f"跑齐再收批（loop_a.regression_required）；"
+              f"「跑了两项就算了」是最常见的自评失真入口", file=sys.stderr)
+        return 1
+
+    # ③ 最小补丁纪律（patch_discipline）：实际改动集合 ⊆ 声明集合
+    actual, why = _git_changed_files()
+    if actual is None:
+        print(f"⚠ 实际改动集合不可得：{why}——**未做**改动集合比对，"
+              f"不得据此宣称已遵守最小补丁纪律", file=sys.stderr)
+        notes_all.append(f"实际改动集合不可得（{why}）——改动集合比对**未执行**")
+    notes = []
+    okp, problems, declared = lc.patch_discipline_check(
+        cfg, b.get("declared_files"), actual, notes)
+    notes_all.extend(notes)
+    _lc_note(notes)
+    if not okp:
+        print(json.dumps({"ok": False, "batch": bid, "reason": "patch_discipline_violation",
+                          "problems": [{"kind": k, "detail": d} for k, d in problems],
+                          "declared": declared, "actual": actual, "notes": notes_all},
+                         ensure_ascii=False, indent=2))
+        print(f"⛔ 最小补丁纪律不通过（loop_a.patch_discipline="
+              f"{bcfg['patch_discipline']}）：{[d for _k, d in problems]}", file=sys.stderr)
+        return 1
+
+    b["closed"] = True
+    b["confirmed"] = True
+    b["closed_at"] = now_iso()
+    b["regression_ran"] = ran
+    b["actual_files"] = actual
+    _loop_mark_writer(st, actor)
+    _loop_hist(st, "batch_close", {"batch": bid, "regression": ran,
+                                   "actual": actual, "declared": declared})
+    _atomic_write_json(path, st)
+    print(json.dumps({"ok": True, "batch": b, "state_file": path,
+                      "notes": notes_all}, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ── v3.20.0 C6：默认档视图（loop_b.defaults.*）───────────────────────────
+def _loop_defaults(args, cfg, w):
+    """`loop defaults`——默认档展示 / 引用核验 / 生成 intake 待确认模板。
+
+    为什么这是真接线而不是"把默认值打印出来"：
+      · **引用核验**（--check-refs）：默认档里 5 个"指向包内文件"的键做存在性核验，
+        改了文件名会立刻红（此前是引用悬空无人知）；
+      · **模板生成**（--out）：产物里所有条目 status=suggested，制作前置门只认
+        confirmed ⇒ "不得用仓库默认值冒充用户确认"这条铁律由**代码**保证，
+        而不是靠人记得住。
+    """
+    lc = _lc()
+    if lc is None:
+        print("⛔ loop_contract 不可用 → 默认档（loop_b.defaults.*）无执行器，"
+              "无法展示（未展示 ≠ 无默认档）", file=sys.stderr)
+        return 3
+    notes = []
+    d = lc.defaults_view(cfg, notes)
+    okref, missing, present = lc.defaults_ref_check(cfg, notes)
+    out = {
+        "loop": "B", "workspace": w,
+        "defaults": d,
+        "defaults_refs": {
+            "ok": bool(okref),
+            "present": [{"key": k, "ref": v} for k, v in present],
+            "missing": [{"key": k, "ref": v} for k, v in missing],
+        },
+        "notes": list(notes),
+    }
+    outpath = (getattr(args, "out", "") or "").strip()
+    if outpath:
+        tpl = lc.intake_template_from_defaults(cfg, notes)
+        tpl["_generated_by"] = "harness.py loop defaults --out"
+        tpl["_generated_at"] = now_iso()
+        p = os.path.abspath(outpath)
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(tpl, f, ensure_ascii=False, indent=2)
+        out["intake_template_written"] = p
+        out["intake_template"] = tpl
+        print(f"⚠ 已生成 intake 待确认模板：{p}\n"
+              f"   所有条目 status=suggested —— **suggested ≠ confirmed**："
+              f"须逐项请用户确认后改为 confirmed，制作前置门（loop make-gate）只认 confirmed"
+              f"（不得用仓库默认值冒充用户确认）。", file=sys.stderr)
+    out["notes"] = list(notes)
+    _lc_note(notes)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if getattr(args, "check_refs", False) and not okref:
+        print(f"⛔ 默认档引用的包内文件缺失 {len(missing)} 项："
+              f"{[k for k, _v in missing]}——引用悬空会让下游按不存在的档案办事",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_loop(args):
     """双层 Loop 状态机（v3.9.0）：把 dual-loop-governance.md 的可判定条款下沉为代码。
 
@@ -4281,6 +4800,18 @@ def cmd_loop(args):
       · 预算触顶只暂停不宣布通过 → continue 超 max_rounds 写「达到预算但未完成」并 exit 1
       · 原件只读 → verify/make-gate 比对启动时的 sha256+size+mtime
       · 两环目录隔离 → check-path 校验写入目标是否越界
+
+    v3.20.0（判据层接线批）：上面每条的**判据**此前都是代码里的字面量或文档里的
+      Markdown，harness.yaml#loop_a / #loop_b / #delta_gate 的 34 个键里 32 个
+      **零读取者**（配了不生效）。现在判据一律经 `scripts/loop_contract.py` 取：
+      · enabled / state_file / coexist_with / single_writer / original_readonly
+      · round_review.*（沉默不确认 / 部分接受 / 返修不进位 / 失效口径 / 轮报项数）
+      · budgets.retrieval_budget_per_round / defaults.*（默认档与引用核验）
+      · loop_a 批次门（先确认 / 最小补丁 / 回归必跑）
+      · delta_gate（基线字段 / 自引入阻断 / 报告格式 / 空间审计 / 判读留痕 / 挂账）
+      ⚠ 诚实边界：contract 层只做**确定性判定**（路径、集合、计数、格式、守恒）。
+      "最小到什么程度算最小""判读是否属实""要不要改方向"仍归人与 LLM，
+      代码不得宣称自己判了。
     """
     cfg, _ = load_cfg()
     w = wkspace(args)
@@ -4288,23 +4819,69 @@ def cmd_loop(args):
     lb = cfg.get("loop_b", {}) or {}
     la = cfg.get("loop_a", {}) or {}
     budgets = dict(lb.get("budgets", {}) or {})
+    lc = _lc()
+    actor = (getattr(args, "actor", "") or "").strip()
+
+    # ── v3.20.0 A4：环启用检查（loop_a/loop_b.enabled 此前**零读取者**）────────
+    # 此前把 enabled 改成 false，脚本行为一字不变——"停用某环"在代码层无法表达。
+    if lc is not None:
+        notes = []
+        en = _lc_scalar(lc.enabled(cfg, loop, notes))
+        _lc_note(notes)
+        if not en:
+            print(f"⛔ Loop {loop.upper()} 已在 harness.yaml#loop_{loop}.enabled=false 停用——"
+                  f"拒绝执行 `{args.action}`（check-path 同样拒绝）。"
+                  f"确需启用请改配置并说明原因。", file=sys.stderr)
+            return 1
+    else:
+        print(f"⚠ loop_contract 不可用 → **未做** loop_{loop}.enabled 检查（按启用处理）",
+              file=sys.stderr)
+
+    # ── v3.20.0 A5：单写者校验（loop_b.single_writer）───────────────────────
+    # 只读动作（status/resume）不校验：它们不改状态，不构成"越权写"。
+    if args.action not in ("status", "resume"):
+        if lc is not None:
+            notes = []
+            okw, msgw, _writer = lc.single_writer_check(cfg, actor, notes)
+            if not okw:
+                _lc_note(notes)
+                print(f"⛔ {msgw}", file=sys.stderr)
+                return 1
+            if not actor:
+                # 未声明写者：note 与 msg 说的是同一件事，合并成一行（不重复刷屏）
+                print(f"⚠ {msgw}——显式声明：--actor <成员> 或环境变量 VET_LOOP_ACTOR",
+                      file=sys.stderr)
+            else:
+                _lc_note(notes)
+        else:
+            print("⚠ loop_contract 不可用 → **未做** 单写者校验（loop_b.single_writer）",
+                  file=sys.stderr)
+
+    # ── v3.20.0 B：Loop A 批次门（仅 --loop a；Loop A 状态独立于 Loop B）────
+    if args.action in ("batch-open", "batch-close", "batch-status"):
+        if loop != "a":
+            print(f"用法错误：`{args.action}` 属 Loop A（改专家团工程），须带 --loop a；"
+                  f"处理用户课件用 Loop B。", file=sys.stderr)
+            return 2
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 批次门（confirm_before_each_batch / "
+                  "patch_discipline / regression_required）无执行器，拒绝开工"
+                  "（不开工 ≠ 已确认）。", file=sys.stderr)
+            return 3
+        return _loop_batch(args, cfg, w, actor)
+
+    # ── v3.20.0 C：默认档展示（纯配置视图，不依赖 Loop B 状态是否存在）──────
+    if args.action == "defaults":
+        return _loop_defaults(args, cfg, w)
 
     # ── check-path：写前越界校验（Loop A 禁区 = 用户课件目录；Loop B 禁区 = 包目录与原件）
     if args.action == "check-path":
         target = os.path.abspath(args.path)
         if loop == "a":
-            forb = [_resolve_placeholders(p, w) for p in (la.get("forbidden_paths") or [])]
-            hits = [p for p in forb if _glob_match(target, p)]
-            if hits:
-                print(f"⛔ Loop A 越界：{target}\n   命中禁区 {hits}——"
-                      f"Loop A 只许改专家团自身，不得触碰用户课件目录。", file=sys.stderr)
-                return 1
-            scope = [_resolve_placeholders(p, w) for p in (la.get("scope") or [])]
-            # scope 写的是目录（<包>/scripts），须按"目录内"判定而非精确相等
-            def _in_scope(t, ps):
-                return any(t == p or t.startswith(p.rstrip("/") + "/") for p in ps)
-            if scope and not _in_scope(target, scope):
-                print(f"⛔ Loop A 越权：{target} 不在白名单 scope 内（{scope}）。", file=sys.stderr)
+            # v3.20.0：越界判定抽到 _loop_a_scope_check，与 batch-open 共用同一份
+            ok, msg, detail = _loop_a_scope_check(cfg, w, target)
+            if not ok:
+                print(f"⛔ {msg}", file=sys.stderr)
                 return 1
             print(json.dumps({"ok": True, "loop": "A", "path": target}, ensure_ascii=False))
             return 0
@@ -4316,9 +4893,20 @@ def cmd_loop(args):
         st = _read_loop_state(w, "b")
         src = (st or {}).get("source_ppt", {}).get("path")
         if src and os.path.abspath(src) == target:
-            print(f"⛔ Loop B 越界：{target} 是原件，只读；改动必须落在工作副本 "
-                  f"{(st or {}).get('wip_dir')}。", file=sys.stderr)
-            return 1
+            # v3.20.0 D：原件只读改为读 loop_b.original_readonly（此前是硬编码纪律）
+            notes = []
+            ro = lc.original_readonly(cfg, notes) if lc is not None else True
+            _lc_note(notes)
+            if lc is None:
+                print("⚠ loop_contract 不可用 → original_readonly 未判定（按 true 处理）",
+                      file=sys.stderr)
+            if ro:
+                print(f"⛔ Loop B 越界：{target} 是原件，只读；改动必须落在工作副本 "
+                      f"{(st or {}).get('wip_dir')}。", file=sys.stderr)
+                return 1
+            print(f"⚠ loop_b.original_readonly=false —— 允许写回原件 {target}。"
+                  f"关闭原件只读＝放弃「改动必须落在工作副本」这条护栏，"
+                  f"须用户知情；本判定**不校验**写入内容。", file=sys.stderr)
         print(json.dumps({"ok": True, "loop": "B", "path": target}, ensure_ascii=False))
         return 0
 
@@ -4334,6 +4922,23 @@ def cmd_loop(args):
         if not deck.lower().endswith((".pptx", ".ppt")):
             print(f"用法错误：--deck 必须是 .pptx/.ppt，收到 {deck}", file=sys.stderr)
             return 2
+        # ── v3.20.0 A6：并存不覆盖守卫（loop_b.coexist_with）──────────────
+        # 判什么：Loop B 状态文件与五道闸的 task_state.json 是否解析到**同一路径**。
+        #   撞车 ⇒ 写 Loop 状态会直接覆盖既有状态机（round-review-sop.md#10 要防的事故）。
+        #   此键此前**零读取者**：把 state_file 改成 coexist_with 的值，系统照样启动。
+        pth, notes = _loop_path_for(cfg, w, "b")
+        if lc is not None:
+            okc, msgc, paths = lc.coexist_guard(cfg, w, notes)
+            _lc_note(notes)
+            if not okc:
+                print(f"⛔ {msgc}", file=sys.stderr)
+                return 2
+            print(f"[loop] 并存守卫：{msgc}", file=sys.stderr)
+        else:
+            paths = {"state_file": pth, "coexist_with": ""}
+            print("⚠ loop_contract 不可用 → **未做**「并存不覆盖」守卫"
+                  "（loop_b.coexist_with）；若 state_file 与 task_state.json 撞车，"
+                  "写 Loop 状态会覆盖五道闸的状态机", file=sys.stderr)
         st = _read_loop_state(w, "b")
         if st and not st.get("termination") and not args.force:
             print(f"⛔ 已存在未结束的 Loop B 任务（第 {st.get('current_round')} 轮）。"
@@ -4361,9 +4966,14 @@ def cmd_loop(args):
             "blockers": [], "termination": None,
             "awaiting_user_confirm": True,   # 启动即待确认：未对齐九项不得开工
             "last_decision": None, "history": [],
+            # v3.20.0 A6：把并存守卫判定的两条绝对路径**写进状态**（可追溯：
+            # 事后能查"当时 Loop 状态写在哪、与谁并存"，不靠记忆）
+            "_paths": {"state_file": paths.get("state_file"),
+                       "coexist_with": paths.get("coexist_with")},
         }
+        _loop_mark_writer(st, actor)
         os.makedirs(wip, exist_ok=True)
-        _loop_hist(st, "start", {"deck": deck, "wip": wip})
+        _loop_hist(st, "start", {"deck": deck, "wip": wip, "actor": actor or "未声明"})
         _write_loop_state(w, "b", st)
         _trace(w, cfg, "loop_start", "team-lead", {"task_id": st["task_id"], "deck": deck, "wip": wip})
         print(json.dumps(st, ensure_ascii=False, indent=2))
@@ -4388,6 +4998,11 @@ def cmd_loop(args):
     _lock.__enter__()
     try:
         st = _read_loop_state(w, "b")   # 持锁后重读，确保用的是最新快照
+        # v3.20.0 A5：谁在推进本轮状态，落盘留痕。
+        #   只读动作（status/resume）**不打标**——否则 status 会把落盘值在内存里
+        #   改成 '未声明' 并打印出来，与磁盘上真实值不一致（可观测性反被污染）。
+        if args.action not in ("status", "resume"):
+            _loop_mark_writer(st, actor)
         return _loop_dispatch(args, cfg, w, loop, st, budgets)
     finally:
         _lock.__exit__()
@@ -4443,6 +5058,174 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0 if not (missing or unconfirmed) else 1
 
+    # ══ v3.20.0 C：Loop B 判据动作（此前全是 harness.yaml 里的纯声明，零执行者）══
+    lc = _lc()
+
+    # ── review：轮报登记（loop_b.round_review.required + required_items）────
+    if args.action == "review":
+        if not args.file:
+            print("用法错误：review 必须带 --file <轮报JSON>", file=sys.stderr)
+            return 2
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            print(f"用法错误：--file 解析失败（{e}）", file=sys.stderr)
+            return 2
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 轮报完整性**未判定**（未判定 ≠ 通过）",
+                  file=sys.stderr)
+            return 3
+        notes = []
+        ok, n, need = lc.round_review_check(cfg, payload, notes)
+        _lc_note(notes)
+        rnd = str(st.get("current_round", 1))
+        if not ok:
+            print(f"⛔ 轮报缺 {max(need - n, 0)} 项（实到 {n} 项，共需 {need} 项）——"
+                  f"本轮无效，须补齐后再进位（round-review-sop.md#5；required_items 取自 "
+                  f"harness.yaml#loop_b.round_review.required_items）", file=sys.stderr)
+            print(json.dumps({"ok": False, "round": rnd, "items_given": n,
+                              "items_required": need, "notes": notes},
+                             ensure_ascii=False, indent=2))
+            return 1
+        st.setdefault("round_reviews", {})[rnd] = payload
+        _loop_hist(st, "round_review", {"round": rnd, "items": n, "required": need})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"ok": True, "round": rnd, "items_given": n,
+                          "items_required": need, "notes": notes},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    # ── retrieval：检索预算计数（loop_b.budgets.retrieval_budget_per_round）──
+    if args.action == "retrieval":
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 检索预算**未计数**"
+                  "（配了上限而机器从不计数，正是本批要治的病）", file=sys.stderr)
+            return 3
+        rnd = str(st.get("current_round", 1))
+        used_map = st.setdefault("retrieval_used", {})
+        add = int(getattr(args, "n", 1) or 0)
+        used = int(used_map.get(rnd, 0) or 0) + add
+        used_map[rnd] = used
+        notes = []
+        try:
+            okb, msg = lc.retrieval_check(cfg, used, notes)
+        except Exception as e:
+            # 上游执行器内部错误 ⇒ **不静默按通过处理**：未判定即未判定。
+            okb, msg = False, (f"检索预算执行器内部错误（{type(e).__name__}: {e}）——"
+                               f"预算**未判定**，不得当作未超限")
+        _lc_note(notes)
+        _loop_hist(st, "retrieval", {"round": rnd, "used": used, "n": add})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"round": rnd, "used": used, "ok": bool(okb), "msg": msg,
+                          "notes": notes}, ensure_ascii=False, indent=2))
+        if not okb:
+            print(f"⛔ {msg}", file=sys.stderr)
+            return 1
+        return 0
+
+    # ── baseline：增量基线登记（delta_gate.baseline_fields）───────────────
+    if args.action == "baseline":
+        if not args.file:
+            print("用法错误：baseline 必须带 --file <基线JSON>", file=sys.stderr)
+            return 2
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"用法错误：--file 解析失败（{e}）", file=sys.stderr)
+            return 2
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 基线字段**未校验**（未校验 ≠ 合规）",
+                  file=sys.stderr)
+            return 3
+        notes = []
+        ok, missing, fields = lc.baseline_check(cfg, data, notes)
+        _lc_note(notes)
+        if not ok:
+            print(f"⛔ 基线缺 {len(missing)} 个必填字段：{missing}——"
+                  f"字段名来自 harness.yaml#delta_gate.baseline_fields"
+                  f"（共 {len(fields)} 项：{fields}）", file=sys.stderr)
+            print(json.dumps({"ok": False, "missing": missing, "required_fields": fields,
+                              "notes": notes}, ensure_ascii=False, indent=2))
+            return 1
+        st["baseline"] = data
+        _loop_hist(st, "baseline", {"fields": fields})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"ok": True, "baseline": data, "required_fields": fields,
+                          "notes": notes}, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── delta：增量门禁总判（delta_gate.*）───────────────────────────────
+    if args.action == "delta":
+        vjson = getattr(args, "verify_json", "") or ""
+        if not vjson:
+            print("用法错误：delta 必须带 --verify-json <verify_deck 报告>", file=sys.stderr)
+            return 2
+        try:
+            q = _load_quality_from_verify_json(vjson, expect_deck=_deck_binding_targets(st))
+        except _QualityReportError as e:
+            print(f"⛔ 质量取数失败（--verify-json {vjson}）：{e}", file=sys.stderr)
+            return e.code
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 增量门禁**未判定**（未判定 ≠ 无自引入）",
+                  file=sys.stderr)
+            return 3
+        cur = {"p0": q["p0"], "p1": q["p1"], "p2": q["p2"]}
+        notes = []
+        v = lc.delta_verdict(cfg, st.get("baseline"), cur, notes)
+        bad_fmt = [r for r in (v.get("reports") or []) if not r.get("ok")]
+        lj = (getattr(args, "lint_json", "") or "").strip()
+        lint_rep = None
+        if lj:
+            if not os.path.isfile(lj):
+                print(f"依赖缺失：--lint-json 报告不存在 {lj}", file=sys.stderr)
+                return 3
+            try:
+                with open(lj, encoding="utf-8") as f:
+                    lint_rep = json.load(f)
+            except Exception as e:
+                print(f"用法错误：--lint-json 解析失败（{e}）", file=sys.stderr)
+                return 2
+        oks, msgs, nov = lc.spatial_audit_check(cfg, lint_rep, notes)
+        _lc_note(notes)
+        print(json.dumps({
+            "baseline": (st.get("baseline") or {}), "current": cur,
+            "increased": v.get("increased"), "reports": v.get("reports"),
+            "spatial_audit": {"ok": bool(oks), "msg": msgs, "new_overlap": nov},
+            "blocked": bool(v.get("blocked")), "reason": v.get("reason"),
+            "notes": notes}, ensure_ascii=False, indent=2))
+        if v.get("blocked"):
+            print(f"⛔ 增量门禁阻断（delta_gate.block_on_new_defects）：自引入 "
+                  f"{[i.get('metric') for i in (v.get('increased') or [])]} ——"
+                  f"存量缺陷挂账不阻断，**自引入必须清零**", file=sys.stderr)
+            return 1
+        if bad_fmt:
+            print(f"⛔ 增量报告格式不合规（delta_gate.report_format）："
+                  f"{[r.get('report') for r in bad_fmt]}", file=sys.stderr)
+            return 1
+        if not oks:
+            print(f"⛔ {msgs}", file=sys.stderr)
+            return 1
+        return 0
+
+    # ── geo-baseline：几何基线登记（loop_b.defaults.geo_baseline_required）──
+    if args.action == "geo-baseline":
+        gp = (getattr(args, "geo_baseline", "") or "").strip()
+        if not gp:
+            print("用法错误：geo-baseline 必须带 --geo-baseline <模板.pptx>", file=sys.stderr)
+            return 2
+        p = os.path.abspath(gp)
+        if not os.path.isfile(p):
+            print(f"依赖缺失：几何基线模板不存在 {p}", file=sys.stderr)
+            return 3
+        st["geo_baseline"] = {"path": p, "sha256": _sha256_file(p), "ts": now_iso()}
+        _loop_hist(st, "geo_baseline", {"path": p})
+        _write_loop_state(w, "b", st)
+        print(json.dumps({"ok": True, "geo_baseline": st["geo_baseline"]},
+                         ensure_ascii=False, indent=2))
+        return 0
+
     # ── add-item：条目登记（八字段中的可判定部分落盘）
     if args.action == "add-item":
         if not args.item:
@@ -4454,6 +5237,28 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                   f"加 --force 覆盖。", file=sys.stderr)
             return 1
         fp = os.path.abspath(args.file) if args.file else ""
+        # ── v3.20.0 D6：图像类图注条目（--caption）的两条判据 ──────────────
+        #  ① 判读留痕（delta_gate.image_caption_requires_reading）：判读不出的特征不得写
+        #  ② 要素挂账（delta_gate.caption_missing_element_policy）：缺项**显式挂账**，禁静默省略
+        # 诚实边界：代码执行的是"有没有判读记录"与"缺项有没有写出来"，
+        #   **不判**记录内容真假、图注写得对不对——那归人与复核。
+        cap = None
+        elements = []
+        if getattr(args, "caption", False):
+            if lc is None:
+                print("⛔ loop_contract 不可用 → 图像类图注的判读留痕与要素核验**未判定**",
+                      file=sys.stderr)
+                return 3
+            notes = []
+            okr, msgr = lc.image_caption_check(cfg, getattr(args, "read_log", "") or "", notes)
+            _lc_note(notes)
+            if not okr:
+                print(f"⛔ {msgr}", file=sys.stderr)
+                return 2
+            elements = _parse_csv(getattr(args, "elements", ""))
+            notes2 = []
+            cap = lc.caption_check(cfg, elements, notes2)
+            _lc_note(notes2)
         items[args.item] = {
             "item_id": args.item, "page_id": args.page or "", "file": fp,
             "sha256": _sha256_file(fp) if fp and os.path.isfile(fp) else None,
@@ -4461,9 +5266,33 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "decision": None, "decided_at": None, "rework_count": 0,
             "severity": args.severity or "", "owner": args.owner or "",
         }
-        _loop_hist(st, "add-item", {"item": args.item, "page": args.page, "file": fp})
+        if cap is not None:
+            items[args.item].update({
+                "caption": True,
+                "read_log": getattr(args, "read_log", "") or "",
+                "caption_elements_given": elements,
+                "caption_policy": cap.get("policy"),
+                "caption_base_elements": cap.get("base_elements"),
+                "caption_elements_source": cap.get("source"),
+            })
+            if cap.get("missing"):
+                items[args.item]["caption_todo"] = cap["missing"]
+                if not cap.get("executed", True):
+                    items[args.item]["caption_todo_note"] = (
+                        f"delta_gate.caption_missing_element_policy={cap.get('policy')!r} "
+                        f"无执行器——缺项**未挂账**，不得据此宣称已按策略处置")
+        todo = items[args.item].get("caption_todo") or []
+        _loop_hist(st, "add-item", {"item": args.item, "page": args.page, "file": fp,
+                                    "caption": bool(cap is not None),
+                                    "caption_todo": todo})
         _write_loop_state(w, "b", st)
         print(json.dumps(items[args.item], ensure_ascii=False, indent=2))
+        if todo:
+            print(f"⛔ 图注要素缺 {len(todo)} 项已挂账：{todo}——"
+                  f"delta_gate.caption_missing_element_policy="
+                  f"{cap.get('policy')!r} 要求显式挂账（禁静默省略）；"
+                  f"补齐后重跑 `loop add-item --caption --force`", file=sys.stderr)
+            return 1
         return 0
 
     # ── status：摘要（含原件是否被改动）
@@ -4473,6 +5302,13 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         orig_ok = None
         if os.path.isfile(src.get("path", "")):
             orig_ok = (_sha256_file(src["path"]) == src.get("sha256"))
+        # v3.20.0 D7：把此前"配了没人读"的判据状态补进 status（可观测 ≠ 已生效，
+        #   但不可观测一定不知道有没有生效）
+        _rnd_s = str(st.get("current_round", 1))
+        _rr_notes, _bud_notes = [], []
+        _rr_cfg = lc.round_review_cfg(cfg, _rr_notes) if lc is not None else {}
+        _bud = _lc_scalar(lc.retrieval_budget(cfg, _bud_notes)) if lc is not None else None
+        _lc_note(_rr_notes + _bud_notes)
         print(json.dumps({
             "task_id": st.get("task_id"), "current_round": st.get("current_round"),
             "awaiting_user_confirm": st.get("awaiting_user_confirm"),
@@ -4482,6 +5318,24 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "blockers": st.get("blockers", []), "termination": st.get("termination"),
             "original_unchanged": orig_ok,
             "intake_confirmed": st.get("intake", {}).get("confirmed", False),
+            # 轮审判据（loop_b.round_review.*）
+            "round_review": {
+                "cfg": _rr_cfg or "loop_contract 不可用 → 未取到",
+                "registered_this_round": bool(
+                    (st.get("round_reviews") or {}).get(_rnd_s)),
+                "items": (len((st.get("round_reviews") or {}).get(_rnd_s) or {})
+                          if isinstance((st.get("round_reviews") or {}).get(_rnd_s), dict)
+                          else None),
+            },
+            # 检索预算（loop_b.budgets.retrieval_budget_per_round）
+            "retrieval": {"budget_per_round": _bud,
+                          "used_this_round": int(
+                              (st.get("retrieval_used") or {}).get(_rnd_s, 0) or 0)},
+            # 增量门禁前置物（delta_gate.baseline_required / geo_baseline_required）
+            "baseline_registered": bool(st.get("baseline")),
+            "geo_baseline_registered": bool((st.get("geo_baseline") or {}).get("path")),
+            "geo_baseline": st.get("geo_baseline"),
+            "last_writer": st.get("last_writer"),
             # v3.17.0：质量收敛判据的可观测面（no_progress_threshold 此前零命中，
             # 现在每轮 continue 带 --p0/--p1/--p2 即落 quality_history）
             "quality_history": st.get("quality_history", []),
@@ -4513,13 +5367,52 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
     # ── continue：进位（沉默不构成确认 → 必须显式 --decision）
     if args.action == "continue":
         if not args.decision:
-            print("⛔ 拒绝进位：continue 必须显式带 --decision accept|partial_accept。"
-                  "沉默、超时、成员自评均不构成用户确认（round-review-sop.md#4）。", file=sys.stderr)
-            return 2
-        if args.decision not in ("accept", "partial_accept"):
+            # v3.20.0 D：默认口径改为读 loop_b.round_review.silent_is_not_approval
+            #   （此前"沉默不构成确认"是代码里的硬编码纪律，yaml 里配了同义键却零读取者）
+            notes = []
+            rr0 = lc.round_review_cfg(cfg, notes) if lc is not None else {}
+            _lc_note(notes)
+            if lc is None or rr0.get("silent_is_not_approval", True):
+                print("⛔ 拒绝进位：continue 必须显式带 --decision accept|partial_accept。"
+                      "沉默、超时、成员自评均不构成用户确认（round-review-sop.md#4）。",
+                      file=sys.stderr)
+                return 2
+            print("⚠ loop_b.round_review.silent_is_not_approval=false —— 缺 --decision "
+                  "按 decision='implicit' 继续。⚠ 关闭此开关＝**沉默可被当作同意**，"
+                  "与 round-review-sop.md#4 相反，须用户明确知情；"
+                  "此处仅忠实执行配置，不替用户判断是否妥当。", file=sys.stderr)
+            args.decision = "implicit"
+        if args.decision not in ("accept", "partial_accept", "implicit"):
             print(f"⛔ {args.decision} 不进位：返修用 `loop rework`，暂停/终止用 `loop terminate`。",
                   file=sys.stderr)
             return 1
+        # ── v3.20.0 C：本轮轮报（loop_b.round_review.required + required_items）──
+        # 位置：--decision 校验之后、**预算校验之前**——轮报缺失属"本轮无效"，
+        #   与"轮次用尽"是两回事，先判前者才不会把无效轮次算进预算。
+        if lc is not None:
+            notes = []
+            rr = lc.round_review_cfg(cfg, notes)
+            _lc_note(notes)
+            if rr.get("required"):
+                rnd_s = str(st.get("current_round", 1))
+                payload = (st.get("round_reviews") or {}).get(rnd_s)
+                if not payload:
+                    print(f"⛔ 本轮（第 {rnd_s} 轮）**无轮报**：轮报六项缺 → 本轮无效"
+                          f"（round-review-sop.md#5）——先 `loop review --file <轮报JSON>` "
+                          f"再进位；项数要求取自 "
+                          f"harness.yaml#loop_b.round_review.required_items="
+                          f"{rr.get('required_items')}", file=sys.stderr)
+                    return 1
+                okr, nr, needr = lc.round_review_check(cfg, payload, notes)
+                _lc_note(notes)
+                if not okr:
+                    print(f"⛔ 本轮轮报缺 {max(needr - nr, 0)} 项（实到 {nr} 项，"
+                          f"共需 {needr} 项）→ 本轮无效（round-review-sop.md#5）",
+                          file=sys.stderr)
+                    return 1
+        else:
+            print("⚠ loop_contract 不可用 → **未做**轮报校验"
+                  "（loop_b.round_review.required）", file=sys.stderr)
         c = _loop_counts(st)
         if args.decision == "partial_accept" and not c["pending"]:
             print("⚠ 声明 partial_accept 但无 pending 条目——按 accept 处理（进位）。",
@@ -4677,13 +5570,27 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             print(f"用法错误：条目 {args.item} 未登记（先 `loop add-item`）", file=sys.stderr)
             return 2
         rnd_before = st.get("current_round")
+        # v3.20.0 D：返修是否进位改读 loop_b.round_review.rework_stays_in_round
+        notes = []
+        rrc = lc.round_review_cfg(cfg, notes) if lc is not None else {}
+        _lc_note(notes)
+        stays = True if lc is None else bool(rrc.get("rework_stays_in_round", True))
+        if lc is None:
+            print("⚠ loop_contract 不可用 → rework_stays_in_round 未取到，"
+                  "按 true（返修不进位）处理", file=sys.stderr)
         it["rework_count"] = int(it.get("rework_count", 0)) + 1
         it["status"] = "pending"
         beff = dict(budgets)
         beff.update(st.get("budgets") or {})
         mx = int(beff.get("max_rework_per_item", 2))
+        if not stays:
+            st["current_round"] = int(rnd_before or 1) + 1
+            print(f"⚠ loop_b.round_review.rework_stays_in_round=false —— 返修**进位**到第 "
+                  f"{st['current_round']} 轮（默认 true：返修仍属当前轮，不消耗轮次配额）。"
+                  f"关闭此开关＝返修也吃轮次预算，须用户知情。", file=sys.stderr)
         _loop_hist(st, "rework", {"item": args.item, "count": it["rework_count"],
-                                  "round": rnd_before, "note": args.note or ""})
+                                  "round": rnd_before, "note": args.note or "",
+                                  "stays_in_round": stays})
         if it["rework_count"] > mx:
             st.setdefault("blockers", []).append(
                 {"kind": "rework_exhausted", "item": args.item,
@@ -4692,11 +5599,14 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                  "ts": now_iso()})
             _write_loop_state(w, "b", st)
             print(f"⛔ 条目 {args.item} 返修 {it['rework_count']} 次超上限 {mx}，已挂阻塞；"
-                  f"轮次保持 {rnd_before}（返修不进位）。", file=sys.stderr)
+                  f"轮次为 {st.get('current_round')}"
+                  f"（rework_stays_in_round={'true：返修不进位' if stays else 'false：已进位'}）。",
+                  file=sys.stderr)
             return 1
         _write_loop_state(w, "b", st)
         print(json.dumps({"item": args.item, "rework_count": it["rework_count"],
-                          "current_round": rnd_before, "round_unchanged": True},
+                          "current_round": st.get("current_round"),
+                          "round_unchanged": bool(stays)},
                          ensure_ascii=False, indent=2))
         return 0
 
@@ -4708,6 +5618,28 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         if not args.decision:
             print("用法错误：freeze 必须带 --decision accept|partial_accept", file=sys.stderr)
             return 2
+        # v3.20.0 D：部分接受是否只冻点名条目 → 读 loop_b.round_review
+        notes = []
+        rrf = lc.round_review_cfg(cfg, notes) if lc is not None else {}
+        _lc_note(notes)
+        only_named = True if lc is None else bool(
+            rrf.get("partial_accept_freezes_only_named", True))
+        if lc is None:
+            print("⚠ loop_contract 不可用 → partial_accept_freezes_only_named 未取到，"
+                  "按 true（只冻点名条目）处理", file=sys.stderr)
+        if args.decision == "partial_accept":
+            named = _parse_kv_list(args.items)
+            wildcard = [iid for iid, _p in named if str(iid).strip() in ("*", "all")]
+            if (not named or wildcard) and only_named:
+                print(f"⛔ partial_accept 必须**点名**具体条目：--items 为空或含通配 "
+                      f"{wildcard}（loop_b.round_review.partial_accept_freezes_only_named=true）——"
+                      f"通配＝全冻＝实质上的 accept，与「只冻点名条目」矛盾", file=sys.stderr)
+                return 2
+            if (not named or wildcard) and not only_named:
+                print(f"⚠ loop_b.round_review.partial_accept_freezes_only_named=false ——"
+                      f"允许 {wildcard or '空 --items'} 这类非点名冻结。"
+                      f"⚠ 关闭此开关＝「部分接受」可能连带冻结未点名条目，须用户知情。",
+                      file=sys.stderr)
         items = st.setdefault("items", {})
         pairs = _parse_kv_list(args.items)
         rnd = st.get("current_round", 1)
@@ -4740,38 +5672,68 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
 
     # ── verify：批准失效核验 + 原件未改动（验收清单第 1、5 项的机器背书）
     if args.action == "verify":
+        # ── v3.20.0 D：两条判据口径改为读配置（此前都是代码里的硬纪律）──────
+        notes = []
+        ro = True if lc is None else _lc_scalar(lc.original_readonly(cfg, notes))
+        rrv = lc.round_review_cfg(cfg, notes) if lc is not None else {}
+        inval = str((rrv.get("invalidation") if lc is not None else None) or "sha256")
+        _lc_note(notes)
+        if lc is None:
+            print("⚠ loop_contract 不可用 → original_readonly / invalidation 未取到，"
+                  "按 true / 'sha256' 处理（**未读配置**，不是配置说 true）", file=sys.stderr)
         problems = []
         src = st.get("source_ppt", {})
-        if os.path.isfile(src.get("path", "")):
-            cur = _sha256_file(src["path"])
-            if cur != src.get("sha256"):
-                problems.append({"kind": "original_modified", "path": src["path"],
-                                 "detail": "原件 sha256 与启动时不一致——原件必须只读，立即停止并上报"})
+        if ro:
+            if os.path.isfile(src.get("path", "")):
+                cur = _sha256_file(src["path"])
+                if cur != src.get("sha256"):
+                    problems.append({"kind": "original_modified", "path": src["path"],
+                                     "detail": "原件 sha256 与启动时不一致——原件必须只读，立即停止并上报"})
+            else:
+                problems.append({"kind": "original_missing", "path": src.get("path"),
+                                 "detail": "原件不见了，立即停止并上报"})
         else:
-            problems.append({"kind": "original_missing", "path": src.get("path"),
-                             "detail": "原件不见了，立即停止并上报"})
-        for iid, it in st.get("items", {}).items():
-            if it.get("status") != "frozen":
-                continue
-            fp = it.get("file")
-            if not fp or not os.path.isfile(fp):
-                it["status"] = "invalidated"
-                problems.append({"kind": "frozen_file_missing", "item": iid, "file": fp,
-                                 "detail": "冻结内容文件缺失，批准失效"})
-                continue
-            if _sha256_file(fp) != it.get("sha256"):
-                it["status"] = "invalidated"
-                problems.append({"kind": "sha256_drift", "item": iid, "file": fp,
-                                 "detail": "内容文件已改，该条目批准自动失效，必须重审"})
+            print(f"⚠ loop_b.original_readonly=false —— **不比对**原件 sha256"
+                  f"（关闭原件只读＝允许改原件）。本次**未判定**原件是否被改，"
+                  f"输出里的 original_unchanged 不代表「未改」。", file=sys.stderr)
+        if inval == "sha256":
+            for iid, it in st.get("items", {}).items():
+                if it.get("status") != "frozen":
+                    continue
+                fp = it.get("file")
+                if not fp or not os.path.isfile(fp):
+                    it["status"] = "invalidated"
+                    problems.append({"kind": "frozen_file_missing", "item": iid, "file": fp,
+                                     "detail": "冻结内容文件缺失，批准失效"})
+                    continue
+                if _sha256_file(fp) != it.get("sha256"):
+                    it["status"] = "invalidated"
+                    problems.append({"kind": "sha256_drift", "item": iid, "file": fp,
+                                     "detail": "内容文件已改，该条目批准自动失效，必须重审"})
+        else:
+            print(f"⚠ loop_b.round_review.invalidation={inval!r} —— 当前只有 'sha256' "
+                  f"有执行器，**未做**条目 sha256 漂移判定（未判定 ≠ 无漂移）："
+                  f"冻结条目的批准**不因内容改动自动失效**，须人工确认口径", file=sys.stderr)
+        out = {
+            "ok": not problems,
+            "problems": problems,
+            "original_readonly": bool(ro),
+            "original_unchanged": (bool(ro) and not any(
+                p.get("kind") in ("original_modified", "original_missing")
+                for p in problems)) if ro else None,
+            "invalidation_mode": (inval if inval == "sha256"
+                                  else f"{inval}（无执行器，未判定）"),
+            "frozen": len(_loop_counts(st)["frozen"]),
+            "notes": notes,
+        }
         if problems:
             _loop_hist(st, "verify_failed", {"problems": problems})
             _write_loop_state(w, "b", st)
-            print(json.dumps({"ok": False, "problems": problems}, ensure_ascii=False, indent=2))
+            print(json.dumps(out, ensure_ascii=False, indent=2))
             return 1
         _loop_hist(st, "verify_ok", {"frozen": len(_loop_counts(st)["frozen"])})
         _write_loop_state(w, "b", st)
-        print(json.dumps({"ok": True, "original_unchanged": True,
-                          "frozen": len(_loop_counts(st)["frozen"])}, ensure_ascii=False, indent=2))
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
     # ── make-gate：制作前置门（round-review-sop.md#8 三条 + 九项 A 类齐备）
@@ -4824,6 +5786,25 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                 if bad_src:
                     reasons.append(f"quality_history 含 {len(bad_src)} 条**非机器复算来源**"
                                    f"的质量快照（须为 verify_json|...）：{bad_src[:5]}")
+        # ── v3.20.0 C：制作前置门追加两条（此前是 yaml 声明、无执行者）──────
+        if lc is not None:
+            notes = []
+            if _lc_scalar(lc.geo_baseline_required(cfg, notes)):
+                if not (st.get("geo_baseline") or {}).get("path"):
+                    reasons.append(
+                        "未登记几何基线（loop_b.defaults.geo_baseline_required=true）——"
+                        "先 `loop geo-baseline --path <模板.pptx>`，否则成品 lint 的 "
+                        "V7 新增重叠（GEO-003）无从判定")
+            if lc.delta_gate_cfg(cfg, notes).get("baseline_required"):
+                if not st.get("baseline"):
+                    reasons.append(
+                        "未登记增量基线（delta_gate.baseline_required=true）——"
+                        "先 `loop baseline --file <基线JSON>`（字段取自 "
+                        "delta_gate.baseline_fields），否则自引入缺陷无从计算")
+            _lc_note(notes)
+        else:
+            print("⚠ loop_contract 不可用 → **未做**几何基线/增量基线的登记校验"
+                  "（geo_baseline_required / baseline_required）", file=sys.stderr)
         if reasons:
             _loop_hist(st, "make_gate_blocked", {"reasons": reasons})
             _write_loop_state(w, "b", st)
@@ -4889,8 +5870,11 @@ def _read_json_readonly(path):
         return None
 
 
-def _pending_work(w):
+def _pending_work(w, cfg=None):
     """扫工作空间里的**未完成任务**，产出冷启动可执行的恢复指引。
+
+    cfg（v3.20.0）：Loop B 状态文件路径**必须**由 harness.yaml#loop_b.state_file 决定
+      （唯一源）。传 None 时内部 load_cfg()（调用方 cmd_doctor 已有 cfg，直接传即可）。
 
     背景（D3 实测缺陷）：`cmd_doctor` 此前**完全不读** `loopB_state.json` /
     `task_state.json`——会话中断后"是否恢复、从哪恢复"完全靠主理人（LLM）的记忆，
@@ -4915,7 +5899,20 @@ def _pending_work(w):
     entries = []
 
     # ── Loop B：未终止即未完成 ────────────────────────────────
-    lb = _read_json_readonly(os.path.join(w, ".workbuddy", "loopB_state.json"))
+    # v3.20.0 A3：路径改走 loop_contract.state_path（此前硬写
+    #   <工作区>/.workbuddy/loopB_state.json —— 与 loop_b.state_file 是**双份声明**，
+    #   改配置不生效）。这里只做路径解析、**不用** _loop_path_for（它会 makedirs，
+    #   而 doctor 是纯只读探针，跑一次不该在工作空间留痕迹）。
+    notes = []
+    lcf = _lc()
+    if lcf is not None:
+        _lb_path, _ = lcf.state_path(cfg if cfg is not None else load_cfg()[0], w, "b", notes)
+    else:
+        _lb_path = os.path.join(w, ".workbuddy", "loopB_state.json")
+        notes.append("loop_contract 不可用 → Loop B 状态路径回落到 "
+                     "<工作区>/.workbuddy/loopB_state.json")
+    _lc_note(notes)
+    lb = _read_json_readonly(_lb_path)
     if isinstance(lb, dict) and not lb.get("termination"):
         c = _loop_counts(lb)
         hist = lb.get("history") or []
@@ -4952,6 +5949,64 @@ def _pending_work(w):
     return primary
 
 
+# v3.20.0 F：loop 子命令的**动作明细表**（可发现性）。
+#   为什么必须单列：doctor 的 command 行只有一行 usage，23 个动作塞不进"一句话用途"；
+#   新动作若只写在 argparse 的 choices 里，LLM 冷启动**无从得知**（argparse 只在
+#   运行时报错）⇒ 又一处"有实现、不可发现"——与本包治的"有声明、无执行"同型。
+#   每条给出：判据来源（取自哪个 yaml 键）+ 退出码语义。
+LOOP_ACTION_DOC = [
+    # (动作, 环, 用途, 关键参数, 判据来源, 退出码)
+    ("start", "B", "建状态 / 存原件指纹 / 建工作副本", "--deck [--wip --task-id --max-rounds]",
+     "loop_b.state_file + coexist_with（并存守卫）", "0 建成 / 2 用法错+并存撞车 / 3 依赖缺失"),
+    ("intake", "B", "九项登记（A 类五项齐且全 confirmed）", "--file [--replace]",
+     "references/task-intake-checklist.md", "0 齐 / 1 缺或未确认"),
+    ("add-item", "B", "条目登记", "--item [--page --file --severity --owner --caption --read-log --elements]",
+     "delta_gate.image_caption_requires_reading / caption_missing_element_policy",
+     "0 正常 / 1 有挂账 / 2 用法错+缺判读记录"),
+    ("status", "B", "状态摘要（只读）", "无",
+     "loop_b.round_review.* / budgets.retrieval_budget_per_round", "0 / 1 原件已改"),
+    ("resume", "B", "断线恢复（只报不推进）", "无", "round-review-sop.md#4", "0"),
+    ("continue", "B", "进位（须先有本轮轮报）",
+     "--decision [--confirmed --verify-json --p0/--p1/--p2 --allow-unverified]",
+     "loop_b.round_review.required/required_items/silent_is_not_approval + budgets.max_rounds",
+     "0 进位 / 1 被拦或预算触顶 / 2 缺裁决或质量取数失败 / 3 报告不存在"),
+    ("rework", "B", "返修", "--item [--note]", "loop_b.round_review.rework_stays_in_round",
+     "0 / 1 超单条目上限"),
+    ("freeze", "B", "冻结（部分接受只冻点名条目）", "--items --decision",
+     "loop_b.round_review.partial_accept_freezes_only_named", "0 / 1 有跳过 / 2 用法错"),
+    ("verify", "B", "批准失效核验 + 原件只读", "无",
+     "loop_b.original_readonly + round_review.invalidation", "0 / 1 有问题"),
+    ("make-gate", "B", "制作前置门", "无",
+     "delta_gate.baseline_required + loop_b.defaults.geo_baseline_required", "0 放行 / 1 阻断"),
+    ("block", "B", "登记阻塞", "--kind --note", "—", "1（有阻塞即非正常态）"),
+    ("terminate", "B", "终止（原因穷举）", "--reason [--confirmed --note]",
+     "loop_b.termination（唯一源）", "0 / 1 未冻结完 / 2 自造原因"),
+    ("check-path", "A/B", "写前越界校验", "--path --loop",
+     "loop_a.scope / loop_a.forbidden_paths / loop_b.original_readonly", "0 放行 / 1 越界 / 2 用法错"),
+    ("batch-open", "A", "开批次（声明改动文件 + 越界校验 + 记起始 commit）",
+     "--files [--batch --note]", "loop_a.scope/forbidden_paths + patch_discipline/regression_required",
+     "0 开成 / 1 声明文件越界 / 2 缺 --files"),
+    ("batch-close", "A", "收批次（确认→回归→最小补丁）",
+     "[--batch] --confirmed --regression a,b,c",
+     "loop_a.confirm_before_each_batch / regression_required / patch_discipline",
+     "0 收批 / 1 未确认或回归缺或改动超范围 / 2 用法错"),
+    ("batch-status", "A", "批次与判据来源（取自 yaml / 回落内置值）", "[--batch]", "loop_a.*", "0"),
+    ("review", "B", "轮报登记（六项齐全且非空）", "--file",
+     "loop_b.round_review.required + required_items", "0 齐 / 1 缺项 / 2 用法错"),
+    ("retrieval", "B", "检索次数计数（超预算即停）", "--n",
+     "loop_b.budgets.retrieval_budget_per_round", "0 / 1 超预算"),
+    ("baseline", "B", "增量基线登记", "--file", "delta_gate.baseline_fields", "0 / 1 缺字段 / 2 用法错"),
+    ("delta", "B", "增量门禁总判（自引入 + 报告格式 + 空间审计）",
+     "--verify-json [--lint-json]",
+     "delta_gate.block_on_new_defects / report_format / insert_spatial_audit",
+     "0 通过 / 1 阻断 / 2 用法错 / 3 报告缺失"),
+    ("geo-baseline", "B", "几何基线登记（模板 pptx）", "--geo-baseline",
+     "loop_b.defaults.geo_baseline_required", "0 / 2 缺参数 / 3 文件不存在"),
+    ("defaults", "B", "默认档展示 / 引用核验 / 生成 intake 待确认模板",
+     "[--check-refs --out <文件>]", "loop_b.defaults.*", "0 / 1 引用悬空 / 3 无执行器"),
+]
+
+
 def cmd_doctor(args):
     """v3.4.0 R1：LLM 友好"可发现性表"——一次返回所有子命令的 usage/examples/exit_codes。
     根因（2026-10-14 实测 6 步 3 步参数错位）：argparse 仅在运行时暴露错误，
@@ -4961,6 +6016,7 @@ def cmd_doctor(args):
       （扫 loopB_state.json / task_state.json，见 `_pending_work`）。
       无未完成项时该段为 null（不输出空壳）。本命令**只读**，不写任何状态文件。
     """
+    cfg, _ = load_cfg()
     table = [
         # (子命令, 一句话用途, 必填参数, 常用可选, 退出码, 示例)
         ("doctor",     "可发现性表（你正在看）",                     "无",      "无",          "0", "harness.py doctor"),
@@ -4981,14 +6037,15 @@ def cmd_doctor(args):
         ("eval",          "v3.4.2 P3-3：自动化演进环（基线 vs 当前 sweep diff）", "--root", "--reset-baseline", "0/1/2", "harness.py eval --root <工作区> --reset-baseline"),
         ("verify-envelope", "校验 result_envelope JSON 六字段",       "--path",  "无",          "0/1", "harness.py verify-envelope --path <成员产出.md>"),
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
-        ("loop",  "v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界）", "action", "--loop/--deck/--items/--decision/--reason/--verify-json/--p0/--p1/--p2/--allow-unverified", "0/1/2/3", "harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（报告优先于手工 --p0/--p1/--p2；v3.17.0：报告须对应本轮课件）"),
+        ("loop",  "v3.9.0 双层 Loop 状态机；v3.20.0 扩到 23 个动作（新增批次门 batch-open/close/status 与判据动作 review/retrieval/baseline/delta/geo-baseline/defaults；判据全部取自 config/harness.yaml#loop_a|loop_b|delta_gate）", "action", "--loop/--actor/--deck/--items/--decision/--reason/--verify-json/--lint-json/--geo-baseline/--files/--batch/--regression/--n/--elements/--read-log/--out/--check-refs/--p0/--p1/--p2/--allow-unverified", "0/1/2/3", "harness.py loop review --file <轮报6项JSON> && harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（v3.20.0：进位前必须有本轮轮报；报告优先于手工 --p0/--p1/--p2）"),
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.19.4", "executable": __file__,
+    out = {"version": "v3.20.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
-           "pending_work": _pending_work(wkspace(args)),
+           # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
+           "pending_work": _pending_work(wkspace(args), cfg),
            "exit_codes": {
                "0": "正常通过",
                "1": "存在需处置项（降级/预算超/状态非法/P0 阻断）",
@@ -5001,6 +6058,13 @@ def cmd_doctor(args):
                {"name": n, "purpose": p, "required": r, "optional": o,
                 "exit": e, "example": x}
                for (n, p, r, o, e, x) in table
+           ],
+           # v3.20.0 F：loop 23 个动作的明细表（每个动作的判据来源 = 取自哪个 yaml 键）
+           #   可发现性：新动作若不可见于 doctor，等于对 LLM 冷启动不存在。
+           "loop_actions": [
+               {"action": a, "loop": lp, "purpose": pu, "args": ag,
+                "judge_source": src, "exit_codes": ec}
+               for (a, lp, pu, ag, src, ec) in LOOP_ACTION_DOC
            ]}
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -5307,7 +6371,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.4")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.20.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -5520,6 +6584,10 @@ def main():
     p.add_argument("--actor", default="ppt-producer")
     # v3.2.0-batch2：lint/snap 集成参数
     p.add_argument("--baseline", default=None, help="ooxml_lint 基线对照（original 副本）")
+    # v3.20.0 E：几何基线（GEO-003 新增重叠判定）。未显式给时，若
+    #   loop_b.defaults.geo_baseline_required=true 且 Loop B 状态已登记，自动注入。
+    p.add_argument("--geo-baseline", dest="geo_baseline", default="",
+                   help="ooxml_lint 几何基线（模板 .pptx，用于判定插入物新增重叠）")
     p.add_argument("--strict", action="store_true", help="lint 强模式")
     p.add_argument("--no-snap", action="store_true", help="跳过 snapshot 写回前打点")
     p.add_argument("--tag", default=None, help="snapshot 里程碑标签")
@@ -5559,11 +6627,20 @@ def main():
     p.set_defaults(func=cmd_template_audit)
 
     # v3.9.0：双层 Loop 状态机——把 dual-loop-governance.md 的可判定条款下沉为代码
-    p = sub.add_parser("loop", help="v3.9.0：双层 Loop 状态机（启动/登记/恢复/进位/返修/冻结/核验/制作门/终止/越界校验）")
+    p = sub.add_parser("loop", help="v3.9.0 双层 Loop 状态机 + v3.20.0 判据层（批次门 batch-open/close/status；判据动作 review/retrieval/baseline/delta/geo-baseline/defaults）")
     p.add_argument("action", choices=["start", "intake", "add-item", "status", "resume",
                                       "continue", "rework", "freeze", "verify",
-                                      "make-gate", "block", "terminate", "check-path"])
+                                      "make-gate", "block", "terminate", "check-path",
+                                      # v3.20.0 B：Loop A 批次门（仅 --loop a）
+                                      "batch-open", "batch-close", "batch-status",
+                                      # v3.20.0 C：Loop B 判据动作
+                                      "review", "retrieval", "baseline", "delta",
+                                      "geo-baseline", "defaults"])
     p.add_argument("--loop", choices=["a", "b"], default="b", help="A=专家团工程进化 / B=旧课件逐轮优化")
+    # v3.20.0 A5：写者身份（loop_b.single_writer 的留痕面）
+    p.add_argument("--actor", default=os.environ.get("VET_LOOP_ACTOR", ""),
+                   help="推进本轮状态的写者（默认取环境变量 VET_LOOP_ACTOR；"
+                        "唯一写者由 harness.yaml#loop_b.single_writer 定）")
     p.add_argument("--deck", help="start：原 PPTX 绝对路径（只读，存档 sha256/size/mtime）")
     p.add_argument("--wip", help="start：工作副本目录（默认 <课件名>_wip/）")
     p.add_argument("--task-id", dest="task_id", default="", help="start：任务 ID")
@@ -5596,8 +6673,38 @@ def main():
                    help="continue：**逃生口**——允许在已有手工自报历史后继续用手工 "
                         "--p0/--p1/--p2（会登记 blocker 事件、快照标 source=manual_unverified，"
                         "make-gate 阻断；默认不允许）")
+    # ── v3.20.0 B：Loop A 批次门参数 ─────────────────────────────────────
+    p.add_argument("--files", default="",
+                   help="batch-open：本批将改动的文件（逗号分隔，先过 loop_a.scope/forbidden_paths）")
+    p.add_argument("--batch", default="", help="batch-*：批次 id（默认 b<时间戳>）")
+    p.add_argument("--regression", default="",
+                   help="batch-close：已跑回归项（逗号分隔；缺一即不收批，"
+                        "取自 harness.yaml#loop_a.regression_required）")
+    # ── v3.20.0 C：Loop B 判据动作参数 ────────────────────────────────────
+    p.add_argument("--n", type=int, default=1,
+                   help="retrieval：本次检索次数（累加到本轮，超 "
+                        "loop_b.budgets.retrieval_budget_per_round 即停）")
+    p.add_argument("--lint-json", dest="lint_json", default="",
+                   help="delta：ooxml_lint --json 报告（供 GEO-003 新增重叠判定）")
+    p.add_argument("--geo-baseline", dest="geo_baseline", default="",
+                   help="geo-baseline：几何基线模板 .pptx（登记进 Loop B 状态，"
+                        "供 gate 自动注入 lint）")
+    p.add_argument("--out", default="",
+                   help="defaults：由 loop_b.defaults 生成 intake 待确认模板并落盘"
+                        "（所有条目 status=suggested，须逐项请用户确认后改 confirmed）")
+    p.add_argument("--check-refs", dest="check_refs", action="store_true",
+                   help="defaults：默认档引用的包内文件有缺失即 exit 1（防引用悬空）")
+    # ── v3.20.0 D6：图像类图注条目（add-item --caption）───────────────────
+    p.add_argument("--read-log", dest="read_log", default="",
+                   help="add-item --caption：图像判读记录（delta_gate."
+                        "image_caption_requires_reading=true 时必填）")
+    p.add_argument("--elements", default="",
+                   help="add-item --caption：已给的图注要素（逗号分隔；缺项按 "
+                        "delta_gate.caption_missing_element_policy 显式挂账）")
+    p.add_argument("--caption", action="store_true",
+                   help="add-item：本条目是**图像类图注**（触发判读留痕 + 要素挂账）")
     p.add_argument("--kind", default="", help="block：阻塞类型（capability/evidence/...）")
-    p.add_argument("--note", default="", help="人读备注")
+    p.add_argument("--note", default="", help="人读备注（batch-open 时作批次主题）")
     p.add_argument("--path", help="check-path：待写入的目标路径（越界校验）")
     p.add_argument("--force", action="store_true", help="start/add-item：允许覆盖既有记录")
     _ws(p)

@@ -31,7 +31,21 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 2. **状态不互通**：`loopA_state.json` 与 `loopB_state.json` 各自独立、并存不覆盖，`task_state.json` 语义不变（五道闸既有状态机）。
 3. **目录不互通**：Loop A 白名单 = `<包>/{scripts,config,references,agents}`；`forbidden_paths` 为用户课件目录与 `.workbuddy/artifacts`。越界即越权，verifier 逮到即挂账。
 
-> **诚实标注**：以上三条目前是**配置声明 + 文档契约**，**不是代码级强制**——`harness.py` 尚未实现 `loop_a.forbidden_paths` 的写前校验。不得对外宣称"已由代码强制"。
+> **诚实标注（v3.20.0 重写——原文自 v3.8.1 起已过期两年多版本）**：
+> 原文写的是"以上三条是配置声明 + 文档契约，不是代码级强制——`harness.py` 尚未实现
+> `loop_a.forbidden_paths` 的写前校验"。**这句话自 v3.9.0 起就是错的**：`loop check-path`
+> 已实现写前越界校验（见 §8 第 3 项）。文档追不上代码，正是本包"双源漂移"的又一实例。
+>
+> v3.20.0 的实际强制面（判定层统一在 `scripts/loop_contract.py`，配置唯一源 `config/harness.yaml`）：
+> | # | 约束 | 是否代码强制 | 落点 |
+> |---|---|---|---|
+> | 1 | 授权不互通 | **否（语义判定）** | 判环靠主理人——`loop_a.trigger` / `loop_b.trigger` 是**人读判据**，代码不判一句话在说哪个环 |
+> | 2 | 状态不互通 | **是** | `coexist_guard`：两环状态文件路径**解析后不得相同**（相同会覆盖 `task_state.json` → 拒绝启动） |
+> | 3 | 目录不互通 | **是（非沙箱）** | `loop check-path`：A 碰课件目录 / B 碰包目录或原件 → exit 1。**拦不住成员绕开脚本直接写文件**（平台无 hook） |
+> | 4 | 单写者 | **是（不防冒名）** | `single_writer_check`：`--actor` 与 `loop_b.single_writer` 不符即拒；**平台无身份认证**，成员照样可传 `--actor team-lead` |
+> | 5 | 环总开关 | **是** | `enabled`：置 false 后该环所有动作 exit 1 |
+>
+> **不得对外宣称"两环隔离已由代码完全强制"**——第 1 条不是代码判定，第 3/4 条也各有明确的失效路径（见上表）。
 
 ## 3. Loop A：专家团工程进化
 
@@ -41,10 +55,27 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 | 2 | **缺口清单**：只列**已核验**的真实缺口，标注四类能力分级 `[D]官方文档 / [R]仓库实现 / [L]本地可调用 / [T]已实测` | 缺口清单 |
 | 3 | **最小补丁提案**：每批只解决一个主题的缺口，写清改哪些文件、为什么、回归项 | 提案 |
 | 4 | **用户确认**：`confirm_before_each_batch: true`——**每批修改前停一次**，未确认不动手 | 授权记录 |
-| 5 | **实施**：只碰白名单目录；版本号变更须四处同步（`.claude-plugin` / `.codebuddy-plugin` / `config/harness.yaml` / `scripts/harness.py`） | 补丁 |
-| 6 | **验证与回归**：`ensure_settings`（须 15/15）+ `test_harness` + `test_five_gates`；任一红即回滚本批 | 回归报告 |
+| 5 | **实施**：只碰白名单目录；版本号变更须**十处**同步（见 §8 第 12 项，v3.20.0 实测为 10 处，不是四处） | 补丁 |
+| 6 | **验证与回归**：`ensure_settings`（须全绿）+ `test_harness` + `test_five_gates`；任一红即回滚本批 | 回归报告 |
 
 **三条禁令**：① 不得因一次课件的特殊要求擅自改全局规则（单课件诉求走 Loop B，要改规则须在 Loop A 单独立项）；② 不得把 `[D]/[R]/[L]` 冒充 `[T]`；③ 达到预算上限只暂停并报告，**不自动宣布通过**。
+
+> **v3.20.0：第 3/4/6 步已代码化**（此前仨步骤全是 Markdown 纪律，`loop_a` 的
+> `confirm_before_each_batch` / `patch_discipline` / `regression_required` 三个键
+> **零代码读取者**——把 `confirm_before_each_batch` 改成 false 不会有任何行为变化）：
+> ```bash
+> harness.py loop batch-open  --loop a --note <本批主题> --files scripts/<目标脚本>.py,config/<目标配置>.yaml
+> harness.py loop batch-status --loop a [--batch <id>]
+> harness.py loop batch-close --loop a --batch <id> --confirmed \
+>            --regression ensure_settings,test_harness,test_five_gates
+> ```
+> · `batch-open`：声明文件须先过白名单（`loop_a.scope` / `forbidden_paths`），越界即拒
+> · `batch-close` 三条判据（均读 `config/harness.yaml#loop_a`）：
+>   ① `confirm_before_each_batch=true` 且未带 `--confirmed` → **exit 1**（第 4 步）
+>   ② `regression_required` 列出的项没跑齐 → exit 1 并列出缺哪几项（第 6 步）
+>   ③ `patch_discipline=minimal` → 用 `git status` 比对**实际改动集合 ⊆ 声明集合**（第 3 步）
+> ⚠ ③ 判的是"改动有没有超出声明范围"，**不是**"改得多不多、该不该改"——后者是人的判断。
+> ⚠ 包目录非 git 仓库或 git 不可用时，③ **不做比对并显式告警**（不静默放行、也不假称已判）。
 
 ## 4. Loop B：五条操作指令（逐轮停等）
 
@@ -62,6 +93,21 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 > （`start/intake/add-item/status/resume/continue/rework/freeze/verify/make-gate/block/terminate/check-path`），
 > **不得靠口头记账**。命令表见 `agents/vet-med-ppt-team-team-lead.md#双 Loop 路由`；
 > 机器背书 `scripts/test_loop_state.py`（33 例）。
+>
+> **v3.20.0：判据层也已代码化**（此前只有动作层下沉，判据仍是纯 Markdown 纪律）——
+> `harness.yaml#loop_a` / `#loop_b` / `#delta_gate` 的 34 个键里 **32 个**已接到
+> `scripts/loop_contract.py`，loop 子命令从 13 个动作扩到 **23 个**。新增：
+> - **Loop A 批次门**：`batch-open` / `batch-close` / `batch-status`（先确认 / 最小补丁 / 回归必跑）
+> - **Loop B 判据动作**：`review`（轮报六项）/ `retrieval`（检索预算）/ `baseline`（基线字段）/
+>   `delta`（自引入阻断 + 报告格式守恒 + 空间审计）/ `geo-baseline`（几何基线登记）/
+>   `defaults`（默认档 + 引用核验 + intake 待确认模板）
+> - **写者声明**：写动作须带 `--actor`（`loop_b.single_writer`，不防冒名）
+> - **环总开关**：`loop_{a,b}.enabled=false` → 该环所有动作 exit 1
+>
+> 机器背书：`scripts/test_loop_contract.py`（87 例，正例+反向例+破坏实现双向验证）
+> + `scripts/test_loop_wiring.py`（23 例，harness.py × loop_contract.py 接线回归）。
+> ⚠ 3 个键**据实不可判定**（`loop_a.trigger` / `loop_b.trigger` 属语义判定、
+> `delta_gate.insert_font_at_creation` 属写入时行为）——详见 §8 第 12 项。
 
 ## 5. 七阶段契约（输入 / 输出 / 责任人 / 权限 / 退出状态）
 
@@ -100,8 +146,11 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 | 9 | 任务信息九项 | `[已确认]` v3.10.0 | 用户 2026-10-22 已给：受众（职业本科默认 + 四层切换）/ 课时（1–4×45min）/ 模板（5fa78154）/ 范围（全部页逐页六查）/ 验收（内容 5 + 视觉 7）/ 交付三件套。落盘 `references/course-profile-defaults.md` + `default-template-profile.md` + `delivery-spec.md`。**每单仍需确认是否覆盖**，覆盖须记入 intake |
 | 10 | 默认模板可用性 | `[T]` 已实测 | 15.2MB OOXML 有效、lint 0 ERROR；但有三条硬约束：**版式零占位符**、**页眉为每页硬编码文本框**、**零原生表格/图表**（详见 `default-template-profile.md`） |
 | 11 | Loop B 端到端 | `[未实测]` | 仍未在真实课件上跑完"转换→诊断→多轮→冻结→制作→验收"全链；**缺具体课件路径**（用户已给默认参数，未给本单课件） |
+| 12 | `delta_gate.insert_font_at_creation` | `[无执行器]` **结构性不可判定** | "新元素文字规格**创建时**即达合规"是**写入时行为**，成品文件态无痕迹——与 OOXML 病例 **API-001 同型**（第 2 项已判不可实现）。v3.20.0 逐键定性时据实登记为不可判定，**不为凑数伪造执行器**：代码能做的是"事后 lint 查字号"，那查的是**结果合规**，不是"创建时即设"，二者不得混称 |
+| 13 | 版本号十处同步 | `[T]` 已实测（v3.20.0） | `ensure_settings` 第 14 项实测为 **10 处**（不是 §3 第 5 步原写的"四处"）：2 份 plugin.json + 2 份 marketplace.json + config/harness.yaml + config/domain_config.yaml + references/result-envelope.yaml + harness.py 三处（文件头/doctor 常量/argparse 描述）。原文档写"四处"是 v3.7.0 的旧数，已过时 |
 
-> 标注纪律：`[D]/[R]/[L]` **不得**冒充 `[T]`；未实测的机器检查项一律标"仅静态检查，未在用户 WorkBuddy 实测"。
+> 标注纪律：`[D]/[R]/[L]` **不得**冒充 `[T]`；未实测的机器检查项一律标"仅静态检查，未在用户 WorkBuddy 实测"；
+> **无执行器的键一律标 `[无执行器]`**——不得因为"配置里有这一行"就宣称已由代码强制（v3.20.0 新增纪律）。
 
 ## 9. 本地最小实测清单（跑通才算数，不跑就标"未实测"）
 

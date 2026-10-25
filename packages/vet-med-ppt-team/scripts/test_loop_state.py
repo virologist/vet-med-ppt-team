@@ -65,6 +65,46 @@ def make_deck(path):
         return False
 
 
+def round_review(w, tag="rr"):
+    """v3.20.0：登记一份**六项齐全**的轮报（`loop review --file`）。
+
+    为什么现在每个 continue 前都要跑它：harness.yaml#loop_b.round_review.required=true
+    此前**零执行者**——"每轮必须轮报"只是 round-review-sop.md#5 里的文档纪律，
+    不带轮报照样能进位。v3.20.0 把它接成硬判据（缺项即本轮无效，exit 1），
+    故本文件里所有 `loop continue` 场景必须先登记本轮轮报，否则测的是"进位被拦"，
+    不是原本要测的东西。
+
+    六项内容按 SOP#5 给足，**不锁键名**（contract 只数非空项数，锁键名等于另立 schema）。
+    """
+    p = os.path.join(w, f"{tag}.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({
+            "本轮改了什么": "按用户裁决修订了 3 处表述",
+            "依据": "verify_deck 报告 + 七维量规逐条对照",
+            "未解决": "2 张配图分辨率待补",
+            "下一步": "补齐配图后请用户复裁",
+            "风险": "配图若补不齐，第 12 页结论页强度不足",
+            "需用户裁决": "是否接受降低配图标准先交付",
+        }, f, ensure_ascii=False)
+    return run(["loop", "review", "--file", p, "--workspace", w])
+
+
+def register_gate_baselines(w, deck):
+    """v3.20.0：make-gate 新增两条前置（几何基线 + 增量基线），登记它们。
+
+    为什么必须登记：`loop_b.defaults.geo_baseline_required` 与
+    `delta_gate.baseline_required` 此前同样零执行者——make-gate 从不检查，
+    "配了必配基线"是空话。接成硬判据后，未登记即阻断，
+    故"应当放行"的用例必须先把这两项登记齐。
+    """
+    run(["loop", "geo-baseline", "--geo-baseline", deck, "--workspace", w])
+    bp = os.path.join(w, "baseline.json")
+    with open(bp, "w", encoding="utf-8") as f:
+        json.dump({"p0": 0, "p1": 0, "p2": 0, "pages_physical": 1,
+                   "pages_visible": 1, "md5": "test-md5"}, f)
+    return run(["loop", "baseline", "--file", bp, "--workspace", w])
+
+
 def main():
     print("== 回归测试：vet-med-ppt-team loop 状态机 v3.9.0 ==")
 
@@ -194,6 +234,7 @@ def main():
             deck2 = os.path.join(w2, "b.pptx")
             make_deck(deck2)
             run(["loop", "start", "--deck", deck2, "--max-rounds", "1", "--workspace", w2])
+            round_review(w2)                     # v3.20.0：进位前须有本轮轮报
             rc21, _, se21 = run(["loop", "continue", "--decision", "accept",
                                  "--confirmed", "--workspace", w2])
             s21 = jout(run(["loop", "status", "--workspace", w2])[1])
@@ -243,6 +284,8 @@ def main():
             rc27, so27, _ = run(["loop", "make-gate", "--workspace", w3])
             check("制作前置门：九项齐但仍有未冻结条目 → 阻断", rc27 == 1, f"got {so27[:150]}")
             run(["loop", "freeze", "--items", "J-001", "--decision", "accept", "--workspace", w3])
+            # v3.20.0：make-gate 新增两条前置（几何基线 + 增量基线），登记后才应放行
+            register_gate_baselines(w3, deck3)
             rc28, so28, _ = run(["loop", "make-gate", "--workspace", w3])
             check("制作前置门：全冻结 + 九项齐 + 原件未改 → 放行（exit 0）",
                   rc28 == 0 and jout(so28).get("ok") is True, f"got {so28[:200]}")
@@ -261,11 +304,15 @@ def main():
             make_deck(deck4)
             run(["loop", "start", "--deck", deck4, "--workspace", w4])
             # 三轮 P0+P1 恒为 5（P0=3/P1=2），no_progress_threshold=2 → 第 3 轮触发
+            # v3.20.0：每轮进位前都必须有**本轮**轮报（round_review.required）
+            round_review(w4, "rr1")
             r1, _, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                             "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+            round_review(w4, "rr2")
             r2, so2, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                               "--p0", "3", "--p1", "2", "--p2", "5",
                               "--allow-unverified", "--workspace", w4])
+            round_review(w4, "rr3")
             r3, so3, se3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "3", "--p1", "2", "--p2", "5",
                                 "--allow-unverified", "--workspace", w4])
@@ -292,11 +339,14 @@ def main():
             deck5 = os.path.join(w5, "e.pptx")
             make_deck(deck5)
             run(["loop", "start", "--deck", deck5, "--workspace", w5])
+            round_review(w5, "rr1")                          # v3.20.0：本轮轮报
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w5])   # 5
+            round_review(w5, "rr2")
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", "1", "--p1", "2", "--p2", "5",
                  "--allow-unverified", "--workspace", w5])   # 3（下降）
+            round_review(w5, "rr3")
             r6, so6, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                               "--p0", "2", "--p1", "2", "--p2", "5",
                               "--allow-unverified", "--workspace", w5])  # 4
@@ -330,6 +380,7 @@ def main():
             tampered = report("tampered", {"p0": 1, "p1": 0, "note_coverage": 0.95,
                                            "p2_threshold": 0.8, "p2_block": False, "p3": 0})
             # ① 真实报告：取到 gate.p0/p1，来源为 verify_json
+            round_review(w8, "rr1")              # v3.20.0：进位前须有本轮轮报
             rv1, sov1, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--verify-json", real, "--workspace", w8])
             s1 = jout(sov1)
@@ -339,6 +390,7 @@ def main():
                   and s1.get("quality_source", "").startswith("verify_json|"), f"got {sov1[:200]}")
 
             # ② 灌水报告 + 冲突手工值 → 取报告值，手工值只存证不采用
+            round_review(w8, "rr2")
             rv2, sov2, sev2 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                    "--p0", "9", "--p1", "9", "--p2", "9",
                                    "--verify-json", tampered, "--workspace", w8])
@@ -350,6 +402,7 @@ def main():
 
             # ③ 报告缺 p0 → 显式报错（exit 2），**不静默取 0**、不退回手工值
             badp0 = report("bad_nop0", {"p1": 1, "note_coverage": 0.9, "p2_block": False})
+            round_review(w8, "rr3")
             rv3, _, sev3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "0", "--p1", "0", "--p2", "0",
                                 "--verify-json", badp0, "--workspace", w8])
@@ -358,6 +411,7 @@ def main():
                   f"got {rv3} {sev3[:160]}")
 
             # ④ 报告文件不存在 → exit 3（依赖缺失）
+            round_review(w8, "rr4")
             rv4, _, sev4 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--verify-json", os.path.join(w8, "nope.json"), "--workspace", w8])
             check("报告不存在 → exit 3（依赖缺失，不静默取 0）", rv4 == 3 and "报告不存在" in (sev4 or ""),
@@ -366,6 +420,7 @@ def main():
             # ⑤ 仅手工（无报告）→ source=manual 且标记未核验
             #    ⚠ v3.17.0 B2-2：本轮 history 里已有 verify_json 来源（无手工条目），
             #    故手工值仍可作为"首次自报"进入（source=manual）。
+            round_review(w8, "rr5")
             rv5, sov5, sev5 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                    "--p0", "2", "--p1", "1", "--p2", "3", "--workspace", w8])
             s5 = jout(sov5)
@@ -378,6 +433,7 @@ def main():
             badjson = os.path.join(w8, "broken.json")
             with open(badjson, "w", encoding="utf-8") as f:
                 f.write("{ NOT JSON")
+            round_review(w8, "rr6")
             rv6, _, sev6 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--verify-json", badjson, "--workspace", w8])
             check("报告不可解析 → exit 2 且原文说明不按 0 处理",
@@ -387,6 +443,7 @@ def main():
             # ⑦ **别处课件的报告** → 必须被拒（不得参与本轮收敛判定）
             wrong = report("wrong_deck", {"p0": 0, "p1": 0, "p2_block": False},
                            stats_file=other8)
+            round_review(w8, "rr7")
             rv7, _, sev7 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--verify-json", wrong, "--workspace", w8])
             check("别处课件的报告 → 拒绝采用（exit 2，原文明示不匹配）",
@@ -397,6 +454,7 @@ def main():
             nostats = os.path.join(w8, "nostats.json")
             with open(nostats, "w", encoding="utf-8") as f:
                 json.dump({"gate": {"p0": 1, "p1": 0, "p2_block": False}}, f)
+            round_review(w8, "rr8")
             rv8, _, sev8 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--verify-json", nostats, "--workspace", w8])
             check("报告缺 stats.file → 拒绝采用（无法确认对应哪份课件）",
@@ -410,10 +468,12 @@ def main():
             deck9 = os.path.join(w9, "h.pptx")
             make_deck(deck9)
             run(["loop", "start", "--deck", deck9, "--workspace", w9])
+            round_review(w9, "rr1")              # v3.20.0：进位前须有本轮轮报
             ra1, _, sea1 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "9", "--p1", "0", "--p2", "0", "--workspace", w9])
             check("递减假数序列：第 1 轮手工自报放行（exit 0，source=manual）",
                   ra1 == 0, f"got {ra1} {sea1[:160]}")
+            round_review(w9, "rr2")
             ra2, _, sea2 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "7", "--p1", "0", "--p2", "0", "--workspace", w9])
             check("递减假数序列：第 2 轮手工自报被拦下（exit 2，明示须用 --verify-json）",
@@ -424,6 +484,7 @@ def main():
                   len(sa9.get("quality_history", [])) == 1,
                   f"got {sa9.get('quality_history')}")
             # 逃生口：显式 --allow-unverified → 放行但**留痕**（blocker + source 标记）
+            round_review(w9, "rr3")
             ra3, _, sea3 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "7", "--p1", "0", "--p2", "0",
                                 "--allow-unverified", "--workspace", w9])
@@ -442,6 +503,7 @@ def main():
             deck10 = os.path.join(w10, "i.pptx")
             make_deck(deck10)
             run(["loop", "start", "--deck", deck10, "--workspace", w10])
+            round_review(w10, "rr1")
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", "3", "--p1", "1", "--p2", "0", "--workspace", w10])
             rm1, som1, _ = run(["loop", "make-gate", "--workspace", w10])

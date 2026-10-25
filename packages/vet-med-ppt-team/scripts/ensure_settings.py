@@ -613,7 +613,13 @@ def check_version_consistency(expert_dir):
     #   缘由（独立测试 N6）：F3/F4 修了「harness.py argparse 描述」「两个 yaml 的 version 键」，
     #   但**改回去体检照样全绿**——即这些修复**没有回归门禁**，等于随时可能复发。
     #   现把它们纳入第 14 项：任何一处漂移即判红。
-    for rel in ("references/result-envelope.yaml", "config/domain_config.yaml"):
+    for rel in ("references/result-envelope.yaml", "config/domain_config.yaml",
+                # v3.20.0 补：另两个 yaml 也带 version 键，此前**不在巡检清单**——
+                #   与本项自己踩过的坑完全同型（4 处 → 8 处 → 10 处，每次都是"新发现一处漏掉"）。
+                #   config/language-profile.yaml（交付语言与术语表契约）
+                #   config/external-tools.yaml（外部工具/通道/知识库契约）
+                #   这两个文件是 v3.19.0 新增的，加进来时漏了巡检——不改巡检就会长期漏。
+                "config/language-profile.yaml", "config/external-tools.yaml"):
         p = os.path.join(expert_dir, *rel.split("/"))
         if not os.path.isfile(p):
             continue
@@ -1121,15 +1127,26 @@ def check_dead_config_keys(expert_dir):
         #   （ISBN 校验位算法、GB 标准号格式），由**会话层**执行，不由脚本算
         #   ⇒ 登记人读型（与 shrink_order 同判据）。
         "format_fallback",
-        # ── v3.19.3：L3 逐键定性（75 键全量处置，主理人接管实施）──────────
-        # 结构性发现：`loop_a`(4) + `loop_b`(20) + `delta_gate`(9) = 33 键
-        #   （占 75 键的 44%）**整批"声明了但没接线"**——v3.9.0「双层 Loop 契约下沉批」
-        #   只把**动作层**下沉为代码（loop 子命令 13 个动作），而 yaml 里的
-        #   **默认值段 / 轮次复核判据 / delta 门禁判据**三类仍是纯声明
-        #   （代码字面量 0 处；`delta_gate` 在 harness.py 的 2 次出现是文件头 docstring）。
-        #   处置：登记人读型（保留声明），理由**据实写"声明未接线"**，不谎称"由会话层消费"；
-        #   实际接线留 v3.20.0（残留登记）。
-        "loop_a", "loop_b", "delta_gate",
+        # ── v3.20.0：33 键"声明未接线"收口（v3.19.3 L3 的残留项）────────
+        # v3.19.3 的取证：`loop_a`(4) + `loop_b`(20) + `delta_gate`(9) = 33 键
+        #   整批"声明了但没接线"——v3.9.0 只把**动作层**下沉为代码（loop 子命令 13 个动作），
+        #   而 yaml 里的**默认值段 / 轮次复核判据 / delta 门禁判据**三类仍是纯声明
+        #   （代码字面量 0 处；`delta_gate` 在 harness.py 的 2 次出现只是文件头 docstring）。
+        #
+        # v3.20.0 处置：**32 键已真接线**（新建 scripts/loop_contract.py 承载判定，
+        #   harness.py 的 loop 子命令调用它），故**整段登记撤销**——继续挂着等于
+        #   给它们永久假绿（改回未接线也检不出来）。
+        #   ⚠ 只保留 3 个**确属不可判定**的键，用带文件前缀的限定路径登记：
+        "harness.loop_a.trigger", "harness.loop_b.trigger",
+        #     · trigger —— 判环判据（dual-loop-governance.md#1 的判环表），
+        #       是**语义判定**（"这句话是在改专家团还是在改课件"），代码不判环；
+        "harness.delta_gate.insert_font_at_creation",
+        #     · insert_font_at_creation —— "新元素文字规格创建时即达合规"是**写入时行为**，
+        #       成品文件态无痕迹（与 OOXML 病例 API-001 同型），**结构性不可判定**。
+        #       同段其余 8 键（baseline_required / baseline_fields / block_on_new_defects /
+        #       report_format / miss_needs_human_review / insert_spatial_audit /
+        #       image_caption_requires_reading / caption_missing_element_policy）已接线。
+        #       ⚠ 执行面与不可判定面**不得混说**——不得因某键出现在输出里就宣称已强制。
         # harness.yaml#stages.{0..4}.next —— 阶段顺序的人读说明；实际推进由
         #   `task_state.json#current_stage`（数值）驱动，`next_stage` 在代码中 0 次出现。
         #   ⚠ 双份真相风险：yaml 的 `next` 与代码的 `current_stage+1` 是同一事实两处写法
@@ -1354,14 +1371,24 @@ def check_dead_config_keys(expert_dir):
         if len(shown) < len(uniq):
             print(f"     · … 还有 {len(uniq) - len(shown)} 项"
                   f"（本次按 VET_DEAD_CONFIG_LIMIT={_limit} 截断；unset = 全量）")
-        print("     → 本项为**提示不阻断**（人工复核用）：多数是主理人/流程消费的人读型配置，"
-              "如成员工具权限、快照策略、AI 素养判据。")
-        print("     → 若确认某个键**本该被脚本消费**却无人读（如本次修掉的 three_source 阈值），"
-              "按「① 删掉 ② 实现读取 ③ 登记白名单」三选一处置。")
+        print("     → 处置三选一：「① 删掉 ② 实现读取 ③ 登记白名单」——"
+              "本次修掉的 three_source 阈值属 ②。")
+        # ── v3.20.0：**由"提示不阻断"改为阻断** ────────────────────
+        # 为什么改（这是本项存续三版的实测教训）：v3.19.2 第 18 项就报出了
+        #   `loop_a`/`loop_b`/`delta_gate` 共 33 键"声明了但没接线"，
+        #   但因为**提示不阻断**，这批键在随后三轮诊断里**反复被重新发现、反复未被处置**
+        #   （v3.19.2 → v3.19.3 登记 → v3.19.4 逐键定性 → v3.20.0 才接线）。
+        #   不阻断 ⇒ 每次都是"下次再说" ⇒ 声明层≠执行层这条核心禁忌永远清不干净。
+        # 为什么现在可以阻断（前提已具备，不是拍脑袋收紧）：
+        #   v3.19.3 L3 + v3.20.0 接线已完成**全量定性**，当前基线 = 0 死键。
+        #   基线归零之后再出现死键，只可能是**新增**——要么是新增配置忘了接线，
+        #   要么是新增人读型配置没登记。两种都必须在当次处置，不得挂账。
+        print("      v3.20.0 起本项**阻断**：L3 全量定性已完成（基线 0），"
+              "此后任何未登记死键都属新增项，须当次三选一处置，不得挂账。")
     else:
         print(f"[18/{N}] ✓ 无死配置（{len(cfg_files)} 个 config 文件："
               f"代码读取 {alive} 项 · 人读型登记 {textual} 项）")
-    return 0   # 恒不阻断
+    return 1 if dead else 0
 
 
 def check_fallback_drift(expert_dir):

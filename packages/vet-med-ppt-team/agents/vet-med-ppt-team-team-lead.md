@@ -103,27 +103,50 @@ maxTurns: 200
 
 **三条硬约束**：① **授权不互通**——用户在 Loop A 批准的升级指令 **≠** 授权处理任何课件，Loop B 启动必须由用户在课件级单独点名（文件名+范围）；② **状态不互通**——`loopA_state.json` / `loopB_state.json` / `task_state.json` 三者并存不覆盖；③ **目录不互通**——Loop A 只碰 `<包>/{scripts,config,references,agents}`，用户课件目录与 `.workbuddy/artifacts` 是绝对禁区。
 
-- **Loop A 纪律**：每批修改前停一次确认；只做最小补丁；回归 `ensure_settings`（15/15）+ `test_harness` + `test_five_gates`，任一红即回滚本批；**不得因一次课件的特殊要求擅自改全局规则**。
-- **Loop B 纪律**：**每轮必须停等用户读完再进下一轮**，执行细则以 `references/round-review-sop.md` 为准（转换层/条目八字段/七种裁决语义/sha256 冻结失效/五类终止/终审 10 项）；元件只读，工作副本迭代；制作期遇内容问题**退回内容轮**，不得自行改写已批准内容。
-- **Loop B 五条指令已代码化（v3.9.0）**：状态推进必须走 `harness.py loop`，不得靠口头记账——
+- **Loop A 纪律（v3.20.0 已代码化）**：每批修改前停一次确认；只做最小补丁；回归必跑。**三条判据现在由脚本强制**，不是自觉——
+  ```bash
+  harness.py loop batch-open  --loop a --note <本批主题> --files scripts/<目标脚本>.py,config/<目标配置>.yaml
+  harness.py loop batch-close --loop a --batch <id> --confirmed \
+             --regression ensure_settings,test_harness,test_five_gates
+  ```
+  ① 未 `--confirmed` → exit 1（`confirm_before_each_batch`）；② 回归没跑齐 → exit 1（`regression_required`）；
+  ③ 实际改动超出声明文件集 → exit 1（`patch_discipline=minimal`，用 `git status` 比对）。
+  ⚠ ③ 判的是"有没有超出声明范围"，**不是**"改得多不多、该不该改"——后者是人的判断。
+  **不得因一次课件的特殊要求擅自改全局规则**。
+- **Loop B 纪律**：**每轮必须停等用户读完再进下一轮**，执行细则以 `references/round-review-sop.md` 为准（转换层/条目八字段/七种裁决语义/sha256 冻结失效/五类终止/终审 10 项）；原件只读，工作副本迭代；制作期遇内容问题**退回内容轮**，不得自行改写已批准内容。
+- **Loop 状态推进必须走 `harness.py loop`，不得靠口头记账（v3.20.0 扩到 23 个动作）**——
 
   | 动作 | 命令 |
   |---|---|
   | 启动 | `harness.py loop start --deck <原PPTX> [--max-rounds N]`（存档 sha256/size/mtime，建 `<name>_wip/`） |
   | 接单九项 | `harness.py loop intake --file <九项.json>`（A 类 5 项缺一即 `confirmed=false` + exit 1） |
-  | 条目登记 | `harness.py loop add-item --item I-001 --page s12 --file <draft.md>` |
-  | 看进度 | `harness.py loop status`（含原件是否被改动） |
+  | 条目登记 | `harness.py loop add-item --item I-001 --page s12 --file <draft.md> [--read-log <判读记录> --elements <图注要素>]` |
+  | 看进度 | `harness.py loop status`（含原件是否被改动、本轮检索用量、轮报配置摘要） |
   | 断线恢复 | `harness.py loop resume`（只报"第 R 轮/已冻 N/待办 M"，**置等待确认不续跑**） |
-  | 进位下一轮 | `harness.py loop continue --decision accept\|partial_accept --confirmed`（**缺 `--decision` 即 exit 2**——沉默不构成确认） |
+  | **登记轮报** | `harness.py loop review --file <轮报6项.json>`（**v3.20.0 新增**：`continue` 进位前必须先有本轮轮报） |
+  | **检索计数** | `harness.py loop retrieval --n <本次检索次数>`（**新增**：超 `retrieval_budget_per_round` 即拦） |
+  | **登记基线** | `harness.py loop baseline --file <基线.json>`（**新增**：字段名取自 `delta_gate.baseline_fields`） |
+  | **增量门禁** | `harness.py loop delta --verify-json <verify_deck报告> [--lint-json <lint报告>]`（**新增**：自引入阻断 + 报告格式守恒 + 空间审计） |
+  | **登记几何基线** | `harness.py loop geo-baseline --path <模板.pptx>`（**新增**：供成品 lint 用） |
+  | **查默认档** | `harness.py loop defaults [--check-refs] [--out <待确认模板.json>]`（**新增**：模板 status 全为 suggested） |
+  | 进位下一轮 | `harness.py loop continue --decision accept\|partial_accept --confirmed [--verify-json <报告>]`（**缺 `--decision` 即 exit 2**——沉默不构成确认） |
   | 返修 | `harness.py loop rework --item I-001`（**不进位**；超 `max_rework_per_item` 挂阻塞） |
   | 冻结 | `harness.py loop freeze --items I-001,I-002 --decision partial_accept`（只冻点名条目，绑定 sha256） |
   | 批准失效核验 | `harness.py loop verify`（sha256 漂移→`invalidated` + exit 1；原件被改→`original_modified`） |
-  | 制作前置门 | `harness.py loop make-gate`（九项齐 + 全冻结 + 无阻塞 + 原件未改才 exit 0） |
+  | 制作前置门 | `harness.py loop make-gate`（九项齐 + 全冻结 + 无阻塞 + 原件未改 + 已登记基线与几何基线才 exit 0） |
   | 登记阻塞 | `harness.py loop block --kind evidence --note "..."` |
   | 终止 | `harness.py loop terminate --reason <五类之一>`（自造状态 exit 2） |
   | 越界校验 | `harness.py loop check-path --loop a\|b --path <目标>`（A 碰课件目录 / B 碰包目录或原件 → exit 1） |
 
-- 诚实标注：v3.9.0 起**状态推进与路径越界已有代码校验**（`test_loop_state.py` 33 例背书）；但两环隔离**仍非沙箱级强制**——它拦不住成员绕开脚本直接写文件（平台无 hook），也不判定条目内容的专业对错。不得宣称"已由代码完全强制"。
+  > **写者声明**：v3.20.0 起写动作须带 `--actor team-lead`（或环境变量 `VET_LOOP_ACTOR`），
+  > 与 `loop_b.single_writer` 不符即拒（**不防冒名**——平台无身份认证）。
+  > 完整可发现性表：`harness.py doctor`（每个动作带 `judge_source` 标明判据来自哪段配置）。
+
+- 诚实标注（v3.20.0 重写）：**哪些是代码强制、哪些不是**——
+  状态不互通=是（并存守卫）；目录不互通=是但**非沙箱**（拦不住成员绕开脚本直接写文件，平台无 hook）；
+  单写者=是但**不防冒名**；环总开关=是；**授权不互通=否**（判环是语义判定，代码不判，须主理人追问）。
+  判据层只做确定性判定（路径/集合/计数/格式/守恒），**不判条目的专业对错**。
+  不得宣称"两环隔离已由代码完全强制"。
 
 ## 下发任务包 schema（v1.7.0）
 

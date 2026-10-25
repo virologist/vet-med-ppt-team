@@ -161,7 +161,16 @@ def test_声明的全部事件都有代码产出():
         deck = os.path.join(w, "demo.pptx")
         _make_deck(deck)
         run(["loop", "start", "--deck", deck, "--workspace", w])
-        for p0 in (3, 3, 3):
+        # v3.20.0：loop_b.round_review.required=true 已由 loop_contract 接成**硬判据**——
+        #   缺轮报 ⇒「本轮无效」exit 1，进位根本不发生 ⇒ no_progress 事件也走不到。
+        #   故每轮进位前先登记六项轮报（否则本用例测的是"进位被拦"而非"无进展"）。
+        for i, p0 in enumerate((3, 3, 3), 1):
+            _rr = os.path.join(w, f"round_review_{i}.json")
+            with open(_rr, "w", encoding="utf-8") as f:
+                json.dump({"本轮改了什么": "本轮修订", "依据": "verify_deck 报告",
+                           "未解决": "无", "下一步": "等用户裁决",
+                           "风险": "无", "需用户裁决": "无"}, f, ensure_ascii=False)
+            run(["loop", "review", "--file", _rr, "--workspace", w])
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", str(p0), "--p1", "2", "--p2", "5", "--allow-unverified",
                  "--workspace", w])
