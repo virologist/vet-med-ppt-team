@@ -1256,12 +1256,25 @@ def check_dead_config_keys(expert_dir):
         print(f"[18/{N}] ℹ 提示：{len(uniq)} 个配置键在 scripts/ 中无读取者"
               f"（代码读取 {alive} 项 · 人读型登记 {textual} 项 · "
               f"另有 {len(dead) - len(uniq)} 条为同键多值重复，已按唯一键计）")
-        for fname, path, val in uniq[:12]:
+        # v3.19.3（L3）：**全量输出**——原实现截断为前 12 条，其余条目**永远不可见**，
+        #   ⇒ 人工无法复核 ⇒ 这本身是工具缺陷（体检项形同虚设）。
+        #   默认打印全部；如需精简输出可设 VET_DEAD_CONFIG_LIMIT=<n> 截断（0 = 不截断）。
+        _limit_env = os.environ.get("VET_DEAD_CONFIG_LIMIT", "").strip()
+        _limit = 0
+        if _limit_env:
+            try:
+                _limit = max(0, int(_limit_env))
+            except ValueError:
+                print(f"     ⚠ VET_DEAD_CONFIG_LIMIT={_limit_env!r} 不是整数，按默认（全量）处理")
+                _limit = 0
+        shown = uniq if _limit <= 0 else uniq[:_limit]
+        for fname, path, val in shown:
             _n = list_valued.get(f"{fname}#{path}")
             _extra = f"（该键共 {_n} 个枚举值，按 1 键计）" if _n and _n > 1 else ""
             print(f"     · {fname}#{path} = {val!r}{_extra}")
-        if len(uniq) > 12:
-            print(f"     · … 还有 {len(uniq) - 12} 项")
+        if len(shown) < len(uniq):
+            print(f"     · … 还有 {len(uniq) - len(shown)} 项"
+                  f"（本次按 VET_DEAD_CONFIG_LIMIT={_limit} 截断；unset = 全量）")
         print("     → 本项为**提示不阻断**（人工复核用）：多数是主理人/流程消费的人读型配置，"
               "如成员工具权限、快照策略、AI 素养判据。")
         print("     → 若确认某个键**本该被脚本消费**却无人读（如本次修掉的 three_source 阈值），"
