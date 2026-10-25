@@ -6,6 +6,69 @@
 
 ---
 
+## [v3.19.1] - 2026-10-25（第六次从零诊断 · v3.19.0 发布后复核：修迁移回归）
+
+> **诊断性质**：发布后独立复核（不沿用历史结论），重点攻**v3.19.0 新增机制自身的缺陷面**
+> （新代码 = 新风险）。13 维度逐项重新实测，**全部证据为本机实跑**。
+> **执行方式**：Agent Harness 专家团轻量型快速通道；子代理 `agent-harness-coder`
+> 派出后 11 分钟零落盘（Token Plan 429 同型）⇒ 判定卡死，**主理人接管实施**。
+
+### 诊断期实测证据（本轮新增）
+
+1. **标题字号接线零误报**（消险结论）：真实课件 `Research/H10/H10.pptx`（34 页）跑 verify_deck，
+   问题分布 = 缺备注 17 / 元素重叠 14 / 主框密度 2 / 配色 1 / 越界 2 / 课时 1 / 缺目录 1 / 缺题页 1，
+   **「标题字号」0 条** ⇒ v3.19.0 新接的 `title_min_pt=28` 阈值不产生假红。
+2. **S1 回归实锤**：端到端（route→confirm→assemble）产物【五、知识库路由】渲染
+   「本域无账号内知识库——…严禁静默回落」，**同屏**又写「说明：本域库路由见 external-tools.yaml」
+   ⇒ **自相矛盾且与事实相反**（animal-medicine 实有 7 库）；【六之二】交付语言/术语表段**完全缺失**。
+3. **取证脚本自身错误已否决**：实测④的 rc=0 是 `| python3 -c` **管道吞退出码**，直接跑 rc=4 正确
+   ——非产品缺陷（记录此教训：退出码断言必须直接跑，不用管道）。
+4. 其余 12 维度逐项复验**无新缺陷**（证据见测试报告）。
+
+### ① 【P0·S1】坍缩快照层未跟上 v3.19.0 迁移（高严重度 · 回归缺陷）
+
+**根因三段断裂**：
+`harness.py:899` 快照取值 `dom.get("knowledge_bases")`（v3.19.0 已把 7 库迁到
+`config/external-tools.yaml`，域档案**不再有此键**）⇒ 快照恒存 `list[0]`；
+装配器 `pick()` 见空列表 ⇒ 走 else 分支渲染「无知识库」；
+`glossary` / `delivery_language`（v3.19.0 新增域级键）**从未进快照、也从未被渲染**。
+
+**修复**：
+- `harness.py` 新增 `_external_tools_path()` / `_domain_knowledge_bases(cfg, domain_id)`——
+  快照层改从**唯一源** external-tools.yaml 取库并**按 `owner_scope` 过滤**到本域
+  （computing / business-training 无匹配 ⇒ 空列表，**这是正确行为**）；
+  快照新增 `glossary` / `delivery_language` / `language_profile_ref` 三键；
+  装载告警另存 `knowledge_bases_load_warning`（**不覆盖**域语义 note——
+  两个来源不共用一个键，避免"一份口径两处写"）；
+- `assemble_domain_prompt.py`：【五】段逐条渲染库（名称/id/何时用/**适用专业**/**导航链接**）
+  + **可由用户灵活选择与配置**的更换提醒（裁决 #1）；无库时给出**明确通用兜底**（不再半句话）
+  + 域级换库提醒（裁决 #4）；**新增【六之二、交付语言与术语表】段**（交付语言 + 唯一源引用 +
+  词条逐条，**一条不可省**）；`pick()` 回落读域档案 ⇒ **旧产物兼容**。
+- 实现中自查并修掉一处真 bug：`_reminder` 在 except 分支未初始化 ⇒ `UnboundLocalError`
+  （由 T5 旧产物兼容用例抓出）。
+
+### ② 【中·S2】探针对**未知域 id** 缺归因提示
+
+现象对（7 库全报 scope 冲突）但**归因错**——成员会以为"库坏了"，真因是"域 id 传错"。
+修复：探针读 `config/domain-profiles.yaml` 的合法域清单，未知域时产出
+`invalid_domain` 提醒（warn 级，点破真因 + 列出合法域 id）。正反例实测：未知域 1 条、
+合法域 0 条（不误报）。
+
+### ③ 【低·S3】`format_fallback`（isbn_checksum / gb_number_format）登记人读型
+
+判据是**语义规则**（ISBN 校验位算法 / GB 标准号格式），由**会话层**执行，脚本不算
+⇒ 登记第 18 项 known_textual（与 shrink_order 同判据）。死配置 105 → 103。
+
+### 回归
+
+`pytest scripts/` **209 passed / 3 skipped**（基线 200 → +9，零失败）；
+新增 `scripts/test_collapse_domain_render.py` 6 用例全绿（**含 2 个反例**：库清空→回到
+「无知识库」；glossary 清空→词条 0，证明段是真读而非硬编码）+ T5 旧产物兼容 + T6 跨域过滤；
+`test_external_tools.py` 扩到 16 用例（新增 T13/T13b invalid_domain 正反例 + T14 人读型登记）；
+validate_expert 0 errors · 体检 23/23（域绑定残留 0）· 双树 0 差异 · 版本 10 处一致 3.19.1。
+
+---
+
 ## [v3.19.0] - 2026-10-25（第五次从零诊断：交付语言规格 + 外部工具唯一源 + 联网权威编排）
 
 > **诊断方式**：不沿用任何历史结论，按管家节点最新 13 维度需求为唯一基准重新取证。

@@ -1114,6 +1114,13 @@ def check_dead_config_keys(expert_dir):
         # visual-rules.yaml#overlay_injection.* —— 叠加层注入规范（消费方 = A 轨批量
         #   注入脚本前置断言【会话层执行】+ 屠明熙抽样复核；sample_review_ratio 是人复核比例）
         "overlay_injection",
+        # ── v3.19.1：第六次从零诊断·S3 ──
+        # domain_config.yaml#three_source_check.source_verification.*.format_fallback
+        #   —— 书籍/标准的**离线校验兜底**（isbn_checksum / gb_number_format）：
+        #   联网通道不可用时用校验位/编号格式做本地判据。判据本身是**语义规则**
+        #   （ISBN 校验位算法、GB 标准号格式），由**会话层**执行，不由脚本算
+        #   ⇒ 登记人读型（与 shrink_order 同判据）。
+        "format_fallback",
     }
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────

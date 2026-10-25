@@ -468,6 +468,12 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
         if ic.get("knowledge_channel_ref"):
             lines.append(f"- 知识通道说明：{ic['knowledge_channel_ref']}")
 
+    # ── v3.19.1·S1：知识库路由渲染（修「本域无知识库」与「见 external-tools」同屏矛盾）──
+    # 缺陷实测：v3.19.0 把库迁到 external-tools.yaml 后，坍缩快照仍从域档案取 ⇒ 恒空
+    #   ⇒ 装配器渲染「本域无账号内知识库」，而同屏说明又写「见 external-tools.yaml」——
+    #   **自相矛盾**，且与事实相反（animal-medicine 有 7 个库）。
+    # 修复：快照层已改从唯一源取（harness.py::_domain_knowledge_bases），本段负责渲染，
+    #   并把「无库」时的兜底说明改为**明确的通用兜底**（不再出现半句话）。
     kb = pick("knowledge_bases")
     lines.append("【五、知识库路由（文本型，与取图通道并列）】")
     if kb:
@@ -476,13 +482,44 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                 nm = k.get("name") or ""
                 kid = k.get("id") or ""
                 when = k.get("when") or ""
-                lines.append(f"- {nm}" + (f"（id: {kid}）" if kid else "")
-                             + (f" —— 何时用：{when}" if when else ""))
-            else:
-                lines.append(f"- {k}")
+                share = k.get("share_url") or ""
+                scope = k.get("owner_scope") or ""
+                line = f"- {nm}" + (f"（id: {kid}）" if kid else "")
+                line += (f" —— 何时用：{when}" if when else "")
+                if scope:
+                    line += f"；适用专业：{scope}"
+                if share:
+                    line += f"；导航：{share}"
+                lines.append(line)
+        # 更换提醒（口径与 external-tools.yaml#knowledge_bases[].replaceable 一致）
+        if any(isinstance(k, dict) and k.get("replaceable") for k in kb):
+            lines.append("- ⚠ 上述知识库**可由用户灵活选择与配置**（可替换/更新）——"
+                         "若用户提供了自己的库，按用户指定的库检索，并**主动提示**替换与更新；"
+                         "库路由唯一源：`config/external-tools.yaml#knowledge_bases`")
     else:
-        lines.append("- （本域无账号内知识库——按域档案给出的通道现查官方/制度原文；"
-                     "**严禁**静默回落其它域的知识库）")
+        # 无库：必须说清**通用兜底**，不得再出现与「见 external-tools.yaml」并列的半句话
+        _fallback = ""
+        _reminder = ""          # ⚠ 必须先初始化：except 分支若走到则用不到，
+        try:                    #   但未初始化会在异常路径触发 UnboundLocalError
+            import yaml as _y
+            _ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "config", "external-tools.yaml")
+            with open(_ext, encoding="utf-8") as _f:
+                _ed = _y.safe_load(_f) or {}
+            for _d in (_ed.get("domains_without_knowledge_bases") or []):
+                if isinstance(_d, dict) and _d.get("id") == (domain or {}).get("id"):
+                    _fallback = str(_d.get("fallback") or "")
+                    _reminder = str(_d.get("reminder") or "")
+        except Exception:
+            _fallback = ""
+            _reminder = ""
+        lines.append(f"- （本域无账号内知识库——通用兜底：{_fallback or '现查官方文档/制度原文'}；"
+                     f"**严禁**静默回落其它域的知识库）")
+        if _reminder:
+            lines.append(f"- ⚠ {_reminder}")
+    _kb_warn = pick("knowledge_bases_load_warning")
+    if _kb_warn:
+        lines.append(f"- ⚠ 装载告警：{_kb_warn}")
     if domain and domain.get("knowledge_bases_note"):
         lines.append(f"- 说明：{domain['knowledge_bases_note']}")
 
@@ -490,6 +527,29 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
     if term:
         lines.append("【六、术语规范】")
         lines += _bullets(term)
+
+    # ── v3.19.1·S1：新增【六之二、交付语言与术语表】────────────────
+    # 缺陷实测：v3.19.0 新增的 glossary（29/23/21 条）与 delivery_language
+    #   **从未进快照、也从未被渲染** ⇒ 成员拿不到词条，"关键词汇首现补英文"落不了地。
+    _gloss = pick("glossary") or []
+    _lang = pick("delivery_language") or "zh-CN"
+    if _gloss or _lang:
+        lines.append("【六之二、交付语言与术语表】")
+        lines.append(f"- 交付语言：{_lang}"
+                     + ("（PPT 默认中文）" if _lang == "zh-CN" else "（英语场景）"))
+        lines.append("- 语言规格唯一源：`config/language-profile.yaml`"
+                     "（英语场景判据、术语标注形态、英文场景中文保留项均在其中，**不在本文件复制**）")
+        if _gloss:
+            lines.append(f"- 本域术语表（{len(_gloss)} 条，**首现补英文**，一条不可省）：")
+            for _g in _gloss:
+                if isinstance(_g, dict):
+                    _zh = str(_g.get("zh") or "")
+                    _en = str(_g.get("en") or "")
+                    _abbr = str(_g.get("abbr") or "")
+                    if not _zh and not _en:
+                        continue
+                    _form = f"{_zh}（{_en}" + (f", {_abbr}" if _abbr else "") + "）"
+                    lines.append(f"  - {_form}")
 
     red = pick("safety_redlines")
     if red:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.1
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -678,6 +678,54 @@ def cmd_route(args):
 #     本文件**严禁**用 match_hints / 关键词 / 正则 / 打分自动选域（那是规则匹配偏见）。
 #   · 脚本只做确定性事务：读档案、组装、落盘、校验状态——**不猜、不判断语义**。
 _DOMAIN_PROFILES_REL = "config/domain-profiles.yaml"
+_EXTERNAL_TOOLS_REL = "config/external-tools.yaml"   # v3.19.1：外部工具唯一源
+
+
+def _external_tools_path(cfg=None):
+    """外部工具配置路径（**唯一源**：config/external-tools.yaml）。
+
+    与 _domain_profiles_path 同模式：路径可由 yaml 覆盖（默认固定相对路径）。
+    """
+    rel = ((cfg or {}).get("collapse") or {}).get("external_tools_file") \
+        or _EXTERNAL_TOOLS_REL
+    return os.path.join(PKG, rel)
+
+
+def _domain_knowledge_bases(cfg, domain_id):
+    """取**归属该域**的 Ima 知识库路由（v3.19.1·S1）。
+
+    缺陷（第六次从零诊断·S1 · 实测证据）：
+      v3.19.0 把 7 个 Ima 库从 domain-profiles.yaml 迁到 config/external-tools.yaml，
+      但**坍缩快照仍从域档案取**（`dom.get("knowledge_bases")`）⇒ 迁移后恒为空列表
+      ⇒ 装配器渲染「本域无账号内知识库」——**与事实相反**（animal-medicine 有 7 个库），
+      且与同屏的「见 external-tools.yaml」说明自相矛盾。
+      ⇒ 快照层必须改从唯一源 external-tools.yaml 取，并**按 owner_scope 过滤**到本域。
+
+    返回 (库列表, 说明字符串)：
+      · 库列表 = owner_scope == domain_id 的库（无匹配则空列表——**正确**：
+        computing / business-training 本就没有账号内库）
+      · 说明 = 读取失败/未找到域时的告警文案（空串表示正常）
+    """
+    path = _external_tools_path(cfg)
+    if not os.path.isfile(path):
+        return [], f"外部工具配置缺失：{path}——知识库路由无法装载"
+    try:
+        import yaml as _yaml
+        with open(path, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+    except Exception as e:
+        return [], f"外部工具配置读取失败：{e}——知识库路由无法装载"
+    if not isinstance(data, dict):
+        return [], "外部工具配置格式异常——知识库路由无法装载"
+    kbs = data.get("knowledge_bases") or []
+    mine = []
+    for kb in kbs:
+        if not isinstance(kb, dict):
+            continue
+        scope = str(kb.get("owner_scope") or "")
+        if not scope or scope == domain_id:
+            mine.append(kb)
+    return mine, ""
 
 
 def _domain_profiles_path(cfg=None):
@@ -865,6 +913,7 @@ def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path, pane
                        "domain_match_note": b.get("note"),
                        "confirmed_note": None,
                        "warning": "该成员 id 未登记在 config/harness.yaml#members"})
+    _kb_list, _kb_warn = _domain_knowledge_bases(cfg, dom.get("id"))
     return {
         "schema": "collapse-artifact/1",
         "created_at": now_iso(),
@@ -896,7 +945,17 @@ def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path, pane
         "content_axes": dom.get("content_axes") or [],
         "evidence_hierarchy": dom.get("evidence_hierarchy") or {},
         "image_channel": dom.get("image_channel") or {},
-        "knowledge_bases": dom.get("knowledge_bases") or [],
+        # v3.19.1·S1：知识库路由改从**唯一源** external-tools.yaml 取并按域过滤
+        #   （此前从域档案取，v3.19.0 迁移后恒为空 ⇒ 装配器误渲染「本域无知识库」）
+        "knowledge_bases": _kb_list,
+        "knowledge_bases_ref": "config/external-tools.yaml#knowledge_bases",
+        # ⚠ **不覆盖**域档案的 knowledge_bases_note（那是域语义说明）——
+        #   装载告警另存独立键，避免两个来源互相覆盖（本项目核心忌讳：一份口径两处写）
+        "knowledge_bases_load_warning": _kb_warn or None,
+        # v3.19.1·S1：交付语言 + 域级术语表（v3.19.0 新增，此前未进快照 ⇒ 成员拿不到词条）
+        "glossary": dom.get("glossary") or [],
+        "delivery_language": dom.get("delivery_language") or "zh-CN",
+        "language_profile_ref": "config/language-profile.yaml",
         "terminology": dom.get("terminology") or [],
         "safety_redlines": dom.get("safety_redlines") or [],
         "knowledge_anchor": dom.get("knowledge_anchor"),
@@ -4884,7 +4943,7 @@ def cmd_doctor(args):
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.19.0", "executable": __file__,
+    out = {"version": "v3.19.1", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            "pending_work": _pending_work(wkspace(args)),
@@ -5206,7 +5265,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.1")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

@@ -354,6 +354,19 @@ def probe_ima(ima_cfg: dict, domain_id: str) -> dict:
     return out
 
 
+def _valid_domain_ids() -> set:
+    """读 config/domain-profiles.yaml 的合法域 id 清单（**唯一源**）。"""
+    p = PKG / "config" / "domain-profiles.yaml"
+    data, err = _load_yaml(p)
+    if err or not isinstance(data, dict):
+        return set()
+    out = set()
+    for dom in (data.get("domains") or []):
+        if isinstance(dom, dict) and dom.get("id"):
+            out.add(str(dom["id"]))
+    return out
+
+
 def probe_channels(cfg: dict, domain_id: str = "") -> dict:
     """探测全部通道 + 产出主动提醒。返回结构见模块 docstring。"""
     channels = cfg.get("channels") or []
@@ -367,6 +380,22 @@ def probe_channels(cfg: dict, domain_id: str = "") -> dict:
         "replace_suggestions": [],
         "scope_mismatches": [],
     }
+
+    # ── 域 id 合法性校验（v3.19.1）──────────────────────────────
+    # 缺陷（第六次从零诊断·S2）：传了**不存在的域 id** 时，探针把 7 个库全判
+    #   scope_mismatch（block 级）——现象正确但**归因错误**：成员会以为"库坏了"，
+    #   而真实原因是"域 id 传错了"。⇒ 补一条 invalid_domain 提醒点破真因。
+    valid_domains = _valid_domain_ids()
+    if domain_id and valid_domains and domain_id not in valid_domains:
+        report["replace_suggestions"].append({
+            "kind": "invalid_domain",
+            "severity": "warn",
+            "target": domain_id,
+            "detail": (f"域 id {domain_id!r} **不存在于** config/domain-profiles.yaml"
+                       f"（合法域：{', '.join(sorted(valid_domains))}）——"
+                       f"下面的库归属冲突是**域 id 传错**导致的，不是库本身不可用；"
+                       f"请改用合法域 id 后重跑探针"),
+        })
 
     for ch in channels:
         cid = str(ch.get("id") or "")

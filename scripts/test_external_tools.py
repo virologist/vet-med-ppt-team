@@ -226,6 +226,39 @@ class TestExternalTools(unittest.TestCase):
         self.assertIn("knowledge_channel", ids, "gate1_freeze 缺 knowledge_channel")
         self.assertEqual(len(ids), 8, f"闸1 清单应为 8 项，实得 {len(ids)}")
 
+    # ── T13 v3.19.1·S2：非法域 id 必须被点破（归因正确）────────
+    def test_T13_invalid_domain_is_flagged(self):
+        """T13：传**不存在的域 id** ⇒ 探针须产出 invalid_domain 提醒。
+
+        背景（第六次从零诊断·S2）：此前探针对未知域只报 7 条库 scope 冲突（block），
+        现象对但**归因错**——成员会以为"库坏了"，真因是"域 id 传错"。
+        """
+        import probe_channels as pc
+        ext = yaml.safe_load(EXT_CFG.read_text(encoding="utf-8"))
+        rep = pc.probe_channels(ext, "不存在的域")
+        inv = [s for s in rep.get("replace_suggestions") or []
+               if s.get("kind") == "invalid_domain"]
+        self.assertTrue(inv, "未知域未产出 invalid_domain 提醒——归因缺失")
+        self.assertIn("domain-profiles.yaml", inv[0].get("detail", ""),
+                      "invalid_domain 提醒未点破真因（应指向合法域清单）")
+
+    def test_T13b_valid_domain_no_false_alarm(self):
+        """T13b 反向：合法域**不得**报 invalid_domain（防误报）。"""
+        import probe_channels as pc
+        ext = yaml.safe_load(EXT_CFG.read_text(encoding="utf-8"))
+        for dom in ("animal-medicine", "computing", "business-training"):
+            rep = pc.probe_channels(ext, dom)
+            inv = [s for s in rep.get("replace_suggestions") or []
+                   if s.get("kind") == "invalid_domain"]
+            self.assertFalse(inv, f"合法域 {dom} 被误报 invalid_domain")
+
+    # ── T14 v3.19.1·S3：format_fallback 登记为人读型 ────────────
+    def test_T14_format_fallback_registered_textual(self):
+        """T14：format_fallback 已在第 18 项人读型白名单里（不再是死配置）。"""
+        src = (PKG / "scripts" / "ensure_settings.py").read_text(encoding="utf-8")
+        self.assertIn('"format_fallback"', src,
+                      "format_fallback 未登记人读型白名单——会继续被第 18 项点名为死配置")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
