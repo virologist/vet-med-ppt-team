@@ -948,7 +948,13 @@ def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path, pane
         # v3.19.1·S1：知识库路由改从**唯一源** external-tools.yaml 取并按域过滤
         #   （此前从域档案取，v3.19.0 迁移后恒为空 ⇒ 装配器误渲染「本域无知识库」）
         "knowledge_bases": _kb_list,
-        "knowledge_bases_ref": "config/external-tools.yaml#knowledge_bases",
+        # ⚠ v3.19.1·S1 审计修正：**不得**硬编码为 #knowledge_bases——
+        #   computing / business-training 的库路由指针本就是 #domains_without_knowledge_bases
+        #   （域档案 knowledge_bases_ref 逐域不同）。硬编码会让装配器把
+        #   「本域本就无库」误判成「本域应有库却没装上」⇒ 报假警。
+        #   ⇒ 取域档案自己的指针（域语义，**唯一源**仍指 external-tools.yaml）。
+        "knowledge_bases_ref": dom.get("knowledge_bases_ref")
+                               or "config/external-tools.yaml#knowledge_bases",
         # ⚠ **不覆盖**域档案的 knowledge_bases_note（那是域语义说明）——
         #   装载告警另存独立键，避免两个来源互相覆盖（本项目核心忌讳：一份口径两处写）
         "knowledge_bases_load_warning": _kb_warn or None,

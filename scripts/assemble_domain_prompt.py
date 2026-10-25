@@ -475,6 +475,11 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
     # 修复：快照层已改从唯一源取（harness.py::_domain_knowledge_bases），本段负责渲染，
     #   并把「无库」时的兜底说明改为**明确的通用兜底**（不再出现半句话）。
     kb = pick("knowledge_bases")
+    # 本域库路由指针（**唯一源的哪个分节**）——驱动「有库/无库」两种说明的取舍：
+    #   #knowledge_bases               ⇒ 本域**有**账号内库
+    #   #domains_without_knowledge_bases ⇒ 本域**无**账号内库（声明即如此）
+    _kb_ref = str(pick("knowledge_bases_ref") or "")
+    _declares_no_kb = bool(_kb_ref) and "domains_without_knowledge_bases" in _kb_ref
     lines.append("【五、知识库路由（文本型，与取图通道并列）】")
     if kb:
         for k in kb:
@@ -496,8 +501,11 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
             lines.append("- ⚠ 上述知识库**可由用户灵活选择与配置**（可替换/更新）——"
                          "若用户提供了自己的库，按用户指定的库检索，并**主动提示**替换与更新；"
                          "库路由唯一源：`config/external-tools.yaml#knowledge_bases`")
+        # 有库时域说明可照登（它描述的正是"该库组仅某专业可用"，与有库同屏**不矛盾**）
+        if domain and domain.get("knowledge_bases_note"):
+            lines.append(f"- 说明：{domain['knowledge_bases_note']}")
     else:
-        # 无库：必须说清**通用兜底**，不得再出现与「见 external-tools.yaml」并列的半句话
+        # 无库：必须说清**通用兜底**，不得再出现与「无库」并列的半句话
         _fallback = ""
         _reminder = ""          # ⚠ 必须先初始化：except 分支若走到则用不到，
         try:                    #   但未初始化会在异常路径触发 UnboundLocalError
@@ -517,11 +525,27 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                      f"**严禁**静默回落其它域的知识库）")
         if _reminder:
             lines.append(f"- ⚠ {_reminder}")
+        # ⚠ **同屏矛盾防护**（v3.19.1·S1 审计实测）：域说明（knowledge_bases_note）
+        #   分两种语义——「该库组仅某专业可用」（**有库**语义）与
+        #   「本域没有账号内知识库」（**无库**语义）。前者若与「本域无账号内知识库」
+        #   同屏 ⇒ 成员看到"说没有库、又说有个库组"——**自相矛盾**。
+        #   判据取域档案 knowledge_bases_ref（**声明式**，不靠字符串匹配）：
+        #     · ref 指向 #domains_without_knowledge_bases ⇒ 本域**自述**无库
+        #       ⇒ 其 note 正是无库语义，照登不矛盾；
+        #     · ref 指向 #knowledge_bases（默认）⇒ 本域**应有**库却一条没装上
+        #       ⇒ 这是**装载异常**，note 与「无库」同屏必矛盾 ⇒ 不照登，改为告警。
+        if domain and domain.get("knowledge_bases_note"):
+            if _declares_no_kb:
+                lines.append(f"- 说明：{domain['knowledge_bases_note']}")
+            else:
+                lines.append("- ⚠ 装载异常：本域档案声明库路由来自 "
+                             f"`{_kb_ref or 'config/external-tools.yaml#knowledge_bases'}`"
+                             "（**本域应有账号内库**），但本次**一条库都没装上**——"
+                             "请核对该唯一源的库清单与 owner_scope 归属；"
+                             "在修复前按上方通用兜底执行，**严禁**静默回落其它域的库。")
     _kb_warn = pick("knowledge_bases_load_warning")
     if _kb_warn:
         lines.append(f"- ⚠ 装载告警：{_kb_warn}")
-    if domain and domain.get("knowledge_bases_note"):
-        lines.append(f"- 说明：{domain['knowledge_bases_note']}")
 
     term = pick("terminology")
     if term:
@@ -533,23 +557,46 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
     #   **从未进快照、也从未被渲染** ⇒ 成员拿不到词条，"关键词汇首现补英文"落不了地。
     _gloss = pick("glossary") or []
     _lang = pick("delivery_language") or "zh-CN"
+    # 语言规格唯一源指针：取坍缩快照的 language_profile_ref（**消费该键**，
+    # 免得它成为"声明了却无人读"的死键）；旧产物缺该键 ⇒ 回落默认路径。
+    _lp_ref = str(pick("language_profile_ref") or "config/language-profile.yaml")
     if _gloss or _lang:
         lines.append("【六之二、交付语言与术语表】")
         lines.append(f"- 交付语言：{_lang}"
                      + ("（PPT 默认中文）" if _lang == "zh-CN" else "（英语场景）"))
-        lines.append("- 语言规格唯一源：`config/language-profile.yaml`"
+        lines.append(f"- 语言规格唯一源：`{_lp_ref}`"
                      "（英语场景判据、术语标注形态、英文场景中文保留项均在其中，**不在本文件复制**）")
         if _gloss:
-            lines.append(f"- 本域术语表（{len(_gloss)} 条，**首现补英文**，一条不可省）：")
+            # ── 渲染**全部**词条：一条不可省（成员靠它标注术语）──────────
+            # 缺陷（v3.19.1·S1 审计实测）：此前只渲染 dict 形态（zh/en/abbr），
+            #   域档案 glossary 里的**字符串形态**条目被 `continue` 静默丢弃
+            #   （animal-medicine 29 条里丢 4 条）⇒ 产物标题写「29 条」、
+            #   实际只列 25 条——**自称条数与实渲条数不符**，与本批修的
+            #   「自相矛盾」同属一类病。故此处：dict → 中英形态；字符串 → 原样列出。
+            _items = []
             for _g in _gloss:
                 if isinstance(_g, dict):
                     _zh = str(_g.get("zh") or "")
                     _en = str(_g.get("en") or "")
                     _abbr = str(_g.get("abbr") or "")
                     if not _zh and not _en:
+                        # 两个名都缺 ⇒ 仍是**一条**内容，原样列出（不静默丢）
+                        _items.append(f"  - {_g}")
                         continue
-                    _form = f"{_zh}（{_en}" + (f", {_abbr}" if _abbr else "") + "）"
-                    lines.append(f"  - {_form}")
+                    if not _en:
+                        _form = _zh
+                    elif not _zh:
+                        _form = _en + (f"（{_abbr}）" if _abbr else "")
+                    else:
+                        # 规格形态：中文（English, Abbreviation）；abbr 为空则中文（English）
+                        _form = f"{_zh}（{_en}" + (f", {_abbr}" if _abbr else "") + "）"
+                    _items.append(f"  - {_form}")
+                else:
+                    # 字符串形态条目（域档案里的规范行）：原样列出，不丢
+                    _items.append(f"  - {_g}")
+            # 条数按**实渲**数写（不再自称一个与实际不符的数）
+            lines.append(f"- 本域术语表（{len(_items)} 条，**首现补英文**，一条不可省）：")
+            lines += _items
 
     red = pick("safety_redlines")
     if red:

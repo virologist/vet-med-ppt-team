@@ -17,6 +17,13 @@
   T4 反例：把某域 glossary 清空 → 【六之二】词条数为 0（证明段是真读 glossary 而非硬编码）
   T5 旧产物兼容：缺 glossary/delivery_language 键的旧产物 → 装配器不崩且回落读域档案
   T6 跨域：computing 域产物**不得**出现动物医学的库（owner_scope 过滤生效）
+  T7 反例：glossary 含**字符串形态**条目时一条都不得丢（实渲条数 == 域档案条数）
+  T8 反例：库清空后【五】段不得同时说「无库」又说「该库组可用」（同屏矛盾）
+  T9 正例：本就无库的域（computing）不得误报「装载异常」（防过度修法）
+
+⚠ **条数判据的教训**（T1/T7）：只查标题自称的条数是**假绿**——
+  标题写「29 条」而实际只列 25 条时，标题检查照样通过。
+  ⇒ 必须数**实渲行数**（_glossary_items）并与域档案逐条比对。
 """
 
 import json
@@ -70,6 +77,29 @@ def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologi
     return out_md.read_text(encoding="utf-8"), art, ws
 
 
+def _glossary_items(text: str) -> list:
+    """取出【六之二】段里**实际渲染**的术语条目行（"  - " 缩进的两空格条目）。
+
+    ⚠ 不能只查标题里的条数——标题自称「29 条」而实际只列 25 条时，
+    标题检查照样通过（假绿）。必须数**实渲行数**。
+    """
+    i = text.rfind("【六之二、交付语言与术语表】")
+    if i < 0:
+        return []
+    j = text.find("【七、", i)
+    sec = text[i:j if j > i else len(text)]
+    return [ln.strip()[2:].strip() for ln in sec.split("\n") if ln.startswith("  - ")]
+
+
+def _kb_section(text: str) -> str:
+    """取出装配产物中**实际注入**的【五、知识库路由】段（最后一次出现，避免命中成员 MD 正文）。"""
+    i = text.rfind("【五、知识库路由")
+    if i < 0:
+        return ""
+    j = text.find("【六、术语规范", i)
+    return text[i:j] if j > i else text[i:]
+
+
 class TestCollapseDomainRender(unittest.TestCase):
     """v3.19.1·S1 端到端渲染护栏。"""
 
@@ -95,16 +125,31 @@ class TestCollapseDomainRender(unittest.TestCase):
                      "动物疫病诊断技术（WOAH/FAO/WHO）"):
             self.assertIn(name, text, f"产物缺库：{name}")
         self.assertEqual(expect_libs, 7, f"预期 7 个库，实得 {expect_libs}")
-        # 词条数一致
+        # 词条数一致（**实渲条数**，不只是标题自称的条数）
+        self.assertIn("【六之二、交付语言与术语表】", text, "产物缺【六之二】段")
         self.assertIn(f"本域术语表（{expect_glossary} 条", text,
                       f"产物未渲染 {expect_glossary} 条术语表")
-        self.assertIn("【六之二、交付语言与术语表】", text, "产物缺【六之二】段")
+        rendered = _glossary_items(text)
+        self.assertEqual(
+            len(rendered), expect_glossary,
+            f"术语表自称 {expect_glossary} 条，实渲 {len(rendered)} 条——"
+            f"标题与实际不符（成员漏收 {expect_glossary - len(rendered)} 条）")
+        # 域档案 glossary 里**每一条**都要能在产物中找到（含字符串形态条目）
+        for g in (dom.get("glossary") or []):
+            if isinstance(g, dict):
+                needle = str(g.get("zh") or "")
+            else:
+                needle = str(g)
+            self.assertIn(needle, text, f"术语表条目未渲染：{needle}")
         self.assertIn("交付语言：zh-CN", text, "产物未渲染交付语言")
         # 快照里有三个新键
         art_obj = json.loads(art.read_text(encoding="utf-8"))
         for k in ("knowledge_bases", "glossary", "delivery_language"):
             self.assertIn(k, art_obj, f"坍缩产物缺键 {k}")
         self.assertEqual(len(art_obj.get("knowledge_bases") or []), 7)
+        # 快照的词条数必须与域档案一致（快照不得丢条）
+        self.assertEqual(len(art_obj.get("glossary") or []), expect_glossary,
+                         "坍缩快照的 glossary 条数与域档案不一致")
 
     # ── T2 正例：矛盾文案消失 + 更换提醒在位 ───────────────────
     def test_T2_no_contradiction_and_replace_hint(self):
@@ -184,6 +229,69 @@ class TestCollapseDomainRender(unittest.TestCase):
         art_obj = json.loads(art.read_text(encoding="utf-8"))
         self.assertEqual(art_obj.get("knowledge_bases") or [], [],
                          "computing 域快照不应含任何库")
+
+    # ── T7 反例：词条形态混合（字符串条目）不得被静默丢弃 ─────────
+    def test_T7_string_form_glossary_entries_kept(self):
+        """T7【反例】：域档案 glossary 含**字符串形态**条目时，一条都不得丢。
+
+        缺陷（v3.19.1·S1 审计实测）：装配器只渲染 dict 形态（zh/en/abbr），
+          字符串形态条目被 `continue` 静默丢弃 ⇒ 标题自称「29 条」实渲 25 条。
+        ⇒ 本用例断言：**实渲条数 == 域档案条数**，且每条内容都能在产物中找到。
+        """
+        prof = yaml.safe_load(PROFILES.read_text(encoding="utf-8"))
+        dom = next(d for d in prof["domains"] if d["id"] == "animal-medicine")
+        gloss = dom.get("glossary") or []
+        str_items = [g for g in gloss if not isinstance(g, dict)]
+        self.assertTrue(str_items,
+                        "域档案已无字符串形态词条——本用例失去判别力，请同步更新")
+
+        text, _art, _ws = _end_to_end("animal-medicine")
+        rendered = _glossary_items(text)
+        self.assertEqual(len(rendered), len(gloss),
+                         f"实渲 {len(rendered)} 条 ≠ 域档案 {len(gloss)} 条——有条被静默丢弃")
+        for g in str_items:
+            self.assertIn(str(g), text, f"字符串形态词条未渲染：{g}")
+
+    # ── T8 反例：库清空后不得出现「有库组」的有库语义说明 ─────────
+    def test_T8_no_library_branch_has_no_contradiction(self):
+        """T8【反例】：库清空后，【五】段**不得**同时说「无库」又说「该库组可用」。
+
+        缺陷（v3.19.1·S1 审计实测）：无库分支照登域档案 note
+          「本域库路由见 external-tools.yaml；该库组仅动物医学专业可用」
+          ⇒ 与同屏「本域无账号内知识库」**自相矛盾**（且与事实相反）。
+        ⇒ 修法：判据取域档案 knowledge_bases_ref（声明式）：
+          声明「本域应有库」却一条没装上 ⇒ 报**装载异常**告警，不照登有库语义说明。
+        """
+        data = yaml.safe_load(self._bak)
+        data["knowledge_bases"] = []
+        EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        text, _art, _ws = _end_to_end("animal-medicine")
+        sec = _kb_section(text)
+        self.assertIn("本域无账号内知识库", sec, "库清空后应渲染「无账号内库」")
+        self.assertNotIn("该库组", sec,
+                         "无库分支仍出现有库语义（『该库组』）——与『无库』同屏矛盾")
+        self.assertIn("装载异常", sec,
+                      "声明有库却未装上时应报装载异常告警，而不是照登有库语义说明")
+        self.assertIn("通用兜底", sec, "无库时必须给出通用兜底")
+
+    # ── T9 正例：本就无库的域不得误报「装载异常」 ─────────────────
+    def test_T9_native_no_library_domain_not_false_alarm(self):
+        """T9：computing 域**本就**无库 ⇒ 不得误报装载异常，且域说明须照登。
+
+        这是 T8 的反向判据（防"把所有无库域都报异常"的过度修法）。
+        """
+        text, art, _ws = _end_to_end("computing",
+                                      panel="language_runtime_architect,algorithms_data_structures")
+        sec = _kb_section(text)
+        self.assertIn("本域无账号内知识库", sec, "computing 域应渲染「无账号内库」")
+        self.assertNotIn("装载异常", sec,
+                         "computing 域本就无库，误报装载异常——判据用错了（过度修法）")
+        self.assertIn("说明：", sec, "computing 域的无库语义说明应照登")
+        # 快照的 knowledge_bases_ref 必须逐域不同（不得硬编码 #knowledge_bases）
+        art_obj = json.loads(art.read_text(encoding="utf-8"))
+        self.assertIn("domains_without_knowledge_bases",
+                      str(art_obj.get("knowledge_bases_ref") or ""),
+                      "computing 域快照的 knowledge_bases_ref 不得硬编码为 #knowledge_bases")
 
 
 if __name__ == "__main__":
