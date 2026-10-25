@@ -1,0 +1,74 @@
+# language-profile.yaml — PPT 交付语言规格（唯一源）
+# ═══════════════════════════════════════════════════════════════════════
+# v3.19.0 新增。消费方：scripts/harness.py（_language_spec / cmd_gate1_check）、
+#   scripts/verify_deck.py（报告输出 terminology_spec / delivery_language）。
+#
+# 立项依据（2026-10-25 第五次从零诊断·维度 6 实测）：
+#   管家节点要求「PPT 默认语言是中文；教学使用的 PPT 关键词汇增补英文；
+#   仅在极少数场景下做英语 PPT（如国家留学生班级教学授课时）」。
+#   实测包内现状：「英文PPT」「默认语言」「英语场景」三类关键词**全包零命中**；
+#   唯一语言相关规则是 domain-profiles.yaml:412 一条泛化术语标注
+#   （「关键术语首次出现按『中文（English, Abbreviation）』标注」）——
+#   既无**交付语言**、也无**英语场景判据**、更无**关键词汇清单**。
+#   ⇒ 维度 6 的三项要求此前全部无载体。
+#
+# 纪律（与包内「声明层≠执行层」铁律一致）：
+#   · 本文件是**唯一源**；域档案只引用，不另写一份；
+#   · 每个键都**必须有代码消费者**（见下方「消费者」标注），无消费者即视为死配置；
+#   · 域级术语表（glossary）在 domain-profiles.yaml 各域内，本文件只定**规格**不列词条。
+
+version: "3.19.0"
+
+# ── 交付默认语言 ────────────────────────────────────────────────
+# 消费者：harness.py _language_spec() → gate1-check 第 8 项「交付语言」
+default_language: "zh-CN"
+
+languages:
+  zh-CN:
+    label: "简体中文"
+    script: "Hans"
+  en:
+    label: "English"
+    script: "Latn"
+
+# ── 术语标注规格（教学 PPT 关键词汇增补英文）────────────────────
+# 消费者：harness.py _language_spec() → verify_deck.py 报告的 terminology_spec 字段
+terminology:
+  # 首次出现时的标注形态：中文（English, Abbreviation）
+  format: "中文（English, Abbreviation）"
+  # 仅首次出现标注，后续不重复（防版面膨胀）
+  first_occurrence_only: true
+  # 缩写必须给出（无缩写时用全称，禁用自造缩写）
+  require_abbreviation: true
+  # 术语表缺失时的降级行为：降级并**告警**（不得静默只标英文）
+  on_missing_glossary: "warn_and_degrade"
+
+# ── 英语 PPT 允许判据（**只写判据，不列具体场景清单**）──────────
+# 消费方：harness.py _language_spec() → gate1-check 第 8 项 + 蓝图交付语言判定
+# 管家节点裁决（2026-10-25）：只写判据（受众为全英文授课 / 留学生班 → 允许英语 PPT），
+#   不把具体场景写死在配置里——场景会变，判据不会。
+english_allowed_when:
+  - field: "audience.language"
+    equals: "en"
+    note: "受众语言为英语（全英文授课 / 留学生班等）→ 允许英语 PPT"
+  - field: "user_explicit_request"
+    truthy: true
+    note: "用户明确要求英语课件"
+
+# ── 英语场景下的最小中文保留项 ─────────────────────────────────
+# 消费者：harness.py _language_spec() → 交付前检查（英语场景专用）
+english_minimum:
+  keep_chinese_for:
+    - "疾病中文名 / 学名"
+    - "药物通用名"
+    - "法规与标准条款号"
+    - "数值与单位"
+  note: "英语 PPT 场景下这些信息**不得**只出英文——受众检索与临床使用需要中文锚点"
+
+# ── 语言与受众一致性判据（gate1-check 消费）────────────────────
+consistency:
+  # 交付语言与受众语言不一致时的处理：warn（不阻断）| block（阻断）
+  mismatch_policy: "warn"
+  # 受众语言字段的取值来源（intake.audience.language）
+  audience_language_field: "audience.language"
+  note: "受众语言为 zh-CN 而交付语言为 en → 报「交付语言与受众语言不一致」（warn 级，不阻断：允许给中国学生出英文课件）"

@@ -376,36 +376,20 @@ domains:
         - "分辨率不足的放大图"
         - "未标来源图"
       image_science_ownership: "图片承载的科学准确性由内容专家核验；标注位置/字号/版式归视觉设计成员"
-      knowledge_channel_ref: "knowledge_bases（本域的**文本型**知识库路由，与本节图片通道并列，不混用）"
+      knowledge_channel_ref: "config/external-tools.yaml#knowledge_bases（本域的**文本型**知识库路由，与本节图片通道并列，不混用）"
 
-    # 文本型知识库路由（**原 agent MD 第 47–53 行七库硬编码表原样迁入**）
-    # 库 ID 为既有账号内资源标识，非编造；调用时机为路由说明。
-    knowledge_bases:
-      - name: "《禽病》Avian Disease（主力库）"
-        id: "7372985916737739"
-        when: "所有禽类疾病主题"
-      - name: "《猪病》"
-        id: "7372995890793583"
-        when: "猪病主题"
-      - name: "《牛羊病》"
-        id: "7408748326814899"
-        when: "反刍动物疾病主题"
-      - name: "《伴侣动物疾病》"
-        id: "7408031432200206"
-        when: "犬猫等宠物疾病主题"
-      - name: "病毒学-免疫学-细胞学"
-        id: "7372987669968501"
-        when: "机制类、免疫类、疫苗类内容"
-      - name: "流感"
-        id: "7372987141486120"
-        when: "流感病毒深入专题"
-      - name: "动物疫病诊断技术（WOAH/FAO/WHO）"
-        id: "7408735592931220"
-        when: "诊断标准、采样送检、国际规范"
-    knowledge_bases_discipline:
-      - "每次任务只选 1–3 个最相关库；跨物种主题最多 3 库（**库选错比查询串写得糙影响更大**）"
-      - "查询串须能读出「物种 + 病原或主题 + 部位或病变 +（如适用）限定词」四个维度，**不必写成布尔式**"
-      - "每次任务开始先做工具探针（ima-mcp / UpNote 可用性），探针结果记入 task_state.json，不得重复探测"
+    # ── v3.19.0：文本型知识库路由**已迁出**到 config/external-tools.yaml ──
+    # 迁出理由（第五次从零诊断·维度 10/13）：Ima 是**外部工具**，其路由配置
+    #   （库 ID / 归属专业 / 可否更换 / 调用形态 / 凭据）与「域语义」是两类东西。
+    #   混在域档案里会让「换外部工具配置」变成「改域档案」，且两处并存即两份真相
+    #   ——这正是本项目「同一口径两处漂移」的病灶。
+    # 现状：7 库的 id/name/when **原样迁入** external-tools.yaml#knowledge_bases，
+    #   并新增 owner_scope（仅动物医学专业）/ replaceable（可提醒更换）/ share_url。
+    #   选库纪律迁入 external-tools.yaml#ima.selection_discipline。
+    # ⚠ 本域**不再**保留 knowledge_bases 键——避免两份真相。
+    knowledge_bases_ref: "config/external-tools.yaml#knowledge_bases"
+    knowledge_bases_scope: "animal-medicine"
+    knowledge_bases_note: "本域库路由见 external-tools.yaml（唯一源）；该库组**仅动物医学专业**可用，其他专业须提醒用户更换"
 
     # 术语规范
     terminology:
@@ -600,10 +584,10 @@ domains:
         - "无来源截图"
         - "与所述版本不符的界面截图"
         - "AI 生成图冒充真实工具界面或运行结果"
-      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库，**不得回落动物医学库**；走本节官方文档通道）"
+      knowledge_channel_ref: "config/external-tools.yaml#domains_without_knowledge_bases（本域无账号内知识库，**不得回落动物医学库**；走本节官方文档通道）"
 
-    knowledge_bases: []
-    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查官方文档」，**严禁**静默回落动物医学知识库"
+    knowledge_bases_ref: "config/external-tools.yaml#domains_without_knowledge_bases"
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查官方文档」，**严禁**静默回落动物医学知识库；触发知识库检索时须**主动提醒**用户更换/更新（见 external-tools.yaml#domains_without_knowledge_bases[].reminder）"
 
     terminology:
       - "API / 缩写首次出现给全称"
@@ -799,10 +783,10 @@ domains:
         - "含真实客户/员工个人信息的截图（未脱敏）"
         - "无授权的他人内部资料"
         - "与所述制度版本不符的流程图"
-      knowledge_channel_ref: "knowledge_bases（本域无账号内知识库；走本节官方指引与制度原文通道）"
+      knowledge_channel_ref: "config/external-tools.yaml#domains_without_knowledge_bases（本域无账号内知识库；走本节官方指引与制度原文通道）"
 
-    knowledge_bases: []
-    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查制度原文与官方指引」，**严禁**静默回落动物医学知识库"
+    knowledge_bases_ref: "config/external-tools.yaml#domains_without_knowledge_bases"
+    knowledge_bases_note: "本域**没有**账号内/包内知识库——通用兜底是「现查制度原文与官方指引」，**严禁**静默回落动物医学知识库；触发知识库检索时须**主动提醒**用户更换/更新（见 external-tools.yaml#domains_without_knowledge_bases[].reminder）"
 
     terminology:
       - "流程环节名与岗位名统一；同一概念不混用「制度名 / 俗称」"
