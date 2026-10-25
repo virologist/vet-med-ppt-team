@@ -225,14 +225,25 @@ class TestBClassWiring(unittest.TestCase):
                              "复原后未归位——配置可能未还原")
 
     def test_T6_gate_default_levels_from_yaml(self):
-        """T6 正例：sweep/gate 的默认门禁等级从 yaml 读。"""
-        import importlib.util
+        """T6 正例：sweep/gate 的默认门禁等级从 yaml 读。
+
+        ⚠ v3.19.4 补强：首版只断言**返回值**，而 `write_gate_level` 的回退值
+        恰好也是 "P0" ⇒ 若有人把接线改回硬编码/注释掉，函数走回退仍返回 "P0"，
+        **断言照样通过**（测试假绿）。现改为同时断言**无告警**——
+        真读了 yaml 就不该往 stderr 写任何东西，走了回退才会告警。
+        """
+        import importlib.util, io, contextlib
         spec = importlib.util.spec_from_file_location("h", PKG / "scripts" / "harness.py")
         m = importlib.util.module_from_spec(spec)
         sys.modules["h"] = m
         spec.loader.exec_module(m)
-        self.assertEqual(m._default_gate_level("write_gate_level", "P0"), "P0")
-        self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "all")
+        for key, expect in (("write_gate_level", "P0"), ("deliver_gate_level", "all")):
+            errbuf = io.StringIO()
+            with contextlib.redirect_stderr(errbuf):
+                v = m._default_gate_level(key, expect)
+            self.assertEqual(v, expect, f"{key} 读到 {v!r} ≠ 期望 {expect!r}")
+            self.assertEqual(errbuf.getvalue(), "",
+                             f"{key} 读取时产生告警——说明没真读到 yaml（走了回退）")
 
     def test_T6b_reverse_example_gate_level_yaml_change_propagates(self):
         """T6b 反例：改 yaml 的 deliver_gate_level ⇒ 默认等级必须跟着变。"""

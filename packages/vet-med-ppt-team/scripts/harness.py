@@ -750,12 +750,19 @@ def _default_gate_level(key: str, fallback: str) -> str:
         import yaml  # noqa
         with open(path, encoding="utf-8") as f:
             rules = yaml.safe_load(f) or {}
-        val = ((rules.get("gate") or {}).get(key) or "").strip()
+        gate_node = rules.get("gate") or {}
+        val = (gate_node.get(key) or "").strip() if isinstance(gate_node, dict) else ""
         if val in ("P0", "P1", "all"):
             return val
+        # v3.19.4 补强：**键缺失/取到空** 与 **值非法** 一样必须告警——
+        #   首版只在 `if val:`（值非法）时告警，而"键根本不存在"会静默走回落
+        #   ⇒ 破坏性反例抓出该缺口（改坏 yaml 读取后 T6 仍绿）。
         if val:
             print(f"⚠ visual-rules.yaml#gate.{key}={val!r} 不是合法门禁等级"
                   f"（P0/P1/all），回落 {fallback!r}", file=sys.stderr)
+        else:
+            print(f"⚠ visual-rules.yaml#gate.{key} 缺失或为空——回落 {fallback!r}"
+                  f"（门禁默认等级未从配置读到，当前用回退值）", file=sys.stderr)
     except Exception as e:
         print(f"⚠ visual-rules.yaml 读取失败（{e}）——gate.{key} 回落 {fallback!r}",
               file=sys.stderr)
