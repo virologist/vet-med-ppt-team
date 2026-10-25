@@ -1100,6 +1100,20 @@ def check_dead_config_keys(expert_dir):
         "degrade_modes",
         # 闸的兼容标记：历史遗留，仅作说明
         "legacy_compat",
+        # ── v3.19.0：第五次从零诊断·维度 6 处置的 4 组"死配置"裁定 ──
+        # 判据（主理人裁决）：**给 LLM/人的执行指令**本就不该由脚本读——
+        #   它们的消费方是「成员按条款执行 + 主理人复核」，登记 = 承认没人读是对的。
+        #   ⚠ 与"接线"的区别：接线 = 判据可确定性执行（如字号阈值）；
+        #     人读型 = 判据是语义/流程指令（如降密顺序）。
+        # visual-rules.yaml#density.shrink_order —— 降密执行顺序（给屠明熙的执行指令：
+        #   "低级能解决不升级"，LLM 按序执行，脚本无法判定"某步是否够用"）
+        "shrink_order",
+        # visual-rules.yaml#theme.* —— 主题色令牌槽位（消费方 = 工作区 theme.yaml +
+        #   屠明熙抽取登记；本文件只定义槽位结构，明确"值不在此定义"）
+        "enforce_source_theme", "max_new_colors_per_slide", "token_slots",
+        # visual-rules.yaml#overlay_injection.* —— 叠加层注入规范（消费方 = A 轨批量
+        #   注入脚本前置断言【会话层执行】+ 屠明熙抽样复核；sample_review_ratio 是人复核比例）
+        "overlay_injection",
     }
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────

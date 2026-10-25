@@ -394,6 +394,41 @@ domains:
     # 术语规范
     terminology:
       - "关键术语首次出现按「中文（English, Abbreviation）」标注"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——
+    #   default_language: zh-CN（PPT 默认中文）
+    #   terminology.format: 中文（English, Abbreviation）（关键词汇**首现补英文**）
+    #   english_allowed_when: 受众为全英文授课/留学生班 等（**只写判据**）
+    # ⚠ 本域只列**词条**（glossary），标注形态与英语判据一律引用 language-profile.yaml。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "禽流感", en: "Avian Influenza", abbr: "AI"}
+      - {zh: "高致病性禽流感", en: "Highly Pathogenic Avian Influenza", abbr: "HPAI"}
+      - {zh: "血凝素", en: "Hemagglutinin", abbr: "HA"}
+      - {zh: "神经氨酸酶", en: "Neuraminidase", abbr: "NA"}
+      - {zh: "糖基化", en: "Glycosylation", abbr: ""}
+      - {zh: "抗原漂移", en: "Antigenic Drift", abbr: ""}
+      - {zh: "抗原转变", en: "Antigenic Shift", abbr: ""}
+      - {zh: "新城疫", en: "Newcastle Disease", abbr: "ND"}
+      - {zh: "传染性支气管炎", en: "Infectious Bronchitis", abbr: "IB"}
+      - {zh: "法氏囊病", en: "Infectious Bursal Disease", abbr: "IBD"}
+      - {zh: "鸭病毒性肝炎", en: "Duck Viral Hepatitis", abbr: "DVH"}
+      - {zh: "禽白痢", en: "Avian Pullorum Disease", abbr: ""}
+      - {zh: "鸡球虫病", en: "Avian Coccidiosis", abbr: ""}
+      - {zh: "沙门氏菌病", en: "Salmonellosis", abbr: ""}
+      - {zh: "大肠杆菌病", en: "Colibacillosis", abbr: ""}
+      - {zh: "支原体病", en: "Mycoplasmosis", abbr: ""}
+      - {zh: "疫苗", en: "Vaccine", abbr: ""}
+      - {zh: "母源抗体", en: "Maternal Antibody", abbr: ""}
+      - {zh: "动物福利", en: "Animal Welfare", abbr: ""}
+      - {zh: "生物安全", en: "Biosecurity", abbr: ""}
+      - {zh: "病死畜禽无害化处理", en: "Harmless Treatment of Dead Livestock and Poultry", abbr: ""}
+      - {zh: "动物疫病监测", en: "Animal Disease Surveillance", abbr: ""}
+      - {zh: "临床表现", en: "Clinical Signs", abbr: ""}
+      - {zh: "剖检病变", en: "Gross Lesions", abbr: ""}
+      - {zh: "实验室诊断", en: "Laboratory Diagnosis", abbr: ""}
+
       - "同一课件术语前后一致"
       - "缩写（IBV/ND/AI 等）首次出现给中文全称 + 一次解释"
       - "近义概念须区分（如抗原漂移 vs 抗原转变），不得混用"
@@ -591,6 +626,32 @@ domains:
 
     terminology:
       - "API / 缩写首次出现给全称"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——本域只列**词条**。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "抽象数据类型", en: "Abstract Data Type", abbr: "ADT"}
+      - {zh: "时间复杂度", en: "Time Complexity", abbr: ""}
+      - {zh: "空间复杂度", en: "Space Complexity", abbr: ""}
+      - {zh: "算法", en: "Algorithm", abbr: ""}
+      - {zh: "数据结构", en: "Data Structure", abbr: ""}
+      - {zh: "哈希表", en: "Hash Table", abbr: ""}
+      - {zh: "二叉搜索树", en: "Binary Search Tree", abbr: "BST"}
+      - {zh: "深度优先搜索", en: "Depth-First Search", abbr: "DFS"}
+      - {zh: "广度优先搜索", en: "Breadth-First Search", abbr: "BFS"}
+      - {zh: "动态规划", en: "Dynamic Programming", abbr: "DP"}
+      - {zh: "贪心算法", en: "Greedy Algorithm", abbr: ""}
+      - {zh: "面向对象编程", en: "Object-Oriented Programming", abbr: "OOP"}
+      - {zh: "应用程序接口", en: "Application Programming Interface", abbr: "API"}
+      - {zh: "持续集成", en: "Continuous Integration", abbr: "CI"}
+      - {zh: "单元测试", en: "Unit Testing", abbr: ""}
+      - {zh: "代码审查", en: "Code Review", abbr: ""}
+      - {zh: "技术债", en: "Technical Debt", abbr: ""}
+      - {zh: "重构", en: "Refactoring", abbr: ""}
+      - {zh: "依赖注入", en: "Dependency Injection", abbr: "DI"}
+      - {zh: "缓存", en: "Cache", abbr: ""}
+
       - "命令、代码片段、配置项一律**逐字可复制**，不给伪代码冒充实操"
       - "同一课件同一概念用同一名称；近义库名须区分"
       - "版本敏感术语必须标注适用版本"
@@ -790,6 +851,31 @@ domains:
 
     terminology:
       - "流程环节名与岗位名统一；同一概念不混用「制度名 / 俗称」"
+
+    # ── v3.19.0：交付语言 + 域级中英术语表（维度 6）────────────────
+    # 规格来源：config/language-profile.yaml（**唯一源**）——本域只列**词条**。
+    delivery_language: "zh-CN"
+    glossary:
+      - {zh: "岗前培训", en: "Preboarding Training", abbr: ""}
+      - {zh: "入职培训", en: "Onboarding Training", abbr: ""}
+      - {zh: "在岗培训", en: "On-the-job Training", abbr: "OJT"}
+      - {zh: "合规红线", en: "Compliance Red Line", abbr: ""}
+      - {zh: "关键风险", en: "Key Risk", abbr: ""}
+      - {zh: "内部控制", en: "Internal Control", abbr: ""}
+      - {zh: "操作风险", en: "Operational Risk", abbr: ""}
+      - {zh: "情景演练", en: "Scenario Drills", abbr: ""}
+      - {zh: "行为学习", en: "Behavioral Learning", abbr: ""}
+      - {zh: "岗位胜任力", en: "Job Competency", abbr: ""}
+      - {zh: "绩效考核", en: "Performance Appraisal", abbr: ""}
+      - {zh: "新员工导师制", en: "New Employee Mentorship", abbr: ""}
+      - {zh: "客户投诉处理", en: "Customer Complaint Handling", abbr: ""}
+      - {zh: "跨部门协作", en: "Cross-departmental Collaboration", abbr: ""}
+      - {zh: "职业素养", en: "Professional Literacy", abbr: ""}
+      - {zh: "劳动法", en: "Labor Law", abbr: ""}
+      - {zh: "适用法域", en: "Applicable Jurisdiction", abbr: ""}
+      - {zh: "业务域", en: "Business Domain", abbr: ""}
+      - {zh: "流程关键节点", en: "Critical Process Node", abbr: ""}
+
       - "首次出现的制度简称给全称与出处"
       - "法域相关术语必须标注适用法域"
 

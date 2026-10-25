@@ -67,6 +67,7 @@ import os
 _FALLBACK = {
     "body_min_pt": 12.0,
     "note_min_pt": 9.0,
+    "title_min_pt": 28.0,
     "max_colors_per_slide": 5,
     "max_chars_per_slide": 400,
     "max_body_chars_per_slide": 150,      # v3.16.0：主框密度（v3.5.0 起配了一直没人读，本版 wiring）
@@ -154,6 +155,9 @@ def _load_threshold():
         th = {
             "body_min_pt": float(rules["font"]["body_min_pt"]),
             "note_min_pt": float(rules["font"]["note_min_pt"]),
+            # v3.19.0：title_min_pt **首次接线**（此前 yaml 配了 28.0 但零消费者——
+            #   死配置；而屠明熙 MD:35 早已把它当红线写 ⇒ "文档当红线、机器不设防"）
+            "title_min_pt": float(rules["font"].get("title_min_pt", 28.0)),
             "max_colors_per_slide": int(rules["density"]["max_colors_per_slide"]),
             "max_chars_per_slide": int(rules["density"]["max_chars_per_slide"]),
             # v3.16.0：主框密度终于有代码读取者了（此前 yaml 配了 150 但无人消费）
@@ -905,15 +909,28 @@ def verify(path, hours=3, strict=False, caliber=None):
                         unresolved += 1
                         continue
                     is_note = _is_note_candidate(txt)
-                    limit = THRESHOLD["note_min_pt"] if is_note else THRESHOLD["body_min_pt"]
+                    # v3.19.0：标题占位符的 run 用 title_min_pt 阈值（此前标题字号
+                    #   按 body_min_pt=12 判——28pt 的红线只写在屠明熙 MD 里，机器不设防）
+                    is_title = bool(a.get("is_title_ph"))
+                    if is_title:
+                        limit = THRESHOLD["title_min_pt"]
+                        kind = "标题"
+                    elif is_note:
+                        limit = THRESHOLD["note_min_pt"]
+                        kind = "图注/来源"
+                    else:
+                        limit = THRESHOLD["body_min_pt"]
+                        kind = "正文"
                     if pt < limit:
-                        if is_note:
+                        if is_title:
+                            stats["small_title"] = stats.get("small_title", 0) + 1
+                        elif is_note:
                             stats["small_note"] += 1
                         else:
                             stats["small_body"] += 1
                         issues.append({
                             "slide": idx, "type": "字号过小",
-                            "detail": f"{pt}pt < {limit}pt（{'图注/来源' if is_note else '正文'}）",
+                            "detail": f"{pt}pt < {limit}pt（{kind}）",
                             "snippet": txt[:30],
                         })
                 if unresolved:

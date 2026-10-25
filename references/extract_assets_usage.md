@@ -340,3 +340,47 @@ v3.16.0 增补（F8 配图链路）：
 **未做（不粉饰）**：`source_url` / `doi_pmcid` 目前**只留空串位**，脚本不自动回填来源
 （回填要联网检索与人工判定，属配图链路后续批次）；`width` / `height` 取的是显示尺寸 EMU→px，
 **不是位图固有分辨率**。
+
+---
+
+## §11 新下载图的落盘规范（v3.19.0 · 配合 fetch_oa_image.py）
+
+> 背景（第五次从零诊断·维度 7）：`fetch_oa_image.py`（v3.18.0 新增）落盘了下载图
+> 与 manifest 回填，但「新下载图放哪、与既有抽取素材什么关系」**全包无定义**——
+> `extract_assets_usage.md` 此前只管"从原 pptx 抽取"的素材。
+
+### 11.1 两个素材域，物理隔离
+
+| 素材域 | 位置 | 产出者 | manifest |
+|---|---|---|---|
+| **抽取素材**（原 pptx 自带） | `<课件>_wip/_assets/` | `extract_assets.py` | `manifest.json`（既有） |
+| **新下载素材**（OA 检索下载） | `<课件>_wip/_assets/new/` | `fetch_oa_image.py` | **同一个** `manifest.json`，条目带 `"channel"` 字段区分 |
+
+⇒ **复用同一个 manifest**（不建第二个清单文件——两份真相必漂移）；
+新下载条目的 `file` 字段写 `images_new/...` 前缀以示区分。
+
+### 11.2 fetch_oa_image.py 的输出落位
+
+```
+<课件>_wip/
+  _assets/
+    manifest.json          ← 共用（抽取 + 下载条目混排，channel 字段区分）
+    images/                ← 抽取素材（extract_assets.py 写）
+    images_new/            ← 下载素材（fetch_oa_image.py 写）
+```
+
+调用形态（`--out` 指 `_assets`，脚本自动加 `_new` 后缀子目录）：
+
+```bash
+python3 scripts/fetch_oa_image.py --pmcid PMC123456 \
+  --out "<课件>_wip/_assets" --manifest "<课件>_wip/_assets/manifest.json"
+```
+
+### 11.3 与抽取素材的三条纪律
+
+1. **许可红线不变**：新下载条目的 `license_note` 取自域档案通道的许可规则；
+   许可不明 ⇒ 脚本 **exit 4 拒绝下载**，绝不编造许可（`asset-fields.yaml` 同源纪律）。
+2. **写回 pptx 前的复核口径一致**：新下载图与抽取图走**同一套** reuse_status 检查；
+   `reuse_status: 待核查` 的图**不得**直接写回。
+3. **溯源字段三件套必填**：`source_url` / `doi_pmcid` / `license_note`
+   （由 `fetch_oa_image.py` 自动回填，人工核对后把 `reuse_status` 改为终态）。

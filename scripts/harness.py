@@ -572,6 +572,24 @@ def cmd_route(args):
             "red_team": r.get("red_team", False),
             "budgets": cfg.get("budgets", {}),
             "handoff_mode": cfg.get("context", {}).get("handoff_mode")}
+    # ── v3.19.0：闸的**并行/串行**语义进 plan（此前 parallel 字段**零消费者**）──
+    # 缺陷（第五次从零诊断·维度 2 实测）：`config/harness.yaml#stages` 每闸都声明了
+    #   `parallel: yes|no`，但**全包无任何代码读它** ⇒ 该字段是纯声明，
+    #   主理人无法从 route 输出看出「本闸成员该同时派还是排队」，
+    #   而 stage 1 已因伪并行被改过（v3.17.0 批次 B）——正说明这字段有用却没人用。
+    # 处置：把**本次 route 对应的闸**的 parallel 与成员清单写进 plan（消费方 = 主理人）。
+    #   ⚠ L0/L1 走 routing 段（不经过 stages 闸），此时 parallel 无意义 → 不输出该键。
+    _stages = cfg.get("stages") or {}
+    _stage_no = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}.get(str(args.level))
+    if _stage_no is not None and str(_stage_no) in _stages:
+        _st = _stages[str(_stage_no)] or {}
+        plan["stage"] = _stage_no
+        plan["stage_name"] = _st.get("name")
+        plan["parallel"] = bool(_st.get("parallel", False))
+        plan["parallel_members"] = list(_st.get("members") or [])
+        plan["parallel_policy"] = (
+            "本闸成员**并行**派发（互相无数据依赖）" if _st.get("parallel")
+            else "本闸成员**串行**派发（有数据依赖，按 stages 顺序）")
     domain_id = (getattr(args, "domain", None) or "").strip()
     if domain_id:
         # ── v3.17.0：域坍缩（追加域字段 + 落盘坍缩产物）─────────────────
@@ -2141,7 +2159,19 @@ def cmd_gate(args):
         if getattr(args, "strict", False):
             lint_cmd += ["--strict"]
         t1 = time.time()
-        lp = subprocess.run(lint_cmd, capture_output=True, text=True)
+        # v3.19.0：subprocess 加 timeout（此前三处全部裸跑——子进程挂死 ⇒ gate 永久阻塞；
+        #   上限取 harness.yaml#budgets.max_stage_minutes ×60，语义同源）
+        _stage_timeout = int((cfg.get("budgets") or {}).get("max_stage_minutes", 20)) * 60
+        try:
+            lp = subprocess.run(lint_cmd, capture_output=True, text=True,
+                                timeout=_stage_timeout)
+        except subprocess.TimeoutExpired:
+            _trace(w, cfg, "lint_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": 4,
+                    "seconds": _stage_timeout, "stderr_tail": f"timeout>{_stage_timeout}s"})
+            print(f"\n[harness.gate] ooxml_lint 超时（>{_stage_timeout}s）——按运行错误（exit 4）"
+                  f"走缺陷回流，不当课件红灯。", file=sys.stderr)
+            return 4
         lint_secs = round(time.time() - t1, 2)
         # 输出 lint 报告
         if lp.stdout:
@@ -2173,13 +2203,44 @@ def cmd_gate(args):
                     "--gate-exit", "0"]
         if getattr(args, "tag", None):
             snap_cmd += ["--tag", args.tag]
-        sp = subprocess.run(snap_cmd, capture_output=True, text=True)
+        # v3.19.0：加 timeout + **补 returncode 检查**——此前 snapshot 失败会被
+        #   **静默跳过**（不查 sp.returncode ⇒ 快照没打上也继续跑门禁，
+        #   "写回前自动打点"这个安全网形同虚设）
+        try:
+            sp = subprocess.run(snap_cmd, capture_output=True, text=True,
+                                timeout=_stage_timeout)
+        except subprocess.TimeoutExpired:
+            _trace(w, cfg, "snapshot_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "seconds": _stage_timeout,
+                    "stderr_tail": f"timeout>{_stage_timeout}s"})
+            print(f"\n[harness.gate] snapshot 超时（>{_stage_timeout}s）——按运行错误（exit 4）。"
+                  f"写回前打点失败**不得**静默继续。", file=sys.stderr)
+            return 4
+        if sp.returncode != 0:
+            _trace(w, cfg, "snapshot_run_error", args.actor or "ppt-producer",
+                   {"deck": os.path.basename(args.deck), "exit": sp.returncode,
+                    "stderr_tail": (sp.stderr or "")[-300:]})
+            print(f"\n[harness.gate] snapshot 失败（exit {sp.returncode}）——写回前自动打点"
+                  f"未完成，按运行错误（exit 4）走缺陷回流，**不得静默继续**。",
+                  file=sys.stderr)
+            if sp.stderr:
+                print(sp.stderr, end="", file=sys.stderr)
+            return 4
 
     cmd = [sys.executable, vd, args.deck, "--hours", str(args.hours), "--level", args.level]
     if args.json:
         cmd += ["--json", args.json]
     t0 = time.time()
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_stage_timeout)
+    except subprocess.TimeoutExpired:
+        _trace(w, cfg, "gate", args.actor or "ppt-producer",
+               {"deck": os.path.basename(args.deck), "level": args.level, "exit": 4,
+                "meaning": "运行错误——verify_deck 超时", "seconds": _stage_timeout,
+                "stderr_tail": f"timeout>{_stage_timeout}s"})
+        print(f"\n[harness.gate] verify_deck 超时（>{_stage_timeout}s）——按运行错误（exit 4）"
+              f"走缺陷回流，不当课件红灯。", file=sys.stderr)
+        return 4
     secs = round(time.time() - t0, 2)
     meaning = cfg.get("gate_exit_codes", {}).get(str(p.returncode), "未知退出码")
     print(p.stdout, end="")
