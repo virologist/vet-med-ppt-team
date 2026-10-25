@@ -6,6 +6,59 @@
 
 ---
 
+## [v3.19.4] - 2026-10-25（35 键逐键独立定性：抓出 3 个被批量登记埋没的漏消费）
+
+> **起因**：v3.19.3 的 L3 用「段名批量登记」把 75 死键压到 0。批量高效，
+> 但**可能掩盖个别键的真实情况**——本轮把当时未逐个性定的 35 键全部独立定性，
+> 验证批量登记是否埋没了「本该接线的漏消费」。
+
+### ★ 结论：批量登记确实埋没了 3 个真缺陷
+
+35 键中 **3 键是漏消费（B 类，已接线）**，32 键确属人读型（A 类，登记正确）。
+
+### ① 【P0】`domain_config.yaml#image_fetch.license_uncertain_markers`（最重发现）
+
+yaml 声明 `['待核实','未明','未知','待定']`，而 `scripts/fetch_oa_image.py:266`
+**硬编码** `("待核实","未明","未知","待定")` ——**配置写了、代码硬编码同值**
+⇒ 改配置不改行为。**与 v3.12.0 修掉的 `three_source_check` 阈值硬编码完全同型**。
+
+v3.19.3 把它登记为人读型的理由写的是「供成员判断许可是否可信，语义判断不由脚本做」
+——**该理由不成立**：`fetch_oa_image.py` 正是脚本侧做许可判定的地方，它本该读这个配置。
+
+**修复**：新增 `license_uncertain_markers(cfg)`，与既有 `retry_spec()` 同模式
+（优先 yaml，读不到回落内置值并**告警**，不静默）。反例：改 yaml ⇒ 读到值跟着变。
+
+### ② 【P1】`visual-rules.yaml#gate.write_gate_level` / `#gate.deliver_gate_level`（双份真相）
+
+yaml 声明 sweep 写回门禁 = P0、gate 交付门禁 = all；而 `harness.py:5456/5474` 的
+argparse `default` 是**硬编码** `"P0"`/`"all"` ——同值但互不知晓。
+
+**修复**：新增 `_default_gate_level(key, fallback)`，两处默认值改从 yaml 读；
+读不到/值非法回落并**告警**。反例：改 yaml ⇒ 默认等级跟着变；路径不存在 ⇒ 告警不静默。
+
+### ③ 其余 32 键逐条核实为 A 类（批量登记正确）
+
+逐条依据见 `04-test/v3.19.4-35键定性表.md`。其中两条澄清：
+- `overlay_injection.*` 4 键的 LLM 消费方**确认存在**（visual-slide-designer.md /
+  ppt-producer.md / batch-surgery-sop.md 均引用）⇒ A 类正确；
+- `overlay_injection.max_overlap_ratio` 与**活键** `geometry.overlap_ratio`
+  （被 verify_deck.py:165 消费）是**两个不同键**，勿混。
+
+### ④ 方法论沉淀（本轮最值钱的产出）
+
+**批量登记后必须做「反向抽查」**：对每个键问——
+「**如果这个值改了，哪个脚本的行为应该跟着变？**」
+答不上来的才是真 A 类；答得上来却没接线的就是 B 类。
+本轮正是用这个问句抓出了 3 个被压平的缺陷。
+
+### 回归
+
+`pytest scripts/` **223 passed / 3 skipped**（基线 218 → +5，零失败）；
+`test_dead_config_disposition.py` 6 → **11 用例**（新增 T5/T5b/T6/T6b/T7，含 3 反例）；
+validate_expert 0 errors · 体检 24/24（rc=0）· 双树 0 差异。
+
+---
+
 ## [v3.19.3] - 2026-10-25（第八轮：H1/M1/M2 落地 + L3 死配置 75 键全量处置）
 
 > **执行方式**：轻量型快速通道。子代理 `agent-harness-coder` 派出后先落盘第一步

@@ -109,6 +109,34 @@ def pick_channel(domain: dict) -> dict | None:
     return (stable or with_ep)[0]
 
 
+#: 许可不明标记词的**内置回退值**（yaml 读不到时用；不静默，调用方会告警）
+_LICENSE_UNCERTAIN_FALLBACK = ("待核实", "未明", "未知", "待定")
+
+
+def license_uncertain_markers(cfg: dict) -> tuple[tuple[str, ...], str]:
+    """取「许可不明标记词」（**从 yaml 读**，v3.19.4 B 类接线）。
+
+    判据：`config/domain_config.yaml#image_fetch.license_uncertain_markers`
+    —— 许可规则串中含其中任一词即视为「许可无法判定」⇒ 拒绝下载。
+
+    返回 (标记词元组, 说明)：说明为空表示正常从 yaml 读到；
+    非空表示用了回退值（并说明原因：键缺失 / 类型异常 / 读取失败）。
+
+    ⚠ 接线前此处为**硬编码** `("待核实","未明","未知","待定")`，而 yaml 已声明同值
+      ⇒「配置写了、代码硬编码」（改配置不改行为）——v3.19.4 逐键定性时实锤，
+      与 v3.12.0 修掉的 `three_source_check` 阈值硬编码同型。
+    """
+    node = ((cfg or {}).get("image_fetch") or {}).get("license_uncertain_markers")
+    if isinstance(node, (list, tuple)):
+        marks = tuple(str(x) for x in node if str(x).strip())
+        if marks:
+            return marks, ""
+        return _LICENSE_UNCERTAIN_FALLBACK, "yaml 登记了空列表，用内置回退值"
+    if node is None:
+        return _LICENSE_UNCERTAIN_FALLBACK, "yaml 未登记 image_fetch.license_uncertain_markers"
+    return _LICENSE_UNCERTAIN_FALLBACK, f"yaml 登记类型异常（{type(node).__name__}），用内置回退值"
+
+
 def retry_spec(cfg: dict) -> tuple[int, float, float]:
     """取退避重试参数（**从 yaml 读**，不硬编码）。
 
@@ -261,9 +289,22 @@ def main() -> int:
     log(f"端点（从域档案读）：{url}")
 
     # ── 许可判定 ──────────────────────────────────────────────
-    # 红线：许可规则缺失或含"待核实/未明" ⇒ **拒绝下载**，标 [待核实] 挂账。
-    uncertain = (not license_rule) or any(
-        k in license_rule for k in ("待核实", "未明", "未知", "待定"))
+    # 红线：许可规则缺失或含 yaml 登记的「许可不明标记词」⇒ **拒绝下载**，标 [待核实] 挂账。
+    # v3.19.4（35 键逐键定性·B 类接线）：标记词原为**硬编码**
+    #   （`("待核实","未明","未知","待定")`），而 config/domain_config.yaml
+    #   #image_fetch.license_uncertain_markers 已声明同值 ⇒「配置写了、代码硬编码」
+    #   （改配置不改行为，与 v3.12.0 修掉的 three_source 阈值硬编码同型）。
+    #   现改为从 yaml 读（与下方 retry_spec 同模式）；读不到时**回退硬编码值并告警**，
+    #   不静默（宁可有声降级，不要无声用旧值）。
+    dcfg, derr = _load_yaml(PKG / DOMAIN_CONFIG_REL)
+    markers, mnote = license_uncertain_markers(dcfg)
+    if derr:
+        log(f"⚠ {DOMAIN_CONFIG_REL} 读取失败（{derr}）——许可不明标记词用内置回退值：{markers}")
+    elif mnote:
+        log(f"⚠ 许可不明标记词未在 yaml 登记——用内置回退值：{markers}（{mnote}）")
+    else:
+        log(f"许可不明标记词（从 {DOMAIN_CONFIG_REL} 读）：{markers}")
+    uncertain = (not license_rule) or any(k in license_rule for k in markers)
     if uncertain:
         log(f"⛔ 许可无法判定（license_rule={license_rule!r}）——**拒绝下载**，"
             f"按纪律标 {LICENSE_TODO} 挂账")

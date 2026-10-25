@@ -165,5 +165,119 @@ class TestDeadConfigDisposition(unittest.TestCase):
                       f"仍有死配置残留：{[l.strip() for l in self.out.splitlines() if '·' in l][:5]}")
 
 
+
+
+class TestBClassWiring(unittest.TestCase):
+    """T5–T7：35 键逐键定性中 3 个 B 类（漏消费）键的接线守卫。
+
+    定性结论（v3.19.4，主理人独立逐键完成）：
+      · `domain_config.yaml#image_fetch.license_uncertain_markers` —— 原被
+        fetch_oa_image.py **硬编码**（("待核实","未明","未知","待定")），yaml 已声明同值
+        ⇒「配置写了、代码硬编码」（改配置不改行为，与 v3.12.0 修掉的
+        three_source 阈值硬编码同型）⇒ **B 类，已接线**。
+      · `visual-rules.yaml#gate.write_gate_level` / `#gate.deliver_gate_level` ——
+        sweep/gate 的 argparse 默认等级原为硬编码（"P0"/"all"），与 yaml 同值但
+        互不知晓 ⇒ 双份真相 ⇒ **B 类，已接线**（_default_gate_level）。
+    其余 32 键经逐键核实为 A 类（人读型，消费方为会话层/成员 LLM），
+    段名批量登记合理——但本测试类守住那 3 个**不该**被批量登记掩盖的键。
+    """
+
+    def test_T5_license_markers_read_from_yaml(self):
+        """T5 正例：许可不明标记词从 yaml 读（非硬编码）。"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("foa", PKG / "scripts" / "fetch_oa_image.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["foa"] = m
+        spec.loader.exec_module(m)
+        import yaml
+        cfg = yaml.safe_load((PKG / "config" / "domain_config.yaml").read_text(encoding="utf-8"))
+        marks, note = m.license_uncertain_markers(cfg)
+        self.assertEqual(marks, ("待核实", "未明", "未知", "待定"),
+                         "与 yaml 登记的标记词不一致")
+        self.assertEqual(note, "", "正常路径不应产生回退说明")
+
+    def test_T5b_reverse_example_yaml_change_propagates(self):
+        """T5b 反例：改 yaml 的标记词 ⇒ 读到的值必须跟着变。
+
+        这条是防「改配置不改行为」的**决定性判据**——若有人把接线改回硬编码，
+        本测试立刻红。
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("foa", PKG / "scripts" / "fetch_oa_image.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["foa"] = m
+        spec.loader.exec_module(m)
+        p = PKG / "config" / "domain_config.yaml"
+        bak = p.read_text(encoding="utf-8")
+        try:
+            import yaml
+            cfg = yaml.safe_load(bak)
+            cfg["image_fetch"]["license_uncertain_markers"] = ["待核实", "授权待确认"]
+            p.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+            marks, _ = m.license_uncertain_markers(cfg)
+            self.assertEqual(marks, ("待核实", "授权待确认"),
+                             "改 yaml 后读到的值未变——接线被改回硬编码了")
+        finally:
+            p.write_text(bak, encoding="utf-8")
+            marks2, _ = m.license_uncertain_markers(
+                yaml.safe_load(p.read_text(encoding="utf-8")))
+            self.assertEqual(marks2, ("待核实", "未明", "未知", "待定"),
+                             "复原后未归位——配置可能未还原")
+
+    def test_T6_gate_default_levels_from_yaml(self):
+        """T6 正例：sweep/gate 的默认门禁等级从 yaml 读。"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("h", PKG / "scripts" / "harness.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["h"] = m
+        spec.loader.exec_module(m)
+        self.assertEqual(m._default_gate_level("write_gate_level", "P0"), "P0")
+        self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "all")
+
+    def test_T6b_reverse_example_gate_level_yaml_change_propagates(self):
+        """T6b 反例：改 yaml 的 deliver_gate_level ⇒ 默认等级必须跟着变。"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("h", PKG / "scripts" / "harness.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["h"] = m
+        spec.loader.exec_module(m)
+        p = PKG / "config" / "visual-rules.yaml"
+        bak = p.read_text(encoding="utf-8")
+        try:
+            import yaml
+            cfg = yaml.safe_load(bak)
+            cfg["gate"]["deliver_gate_level"] = "P1"
+            p.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+            self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "P1",
+                             "改 yaml 后默认等级未变——argparse 又被写回硬编码了")
+        finally:
+            p.write_text(bak, encoding="utf-8")
+            self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "all",
+                             "复原后未归位——配置可能未还原")
+
+    def test_T7_gate_level_fallback_warns_not_silent(self):
+        """T7：yaml 读不到/值非法时**回落并告警**，不静默。"""
+        import importlib.util, io, contextlib
+        spec = importlib.util.spec_from_file_location("h", PKG / "scripts" / "harness.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["h"] = m
+        spec.loader.exec_module(m)
+        # 值非法：直接构造一个坏 yaml 场景不可行（函数读固定路径），
+        # 改为验证函数对**不存在路径**的鲁棒性 + 回退值正确
+        orig = os.path.join
+        try:
+            # monkeypatch PKG 指向不存在目录 ⇒ 必然读不到 ⇒ 应回落且不崩
+            bad = PKG / "__no_such_dir__"
+            m.PKG = str(bad)
+            buf, errbuf = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+                v = m._default_gate_level("deliver_gate_level", "all")
+            self.assertEqual(v, "all", "读不到时应回落 fallback")
+            self.assertTrue(errbuf.getvalue().strip(),
+                            "读不到时必须告警（不静默）")
+        finally:
+            m.PKG = str(PKG)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

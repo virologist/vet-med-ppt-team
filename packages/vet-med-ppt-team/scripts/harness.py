@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.3
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.19.4
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -731,6 +731,35 @@ def _domain_knowledge_bases(cfg, domain_id):
 def _domain_profiles_path(cfg=None):
     rel = ((cfg or {}).get("collapse") or {}).get("profile_file") or _DOMAIN_PROFILES_REL
     return os.path.join(PKG, rel)
+
+
+def _default_gate_level(key: str, fallback: str) -> str:
+    """取 sweep/gate 子命令的**默认门禁等级**（v3.19.4 B 类接线）。
+
+    背景（35 键逐键定性时实锤的双份真相）：
+      `config/visual-rules.yaml#gate.write_gate_level` / `#gate.deliver_gate_level`
+      声明了 sweep（写回门禁，P0）与 gate（交付门禁，all）的默认等级，
+      但 argparse 里是**硬编码** `default="P0"` / `default="all"` ——
+      两者同值但互不知晓 ⇒ **改配置不改行为**。
+
+    读不到时回落调用方给的 fallback 并**告警**（不静默：宁可有声降级，
+    不要无声用旧值——与 fetch_oa_image.license_uncertain_markers 的接线同模式）。
+    """
+    path = os.path.join(PKG, "config", "visual-rules.yaml")
+    try:
+        import yaml  # noqa
+        with open(path, encoding="utf-8") as f:
+            rules = yaml.safe_load(f) or {}
+        val = ((rules.get("gate") or {}).get(key) or "").strip()
+        if val in ("P0", "P1", "all"):
+            return val
+        if val:
+            print(f"⚠ visual-rules.yaml#gate.{key}={val!r} 不是合法门禁等级"
+                  f"（P0/P1/all），回落 {fallback!r}", file=sys.stderr)
+    except Exception as e:
+        print(f"⚠ visual-rules.yaml 读取失败（{e}）——gate.{key} 回落 {fallback!r}",
+              file=sys.stderr)
+    return fallback
 
 
 def load_domain_profiles(cfg=None):
@@ -4949,7 +4978,7 @@ def cmd_doctor(args):
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.19.3", "executable": __file__,
+    out = {"version": "v3.19.4", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            "pending_work": _pending_work(wkspace(args)),
@@ -5271,7 +5300,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.3")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.19.4")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -5453,7 +5482,12 @@ def main():
     p = sub.add_parser("sweep", help="v3.4.2 P0-1：递归扫全量 .pptx → SSOT 门禁 → 收编 deck_registry")
     p.add_argument("--root", required=True, help="课件根目录（递归扫 .pptx，自动跳过 _trash_/~/snapshots）")
     p.add_argument("--hours", type=float, default=2, help="课时口径（默认 2，禁止按页数反推）")
-    p.add_argument("--level", choices=["P0", "P1", "all"], default="P0", help="门禁等级")
+    # v3.19.4（35 键逐键定性·B 类接线）：默认等级改从 yaml 读
+    #   （visual-rules.yaml#gate.write_gate_level，原硬编码 "P0" ⇒ 双份真相：
+    #   改配置不改行为）。读不到才回落 "P0" 并告警。
+    p.add_argument("--level", choices=["P0", "P1", "all"],
+                   default=_default_gate_level("write_gate_level", "P0"),
+                   help="门禁等级（默认从 config/visual-rules.yaml#gate.write_gate_level 读）")
     p.add_argument("--max-decks", type=int, default=0, help="0=不限；>0 时仅处理前 N 份（分批 sweeP 用）")
     p.add_argument("--actor", default="harness")
     _ws(p)
@@ -5471,7 +5505,10 @@ def main():
     p = sub.add_parser("gate", help="包装 verify_deck，统一退出码语义并落 trace")
     p.add_argument("--deck", required=True)
     p.add_argument("--hours", type=float, default=2)
-    p.add_argument("--level", default="all", choices=["P0", "P1", "all"])
+    # v3.19.4（35 键逐键定性·B 类接线）：默认等级改从 yaml 读
+    #   （visual-rules.yaml#gate.deliver_gate_level，原硬编码 "all" ⇒ 双份真相）
+    p.add_argument("--level", default=_default_gate_level("deliver_gate_level", "all"),
+                   choices=["P0", "P1", "all"])
     p.add_argument("--json", dest="json", default="")
     p.add_argument("--actor", default="ppt-producer")
     # v3.2.0-batch2：lint/snap 集成参数
