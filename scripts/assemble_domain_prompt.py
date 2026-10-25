@@ -328,6 +328,38 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
         if persona.get("duty_boundary"):
             lines.append(f"- 职责边界：{persona['duty_boundary']}")
 
+    # ── v3.18.0：专家面板分段注入（坍缩出**多名**资深专家）────────────
+    # 规格原文：「依据输入的 PPT 或指定主题/模块（如禽流感→禽流感病毒学家+禽病学家）
+    #   **动态坍缩生成匹配的资深专家团队**」——此前只有单个 role_persona，
+    #   「专家团」在注入层不存在。这里按**子专家**逐人一段，
+    #   成员据此知道自己此刻扮演哪几位专家、各自负责哪块、边界在哪。
+    # 向后兼容：selected_experts 为空时（本包自建域档案无面板）→ 本段不出现，
+    #   装配产物与 v3.17.0 逐字节一致。
+    experts = artifact.get("selected_experts") or []
+    if experts:
+        lines.append("")
+        lines.append(f"【一之二、专家面板（本次坍缩选中的 {len(experts)} 位资深专家）】")
+        lines.append("你此刻是以下几位专家的**合体**：各人分管一块，"
+                     "遇跨专业的判断按各自职责边界协作，**不越界替他人下结论**。")
+        for i, ex in enumerate(experts, 1):
+            if not isinstance(ex, dict):
+                continue
+            lines.append("")
+            lines.append(f"▍专家 {i}：{ex.get('title') or ex.get('id') or '未命名专家'}"
+                         f"（id={ex.get('id') or '-'}）")
+            if ex.get("background"):
+                lines.append(f"  - 背景：{ex['background']}")
+            if ex.get("stance"):
+                lines.append(f"  - 立场：{ex['stance']}")
+            if ex.get("duties"):
+                lines.append("  - 职责：")
+                lines += _bullets(ex.get("duties"), "    - ")
+            if ex.get("duty_boundary"):
+                lines.append(f"  - 职责边界：{ex['duty_boundary']}")
+            if ex.get("coverage_axes"):
+                lines.append("  - 覆盖知识轴："
+                             + "、".join(str(x) for x in ex.get("coverage_axes")))
+
     axes = pick("content_axes")
     if axes:
         lines.append("【二、内容轴（知识覆盖方向）】")
@@ -349,6 +381,39 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
             lines += _bullets(ev.get("time_layers"), "  - ")
         if ev.get("dual_source_rule"):
             lines.append(f"- 双源规则：{ev['dual_source_rule']}")
+        # ── v3.18.0（D-1）：机构权威源**实端点**注入 ──────────────────
+        # 缺陷（2026-10-25 从零诊断 D-1 实测）：此前渲染 evidence_hierarchy 时
+        #   只挑 5 个子键（institutional/literature/axes_note/time_layers/dual_source_rule），
+        #   `institutional_endpoints`（MSD 兽医手册 / WOAH 陆生法典与手册 / WOAH 疾病卡 /
+        #   FAO 动物卫生 / WHO 人畜共患 等**实测可达端点**）**被丢弃**——
+        #   实跑 grep 装配产物：msdvetmanual|woah.org|fao.org 命中数 = **0**。
+        #   ⇒ 成员只拿到机构**名称**，只能盲搜网页，**恰好违反同文件
+        #     institutional_endpoints_note 自立的纪律**（"机构轴 = 端点直达，不得盲搜网页"）。
+        # 本段把端点逐条注入（并连带 note / license_rule / retrieval_patterns）。
+        inst_eps = ev.get("institutional_endpoints") or []
+        if inst_eps:
+            lines.append("")
+            lines.append("【三之二、机构权威源实端点（**端点直达，不得盲搜网页**）】")
+            for ep in inst_eps:
+                if not isinstance(ep, dict):
+                    lines.append(f"  - {ep}")
+                    continue
+                lines.append(f"  - {ep.get('name') or '(未命名机构源)'}")
+                if ep.get("role"):
+                    lines.append(f"    - 定位：{ep['role']}")
+                if ep.get("status"):
+                    lines.append(f"    - 状态：{ep['status']}")
+                if ep.get("endpoint"):
+                    lines.append(f"    - 端点：{ep['endpoint']}")
+                if ep.get("retrieval_patterns"):
+                    lines.append("    - 检索式：")
+                    lines += _bullets(ep.get("retrieval_patterns"), "      - ")
+                if ep.get("note"):
+                    lines.append(f"    - 说明：{ep['note']}")
+                if ep.get("license_rule"):
+                    lines.append(f"    - 许可规则：{ep['license_rule']}")
+            if ev.get("institutional_endpoints_note"):
+                lines.append(f"  - 纪律：{ev['institutional_endpoints_note']}")
 
     ic = pick("image_channel") or {}
     if ic:
@@ -388,6 +453,15 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
         if ic.get("caption_elements"):
             lines.append("- 图注要素：")
             lines += _bullets(ic.get("caption_elements"), "  - ")
+        # ── v3.18.0（G4）：图注要素 = 通用骨架 + 域扩展 ──────────────
+        # 通用骨架（域无关·唯一源）= config/visual-rules.yaml#caption_base_elements
+        # 域扩展（域专属）= 域档案 image_channel.caption_extra_elements
+        # 缺陷（2026-10-25 从零诊断 G4）：图注要素此前**四套并存**且 rubric 自认冲突不调和
+        #   ⇒ 成员拿到的判据随域而变，无统一底座。
+        # 本段把骨架与扩展**同时**呈现，并显式标注二者角色，避免成员各写一套。
+        if ic.get("caption_extra_elements"):
+            lines.append("- 图注要素（**域扩展项**，通用骨架见 visual-rules.yaml#caption_base_elements）：")
+            lines += _bullets(ic.get("caption_extra_elements"), "  - ")
         if ic.get("forbidden_sources"):
             lines.append("- 禁止来源：")
             lines += _bullets(ic.get("forbidden_sources"), "  - ")
@@ -605,6 +679,14 @@ def main() -> int:
     ap.add_argument("--domain-profile", default=None,
                     help=f"域档案路径（默认：本包 {DEFAULT_PROFILE_REL}）")
     ap.add_argument("--list-members", action="store_true", help="列出白名单成员 ID 后退出")
+    ap.add_argument("--require-confirmed", dest="require_confirmed",
+                    action="store_true", default=True,
+                    help="（默认开启）坍缩产物未确认时**拒绝装配并 exit 5**——"
+                         "落实「坍缩结果须经用户确认后方可生效」")
+    ap.add_argument("--allow-unconfirmed", dest="require_confirmed",
+                    action="store_false",
+                    help="逃生口：允许在未确认态装配（仅通用兜底人设，无域人格）。"
+                         "输出会显式标注降级；生产流程禁用")
     args = ap.parse_args()
 
     expert_dir = core.resolve_expert_dir(args.expert_dir)
@@ -730,6 +812,33 @@ def main() -> int:
         log("⚠️ 无坍缩产物——本次装配**不含**任何域人格内容")
     elif domain_status == "neutral_member":
         log(f"ℹ️ 成员 {args.member} 在本域为 domain_neutral——不注入域人格")
+
+    # ── v3.18.0：未确认态**阻断装配**（落实「坍缩结果经确认后方可生效」）──
+    # 缺陷（2026-10-25 从零诊断 G2，实测复现）：此前未确认只打警告、仍 `return 0`，
+    #   装配器写出完整 spawn prompt（实测 24212 字符）⇒「未确认照样能 spawn」，
+    #   且 `test_spawn_injection.py` 里名为 `..._is_blocked` 的用例实际断言 `rc == 0`。
+    #   即规格「经用户确认后方可生效」在**执行层**没有任何强制点。
+    # 本段把「不注入域人格」升级为「不产出装配产物」：
+    #   · 阻断条件 = 坍缩产物存在但未确认（fallback_unconfirmed）
+    #     ——无产物（fallback_no_artifact）不阻断：那是"尚未坍缩"，由主理人走 route/confirm 流程；
+    #   · 逃生口 = `--allow-unconfirmed`（显式声明降级，输出带告警）；
+    #   · 退出码 5 = 域未确认（与 harness.yaml#gate_exit_codes 的 0-4 语义不冲突，5 为新语义）。
+    if args.require_confirmed and domain_status == "fallback_unconfirmed":
+        print("", file=sys.stderr)
+        print("⛔ 拒绝装配：坍缩产物未确认（域人格未生效）", file=sys.stderr)
+        print(f"   产物：{artifact_path}", file=sys.stderr)
+        print(f"   状态：{state_note}", file=sys.stderr)
+        if artifact:
+            print(f"   域 id：{artifact.get('domain_id')!r}"
+                  f"｜域人格称号：{(artifact.get('role_persona') or {}).get('title')!r}",
+                  file=sys.stderr)
+        print("   → 规格要求「坍缩结果须先输出并与用户对齐、经确认后方可生效」。", file=sys.stderr)
+        print("   → 处置：① `harness.py collapse show` 输出坍缩摘要给用户裁决；"
+              "② 用户确认后 `harness.py collapse confirm --id <域id> --task-id <tid> --rationale \"...\"`；"
+              "③ 重新装配。", file=sys.stderr)
+        print("   → 确实需要先跑通用兜底（明知未确认仍要装）：加 `--allow-unconfirmed`（输出会标注降级）。",
+              file=sys.stderr)
+        return 5
 
     # ── 装配 + 后处理 ─────────────────────────────────────────
     prompt = core.assemble(expert_dir, args.member, core_fm, body,

@@ -59,6 +59,10 @@ ARCH_MD = PKG / "docs" / "architecture.md"
 HARNESS_YAML = PKG / "config" / "harness.yaml"
 GUARD_YAML = PKG / "config" / "guard.yaml"          # v3.17.0：防漂移守卫口径唯一源
 AGENTS_DIR = PKG / "agents"
+PROFILES_YAML = PKG / "config" / "domain-profiles.yaml"   # v3.18.0：域档案（专家面板源）
+ASSEMBLER = PKG / "scripts" / "assemble_domain_prompt.py"  # v3.18.0：装配器（面板注入点）
+HARNESS_PY = PKG / "scripts" / "harness.py"                # v3.18.0：编排内核（选人逻辑）
+SOP_MD = PKG / "references" / "sop-stages.md"              # v3.18.0：主流程 SOP（坍缩步）
 
 BEGIN = "<!-- STAGE_MIRROR_BEGIN -->"
 END = "<!-- STAGE_MIRROR_END -->"
@@ -70,6 +74,53 @@ LEGACY_TERM = "六阶段"
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _load_yaml(path: Path):
+    """读 yaml（v3.18.0：T11 专家面板守卫用）。缺文件/解析失败 → None（SKIP 不 FAIL）。"""
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return None
+
+
+def _ast_get_keys(path: Path) -> set:
+    """采集文件里**真实读取**的配置键名集合（AST 级，非文本匹配）。
+
+    形态覆盖（v3.18.0 实测教训：只判前两种会漏）：
+      ① `X.get("key")`            —— Call 节点，func 是 Attribute(attr="get")
+      ② `X["key"]`                —— Subscript 节点，slice 是字符串常量
+      ③ 字典字面量里的 `"key":`   —— Dict 节点的 key（写侧，用于确认键名存在）
+
+    ⚠ **为什么必须 AST 而非文本**：`if "institutional_endpoints" not in src`
+       只证明「字符串出现过」，不证明「被读过」——反例：把读取改成
+       `inst_eps = []` 而把字面量留在别处，文本判据照样通过（守卫是假的）。
+    """
+    try:
+        import ast
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    keys = set()
+    for node in ast.walk(tree):
+        # ① X.get("key")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in ("get", "pop") and node.args:
+            a0 = node.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                keys.add(a0.value)
+        # ② X["key"]
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) \
+                and isinstance(node.slice.value, str):
+            keys.add(node.slice.value)
+        # ③ {"key": ...} 字典字面量
+        if isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    keys.add(k.value)
+    return keys
 
 
 def _squash(text: str) -> str:
@@ -548,6 +599,155 @@ class TestCrossReviewMapping(_GuardBase):
                 problems.append(
                     f"{kind} 派给 {name}，但没有任何 agent MD 声明该领域归其所有"
                     f"（当前声明归属：{sorted(owners) or '无'}）")
+        self.assertFalse(problems, "；".join(problems))
+
+
+class TestExpertPanelWiring(unittest.TestCase):
+    """T11（v3.18.0 新增）：专家面板的**声明↔执行**接线守卫。
+
+    背景（2026-10-25 从零诊断 G1/D-1 实测）：本包长期存在「声明层≠执行层」——
+      · 域档案声明了 `role_persona`（域人格），但坍缩产物**不产专家团**（只有 1 段人格）；
+      · 域档案声明了 `institutional_endpoints`（6 条实测可达端点），
+        但装配器渲染 evidence_hierarchy 时**只挑 5 个子键 → 端点全被丢弃**
+        （实跑装配产物 grep：msdvetmanual/woah.org/fao.org 命中数 = 0）。
+    本守卫把两条接线钉死，防止「加了字段但没接线」再次静默发生。
+    """
+
+    def test_T11a_panel_assets_wired_to_runtime(self):
+        """T11a：域档案的 expert_panel / institutional_endpoints 必须被装配器**真的消费**。
+
+        ⚠ 判据用 **AST 真实读取点**，不是字符串出现——
+          v3.18.0 首版用 `if "institutional_endpoints" not in asm` 判"是否接线"，
+          反例验证时把读取改成 `inst_eps = []`（字面量仍在文件里）→ **守卫没红**，
+          说明字符串判据是假的。改为：解析 AST，收集所有
+          `X.get("key")` / `X["key"]` 两种形态的**真实读取点**。
+        """
+        prof = _load_yaml(PROFILES_YAML) or {}
+        domains = prof.get("domains") or []
+        self.assertTrue(domains, "domain-profiles.yaml 无 domains")
+        with_panel = [d for d in domains if isinstance(d, dict) and d.get("expert_panel")]
+        self.assertTrue(with_panel, "没有任何域声明 expert_panel——多专家坍缩无从谈起")
+
+        asm_reads = _ast_get_keys(ASSEMBLER)
+        h_reads = _ast_get_keys(HARNESS_PY)
+        h_text = _read(HARNESS_PY)
+        problems = []
+        # ① 装配器必须**真的取用** selected_experts（坍缩产物里已带）
+        if "selected_experts" not in asm_reads:
+            problems.append("装配器无 selected_experts 的真实读取点"
+                            "——坍缩选中的专家不会被注入")
+        # ② 装配器必须**真的取用** institutional_endpoints（机构端点实址）
+        if "institutional_endpoints" not in asm_reads:
+            problems.append("装配器无 institutional_endpoints 的真实读取点"
+                            "——机构权威端点不会被注入")
+        # ③ harness.py 必须支持选人（--panel）与选人合法性校验
+        if '"--panel"' not in h_text:
+            problems.append("harness.py 无 --panel 参数——无法指定本次上场的子专家")
+        if "_select_experts" not in h_text:
+            problems.append("harness.py 无 _select_experts——选人逻辑缺失")
+        if "expert_panel" not in h_reads:
+            problems.append("harness.py 无 expert_panel 的真实读取点"
+                            "——域档案的专家池不会被装配进坍缩产物")
+        self.assertFalse(problems, "；".join(problems))
+
+    def test_T11b_sop_documents_collapse_step(self):
+        """T11b：主流程 SOP 必须写明「选域→选人→输出对齐→确认」四步。"""
+        sop = _read(SOP_MD)
+        problems = []
+        for token, desc in (("route --level", "路由命令"),
+                            ("--panel", "选人参数"),
+                            ("collapse confirm", "确认命令"),
+                            ("gate1-check", "闸1 自检命令")):
+            if token not in sop:
+                problems.append(f"references/sop-stages.md 未写「{desc}」（缺 {token}）")
+        self.assertFalse(problems, "；".join(problems))
+
+    def test_T11c_every_domain_panel_ids_unique(self):
+        """T11c：每个域的 expert_panel 条目 id 必须**域内唯一**且非空。"""
+        prof = _load_yaml(PROFILES_YAML) or {}
+        problems = []
+        for d in prof.get("domains") or []:
+            if not isinstance(d, dict):
+                continue
+            panel = d.get("expert_panel") or []
+            ids = [e.get("id") for e in panel if isinstance(e, dict)]
+            if len(ids) != len(set(ids)):
+                problems.append(f"域 {d.get('id')} 的 expert_panel id 重复：{ids}")
+            for e in panel:
+                if not isinstance(e, dict):
+                    continue
+                for req in ("id", "title", "background", "stance", "duties", "duty_boundary"):
+                    if not e.get(req):
+                        problems.append(
+                            f"域 {d.get('id')} 的专家 {e.get('id')} 缺必填字段 {req}")
+        self.assertFalse(problems, "；".join(problems))
+
+    def test_T11d_caption_single_skeleton_no_overlap(self):
+        """T11d（G4）：图注要素 = **通用骨架 + 域扩展**，且二者**不得重复**。
+
+        缺陷（2026-10-25 从零诊断 G4 实测）：图注要素**四套定义并存**——
+          ① visual-rules.yaml#caption_five_elements（域口径 5 项）
+          ② seven-dimension-rubric.md:107（域无关 5 项）
+          ③ dvm-content-expert.md:262（3 项·域专属）
+          ④ 各域 image_channel.caption_elements（computing 又不同）
+        且 rubric:106-110 **自认冲突并声明"本文件不替 config 做决定"**——明知冲突而不调和。
+        v3.18.0 统一为：骨架 = visual-rules.yaml#caption_base_elements（唯一源），
+        域扩展 = 域档案 image_channel.caption_extra_elements（不得与骨架重叠）。
+        """
+        vr = _load_yaml(PKG / "config" / "visual-rules.yaml") or {}
+        skeleton = (vr.get("caption_base_elements") or [])
+        self.assertTrue(skeleton, "visual-rules.yaml 缺 caption_base_elements（通用骨架）")
+
+        prof = _load_yaml(PROFILES_YAML) or {}
+        problems = []
+        for d in prof.get("domains") or []:
+            if not isinstance(d, dict):
+                continue
+            ic = d.get("image_channel") or {}
+            # ① 旧键不得再作为独立定义出现
+            if ic.get("caption_elements"):
+                problems.append(
+                    f"域 {d.get('id')} 仍用 caption_elements（旧键）——"
+                    f"应改用 caption_extra_elements（域扩展）")
+            # ② 域扩展不得与骨架重复
+            extra = ic.get("caption_extra_elements") or []
+            sk_set = {str(x).strip() for x in skeleton}
+            for x in extra:
+                if str(x).strip() in sk_set:
+                    problems.append(
+                        f"域 {d.get('id')} 的 caption_extra_elements 含骨架重复项：{x!r}")
+        self.assertFalse(problems, "；".join(problems))
+
+    def test_T11e_no_third_caption_definition_in_docs(self):
+        """T11e：包内不得再有**第三套独立的图注要素定义**。
+
+        判据（精确到"只能在域档案里出现"）：
+          · agent MD 不得出现「图注三要素 / 图注五要素」这类**独立清单式**表述——
+            应改为引用唯一源（骨架 + 域扩展）；
+          · rubric 里出现域专属词**允许**（那是解释"域扩展是什么"的正当举例），
+            但**不得**再出现「图注三要素/图注五要素」式清单声明。
+        """
+        problems = []
+        # ① agent MD 不得独立列图注要素清单（应只引用唯一源）
+        for md in sorted(AGENTS_DIR.glob("*.md")):
+            txt = _read(md)
+            for phrase in ("图注三要素", "图注五要素"):
+                if phrase in txt:
+                    problems.append(
+                        f"{md.name} 仍写「{phrase}」——应改为引用 "
+                        f"visual-rules.yaml#caption_base_elements + 域档案 caption_extra_elements")
+        # ② rubric 不得再声明独立清单（域专属词的正当举例不算）
+        #   ⚠ 例外：**引述旧口径以说明"已统一"的历史句**是正当的
+        #     （v3.18.0 的口径说明段里就引了"原写…是上游旧清单"），
+        #     故只对**不含"原写/旧/历史/此前"等引述语境**的行判红。
+        rub = _read(PKG / "references" / "seven-dimension-rubric.md")
+        quote_ctx = ("原写", "旧", "历史", "此前", "上游", "已统一", "已并入", "deprecated")
+        for i, line in enumerate(rub.splitlines(), 1):
+            for phrase in ("图注三要素", "图注五要素"):
+                if phrase in line and not any(k in line for k in quote_ctx):
+                    problems.append(
+                        f"references/seven-dimension-rubric.md:{i} 仍声明「{phrase}」"
+                        f"——应改为引用 caption_base_elements + caption_extra_elements")
         self.assertFalse(problems, "；".join(problems))
 
 

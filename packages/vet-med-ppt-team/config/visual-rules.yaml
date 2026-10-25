@@ -86,12 +86,40 @@ hours_page_range_single_ppt:
 # ⚠️ **改这里等于改全部历史课件的复验结论**——必须走用户裁决，不得为使某份课件变绿而切换。
 page_caliber_default: "course"
 
-# ── 图注五要素（v1.6.0，人读检查项，机器不判）──
+# ── 图注要素（v3.18.0 统一为「通用骨架 + 域扩展」）────────────────
+# 缺陷（2026-10-25 从零诊断 G4 实测）：图注要素**四套定义并存**——
+#   ① 本段 caption_five_elements（5 项·域口径：对照关系/物种日龄病程/来源与许可/教学意义/示意声明）
+#   ② references/seven-dimension-rubric.md:107（5 项·域无关：图题/对象/时间/口径/来源）
+#   ③ agents/dvm-content-expert.md:262 + 各域 image_channel.caption_elements（3 项·域专属）
+#   ④ computing 域的 caption_elements（3 项·又不同）
+# 而 rubric:106-110 **自认冲突并声明「本文件不替 config 做决定」**——即明知冲突而不调和。
+#   ⇒ 后果：图注判据随域而变且无统一底座，与"通用诊断工作流"目标直接冲突。
+#
+# v3.18.0 处置：**通用骨架（域无关，任何域都必须有）+ 域扩展（域专属补充）**
+#   · caption_base_elements（**唯一源**）——通用骨架，3 项，机器与人读口径一致；
+#   · caption_five_elements —— **保留为历史键**（向后兼容，下游若有引用不报错），
+#     但已 deprecated：实际判定取 caption_base_elements；
+#   · 域扩展 —— 放在各域档案 image_channel.caption_extra_elements，
+#     **不得与骨架重复**（重复由 test_arch_drift.py 漂移守卫阻断）。
+caption_base_elements:
+  - 对象            # 图上是什么（主体 + 关键结构/特征）
+  - 来源与许可      # 期刊/机构 + 年份 + 标识（PMCID/DOI/标准号）+ 许可
+  - 教学意义        # 一句话说明为什么放这张图、要看什么
+# ⚠ 域扩展（各域专属补充项）见 config/domain-profiles.yaml
+#   #domains[].image_channel.caption_extra_elements —— 例：animal-medicine 增
+#   「实验条件 / 观察部位 / 临床意义」；computing 增「运行环境与版本 / 图示或代码要点」。
+caption_base_elements_note: "通用骨架（域无关·唯一源）；域扩展见域档案 image_channel.caption_extra_elements"
+
+# ── 图注五要素（v1.6.0；**已 deprecated** —— 保留仅为向后兼容）──
+# ⚠ v3.18.0 起**实际判定读 caption_base_elements**（通用骨架）。
+#   本键是 v1.6.0 的**域口径**历史清单（对照关系/物种日龄病程/…），
+#   与 rubric 的域无关清单不一致——这正是 G4 缺陷的来源，现已由骨架+域扩展结构取代。
+#   保留而不删除：下游（teaching-ppt-studio skill 等）若有引用不至于崩。
 caption_five_elements:
-  - 对照关系        # 如"左健康右病变"
-  - 物种日龄病程    # 如"25日龄白羽肉鸡，病程3天"
-  - 来源与许可      # 期刊+年份+PMCID+许可
-  - 教学意义        # 一句话
+  - 对照关系        # 如"左健康右病变"（域扩展项，现归各域 caption_extra_elements）
+  - 物种日龄病程    # 如"25日龄白羽肉鸡，病程3天"（同上）
+  - 来源与许可      # 期刊+年份+PMCID+许可（**已并入骨架**，勿重复计入域扩展）
+  - 教学意义        # 一句话（**已并入骨架**，勿重复计入域扩展）
   - 示意声明        # 仅示意图需要："教学示意，不得替代真实诊断图像"
 # v3.6.0 补充判据（迭代六原则⑥·素材判读红线）：
 #   ① 图注断言只能来自对图像本体的逐张判读，判读不出的特征不得写（低清图降级"情境图"并明示受限）

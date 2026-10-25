@@ -621,6 +621,27 @@ def check_version_consistency(expert_dir):
         m = _re.search(r'^version:\s*"?v?([0-9.]+)"?\s*$', txt, _re.M)
         rows.append((rel, _norm(m.group(1)) if m else "<无 version 段>"))
 
+    # ⑨⑩ 两份 marketplace.json（v3.18.0 补：独立诊断第 G7 项实测缺口）
+    #   缘由（2026-10-25 从零诊断实测）：plugin.json / harness.yaml / harness.py 已推进到
+    #   3.17.0，而**两份 marketplace.json 的 plugins[0].version 仍停在 2.2.0**，
+    #   第 14 项此前只核 8 处（全是包内源），**不覆盖 marketplace** ——
+    #   于是"市场/安装侧看到的版本"与包内实际版本长期不一致且**体检全绿**。
+    #   这是「声明层≠执行层」的发布侧实例：marketplace.json 是安装入口，
+    #   版本错会直接误导升级判断与用户侧版本核对。
+    #   ⚠ 结构差异：marketplace.json 的 version 在 **plugins[0].version**（顶层无 version 键），
+    #     不能复用上面的 yaml 正则，必须走 JSON 解析。
+    for rel in (".codebuddy-plugin/marketplace.json", ".claude-plugin/marketplace.json"):
+        p = os.path.join(expert_dir, *rel.split("/"))
+        if not os.path.isfile(p):
+            continue
+        try:
+            mk = _load(p)
+            plugs = mk.get("plugins") or []
+            mv = _norm(str((plugs[0] if plugs else {}).get("version", "")))
+            rows.append((rel, mv or "<无 plugins[0].version>"))
+        except Exception:
+            rows.append((rel, "<解析失败>"))
+
     if not main_ver:
         print(f"[14/{N}] ⚠ 主清单无 version 字段，无法做一致性巡检")
         return 1
@@ -631,7 +652,9 @@ def check_version_consistency(expert_dir):
             print(f"     {src:34s} {v}≠ {main_ver}")
         print(f"     → 处置：以 .codebuddy-plugin/plugin.json 为权威，同步其余各处"
               f"（.claude-plugin/plugin.json / config/harness.yaml / scripts/harness.py "
-              f"常量+文件头+argparse / references/result-envelope.yaml / config/domain_config.yaml）")
+              f"常量+文件头+argparse / references/result-envelope.yaml / config/domain_config.yaml / "
+              f"**.codebuddy-plugin/marketplace.json 与 .claude-plugin/marketplace.json 的 "
+              f"plugins[0].version**——最后两处是安装入口，漏改会让用户侧版本与包内不符）")
         return 1
     print(f"[14/{N}] ✓ 版本号 {len(rows)} 处一致：{main_ver}")
     for src, v in rows:
@@ -1938,6 +1961,9 @@ def main():
         return 1
 
     print(f"体检目标：{path}\n")
+    if not quick:
+        print("ℹ️ 本次为**全量体检**（含第 7 项回归测试，会串行跑全部 test_*.py，实测约 120 秒）。\n"
+              "   日常改包可用快速体检：`python3 scripts/ensure_settings.py --quick`（约 16 秒，跳过回归测试）。\n")
     mpath = os.path.join(path, ".codebuddy-plugin", "plugin.json")
     if not os.path.exists(mpath):
         print(f"✗ 找不到主清单：{mpath}", file=sys.stderr)

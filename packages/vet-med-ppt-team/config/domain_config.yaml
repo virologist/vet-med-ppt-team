@@ -12,8 +12,7 @@
 #
 # 覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件（团队级定制）
 
-version: "3.17.0"
-
+version: "3.18.0"
 # ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
 # Q2 默认：animal-medicine / microbiology / pet / tcm-vet
 domains:
@@ -329,3 +328,20 @@ ai_literacy:
     practicum: 1                  # 实训课 ≥1 项
     seminar: 1                    # 研讨课 ≥1 项
   severity: "P2"                  # 未达标只提示不阻断
+
+# ── 配图抓取（v3.18.0 新增）────────────────────────────────────
+# 消费方：scripts/fetch_oa_image.py（开放获取配图检索与落盘）
+# 立项依据：2026-10-25 从零诊断 G3 实测——域档案登记了取图端点与许可规则，
+#   但脚本侧**零实现**（无下载器、无 API 客户端）⇒ 配图能力不可复现、不可审计。
+#   本段给该脚本提供**可配的退避口径**（禁硬编码）。
+#   ⚠ 端点与许可**不在本段**——那两项属域档案（config/domain-profiles.yaml
+#     #domains[].image_channel），域之间只差档案、不差代码。
+image_fetch:
+  retry:
+    max_retries: 3        # 单 URL 退避重试次数
+    backoff_base: 2.0     # 首次退避秒数，之后 ×2 指数增长
+    backoff_cap: 30.0     # 单次退避上限秒数
+  timeout_seconds: 30    # 单次请求超时（CLI --timeout 可覆盖）
+  # 许可红线：license_rule 缺失或含下列标记 ⇒ **拒绝下载**，标 [待核实] 挂账。
+  #   （绝不凭猜测下载或编造许可——本条与 adjudication-rules.md 原则六同源）
+  license_uncertain_markers: ["待核实", "未明", "未知", "待定"]

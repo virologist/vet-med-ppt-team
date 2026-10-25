@@ -63,8 +63,13 @@ def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
 def assemble(member: str, out_path: str, task_file: str | None = None,
              run_dir: str | None = None, collapse: str | None = None,
              profile: str | None = None, workspace: str | None = None,
-             member_id: str | None = None) -> tuple[int, str, str]:
-    """跑本包装配器，返回 (rc, stdout, stderr)。"""
+             member_id: str | None = None,
+             extra: list[str] | None = None) -> tuple[int, str, str]:
+    """跑本包装配器，返回 (rc, stdout, stderr)。
+
+    v3.18.0：新增 `extra` 参数——用于传 `--allow-unconfirmed` 等逃生开关，
+    以便同一用例能同时验证「默认阻断」与「显式放行」两条路径。
+    """
     cmd = [PY, str(ASSEMBLER), "--member", member_id or member, "--out", out_path]
     if task_file:
         cmd += ["--task-file", task_file]
@@ -76,6 +81,8 @@ def assemble(member: str, out_path: str, task_file: str | None = None,
         cmd += ["--domain-profile", profile]
     if workspace:
         cmd += ["--workspace", workspace]
+    if extra:
+        cmd += list(extra)
     return _run(cmd)
 
 
@@ -327,17 +334,54 @@ class TestConfirmedInjection(unittest.TestCase):
         self.assertGreater(task_pos, dom, "域上下文段未落在任务包之前")
 
 
-# ───────────────────────────────────────────────── T4 未确认 → 不注入
+# ───────────────────────────────────────────────── T4 未确认 → 阻断
 class TestUnconfirmedNoInjection(unittest.TestCase):
-    """T4：坍缩未确认 → 不注入域人格 + 显式警告。"""
+    """T4：坍缩未确认 → **拒绝装配（rc=5）**，不产出任何域人格内容。
 
-    def test_T4_unconfirmed_artifact_not_injected(self):
+    v3.18.0 语义变更（依据：2026-10-25 从零诊断 G2 实测缺陷）——
+      此前未确认态只打警告、仍 `rc=0` 并写出完整 spawn prompt
+      （实测 24212 字符），即「未确认照样能 spawn」，规格
+      「坍缩结果须经确认后方可生效」在执行层无任何强制点。
+      现改为：**默认拒绝装配**（exit 5），且**不写出产物文件**；
+      确需先跑通用兜底时用 `--allow-unconfirmed` 显式放行（并保留告警）。
+    """
+
+    def test_T4_unconfirmed_artifact_blocks_assembly(self):
         tmp = Path(tempfile.mkdtemp())
         art_path = write_artifact(tmp / "_collapse" / "collapse_adhoc_computing.json",
                                   make_artifact(confirmed=False))
         op = tmp / "spawn.md"
         rc, _, se = assemble("dvm-content-expert", str(op), collapse=art_path)
-        self.assertEqual(rc, 0, se)
+        # ① 阻断：退出码必须非 0（专用语义 = 5）
+        self.assertEqual(rc, 5, f"未确认态未被阻断（rc={rc}）：{se}")
+        # ② 不得写出装配产物（不产半成品）
+        self.assertFalse(op.exists(), "未确认态仍写出了装配产物文件")
+        # ③ stderr 必须说明原因与处置路径
+        self.assertIn("拒绝装配", se, "stderr 缺阻断说明")
+        self.assertIn("collapse confirm", se, "stderr 缺处置命令")
+        self.assertIn("域人格未生效（未确认）", se, "stderr 缺显式警告")
+
+    def test_T4b_effective_false_also_blocks(self):
+        """status=confirmed 但 effective=false → 同样视为未生效 → 同样阻断。"""
+        tmp = Path(tempfile.mkdtemp())
+        art = make_artifact(confirmed=True)
+        art["effective"] = False
+        art_path = write_artifact(tmp / "_collapse" / "collapse_adhoc_computing.json", art)
+        op = tmp / "spawn.md"
+        rc, _, se = assemble("dvm-content-expert", str(op), collapse=art_path)
+        self.assertEqual(rc, 5, f"effective=false 未被阻断（rc={rc}）：{se}")
+        self.assertFalse(op.exists(), "effective=false 仍写出了装配产物文件")
+        self.assertIn("拒绝装配", se)
+
+    def test_T4c_allow_unconfirmed_escape_hatch(self):
+        """逃生口：`--allow-unconfirmed` → 放行，但仍**不注入域人格**且保留告警。"""
+        tmp = Path(tempfile.mkdtemp())
+        art_path = write_artifact(tmp / "_collapse" / "collapse_adhoc_computing.json",
+                                  make_artifact(confirmed=False))
+        op = tmp / "spawn.md"
+        rc, _, se = assemble("dvm-content-expert", str(op), collapse=art_path,
+                             extra=["--allow-unconfirmed"])
+        self.assertEqual(rc, 0, f"--allow-unconfirmed 未放行：{se}")
         text = op.read_text(encoding="utf-8")
         section = domain_section(text)
         self.assertTrue(section, "装配产物缺域上下文段")
@@ -347,19 +391,6 @@ class TestUnconfirmedNoInjection(unittest.TestCase):
                          "未确认的坍缩产物仍被注入 content_axes")
         self.assertIn("域人格未生效（未确认）", section, "域上下文段缺显式警告")
         self.assertIn("域人格未生效（未确认）", se, "stderr 缺显式警告")
-
-    def test_T4b_effective_false_also_blocks(self):
-        """status=confirmed 但 effective=false → 同样视为未生效。"""
-        tmp = Path(tempfile.mkdtemp())
-        art = make_artifact(confirmed=True)
-        art["effective"] = False
-        art_path = write_artifact(tmp / "_collapse" / "collapse_adhoc_computing.json", art)
-        op = tmp / "spawn.md"
-        rc, _, se = assemble("dvm-content-expert", str(op), collapse=art_path)
-        self.assertEqual(rc, 0, se)
-        section = domain_section(op.read_text(encoding="utf-8"))
-        self.assertNotIn("软件工程内容权威", section, "effective=false 仍被注入")
-        self.assertIn("域人格未生效（未确认）", section)
 
 
 # ───────────────────────────────────────────────── T5 兜底
@@ -449,18 +480,29 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_T7_real_harness_route_confirm_then_assemble(self):
         ws = Path(tempfile.mkdtemp())
+        # v3.18.0：computing 域已有 expert_panel → 路由须**显式选人**，
+        #   否则坍缩产物处于 pending_selection，不得进入确认流程。
         rc, so, se = _run([PY, str(HARNESS), "route", "--level", "L2",
                             "--domain", "computing", "--rationale", "回归测试",
+                            "--panel", "language_runtime_architect,algorithms_data_structures",
                             "--workspace", str(ws)])
         self.assertEqual(rc, 0, f"route 失败: {se}")
+        # v3.18.0：确认须带 --decision（用户裁决语义）且 --actor 不得是 team-lead
         rc, so, se = _run([PY, str(HARNESS), "collapse", "confirm", "--id", "computing",
-                            "--task-id", "adhoc", "--workspace", str(ws)])
+                            "--task-id", "adhoc", "--actor", "user",
+                            "--decision", "回归测试：用户已确认专家团配置",
+                            "--workspace", str(ws)])
         self.assertEqual(rc, 0, f"collapse confirm 失败: {se}")
         art = ws / ".harness-runs" / "adhoc" / "_collapse" / "collapse_adhoc_computing.json"
         self.assertTrue(art.is_file(), f"坍缩产物未落盘：{art}")
         obj = json.loads(art.read_text(encoding="utf-8"))
         self.assertEqual(obj.get("status"), "confirmed")
         self.assertTrue(obj.get("effective"))
+        # v3.18.0：坍缩产物应带**选中的多专家**（不是单人格）
+        sel = obj.get("selected_experts") or []
+        self.assertEqual(len(sel), 2, f"坍缩产物应含 2 位选中专家，实得 {len(sel)}")
+        self.assertEqual(obj.get("confirmed_by"), "user")
+        self.assertTrue(obj.get("confirmed_decision"), "确认产物缺裁决语义字段")
 
         op = ws / "spawn.md"
         rc, _, se = assemble("dvm-content-expert", str(op), collapse=str(art))
@@ -471,22 +513,31 @@ class TestEndToEnd(unittest.TestCase):
         self.assertIn("语言语义与类型系统", section, "端到端装配产物缺 content_axes 首项")
         self.assertEqual(section.count("软件工程内容权威"), 1,
                          "域人格称号在域上下文段中重复出现")
+        # v3.18.0：多专家面板应被注入（两位专家称号各出现一次）
+        self.assertIn("专家面板", section, "装配产物缺专家面板段")
+        self.assertIn("语言与运行时专家", section, "装配产物缺第 1 位子专家")
+        self.assertIn("算法与数据结构专家", section, "装配产物缺第 2 位子专家")
 
     def test_T7b_route_then_assemble_unconfirmed_is_blocked(self):
-        """只 route（未 confirm）→ 装配产物必须拒绝注入域人格。"""
+        """只 route（未 confirm）→ 装配必须**被阻断**（rc≠0），不产出任何产物。
+
+        v3.18.0 语义变更：原用例名为 `_is_blocked` 却断言 `rc == 0`
+        ——那正是「未确认照样能 spawn」的缺陷本身。现改为断言真阻断。
+        """
         ws = Path(tempfile.mkdtemp())
         rc, _, se = _run([PY, str(HARNESS), "route", "--level", "L2",
                           "--domain", "computing", "--rationale", "回归测试",
+                          "--panel", "language_runtime_architect",
                           "--workspace", str(ws)])
         self.assertEqual(rc, 0, se)
         art = ws / ".harness-runs" / "adhoc" / "_collapse" / "collapse_adhoc_computing.json"
         self.assertTrue(art.is_file())
         op = ws / "spawn.md"
         rc, _, se = assemble("dvm-content-expert", str(op), collapse=str(art))
-        self.assertEqual(rc, 0, se)
-        section = domain_section(op.read_text(encoding="utf-8"))
-        self.assertNotIn("软件工程内容权威", section, "未确认却被注入域人格")
-        self.assertIn("域人格未生效（未确认）", section, "缺未确认警告")
+        self.assertNotEqual(rc, 0, f"未确认态未被阻断（rc={rc}）：{se}")
+        self.assertEqual(rc, 5, f"阻断退出码应为 5（域未确认），实得 {rc}")
+        self.assertFalse(op.exists(), "未确认态仍写出了装配产物")
+        self.assertIn("拒绝装配", se)
 
 
 # ───────────────────────────────────────────────── T8 兜底内容与档案一致（防漂移）

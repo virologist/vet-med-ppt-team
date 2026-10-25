@@ -11,8 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.17.0"
-
+version: "3.18.0"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -137,6 +136,10 @@ context:
   handoff_mode: "path_only"        # path_only | summary | full
   summary_max_chars: 800           # 成员回传摘要上限；全文只落盘、不进对话
   state_max_bytes: 32768           # task_state.json 体积上限，超限触发 compaction
+  # v3.18.0 G6：stage_history 的保留条数（`state compact` 裁剪时只留最近 N 条）。
+  #   依据：stage_history 是状态文件**唯一无上限增长**的键（每次 `state set --stage`
+  #   追加一条），历史上撑爆状态文件的就是它。默认 10 条足够回看最近几闸。
+  state_history_keep: 10
   state_allowed_keys:              # 白名单外的键一律拒绝写入
     - task_id
     - workflow
@@ -229,9 +232,12 @@ observability:
   #     error         ← main() 顶层异常出口（此前异常只打栈、trace 里查不到）
   #   ⛔ 事件名是**声明与代码的契约**：改这里的名字 = 同时改产出点，否则
   #     `trace report` 的 declared_events_missing / undeclared_events 会立刻报出来。
+  # v3.18.0 G6：新增 compaction ← `state compact`（状态压缩）。此前 `state validate`
+  #   报「状态文件 N bytes 超过上限，必须 compaction」，但**全包无 compaction 实现**，
+  #   那句报错没有下文；现在它对应一条真命令，压缩动作也必须留痕（压前/压后字节 + 丢了什么）。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
-                 "error", "no_progress"]
+                 "error", "no_progress", "compaction"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
@@ -308,7 +314,23 @@ loop_b:
     time_structure: {lecture_pct: 90, case_pct: 5, interaction_pct: 5}
     hours_per_session: "1-4 课时 × 45min；页数口径见 course-profile-defaults.md#2（唯一源）"
     scope: "全部页面，逐页六查（标题层级/正文表述/图表/案例/思考题/小结）"
-    default_template: "/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx"
+    # ── v3.18.0：默认模板改为**空值 + 运行时校验**（解耦个人机器路径）──
+    # 缺陷（2026-10-25 从零诊断 G5 实测）：原值硬编码个人 OneDrive 绝对路径
+    #   `/Users/biodog/.../禽病防治技术PPT模板.pptx`——换机器/换用户即失效，
+    #   而它是**闸1 冻结项**（gate1_freeze.template，required: true），
+    #   且 V1 页眉 / V3 取色等验收判据全挂在它上面（references/default-template-profile.md）。
+    #   该行还**不在任何 DOMAIN_EXAMPLE 哨兵块内**（与 ppt-producer.md 同路径的处置不一致）。
+    # 处置：**模板路径属"用户现场资产"，不属包内默认**。
+    #   · 本键置 null —— 表达"包内不预置任何具体模板文件"；
+    #   · 模板约束（三条硬约束 + 指纹 + GEO-003 基线用法）仍留在
+    #     references/default-template-profile.md（**唯一源**，人读+脚本引用）；
+    #   · 实际路径由**工作区模板登记册**提供：<工作区>/.workbuddy/templates/template_registry.json
+    #     （见 references/template_registry_usage.md 与 scripts/template_migrate.py register/audit）。
+    #   · 运行时缺模板 → **显式报"模板待提供"并阻断闸1**，不静默回落到任何个人路径。
+    default_template: null
+    # 模板约束档案（包内唯一源，含三条硬约束与 GEO-003 基线用法）
+    template_profile_ref: "references/default-template-profile.md"
+    # 模板指纹：随档案记录，实测值（sha256(clrScheme+fontScheme)[:8]）
     template_fingerprint: "5fa78154"
     keep_original_layout: true    # 已有原稿版式的沿用原稿，不强制迁到默认模板
     geo_baseline_required: true   # 成品 lint 必配 --geo-baseline，否则 V7 无法判定

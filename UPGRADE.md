@@ -38,18 +38,20 @@ git push  → GitHub  virologist/vet-med-ppt-team
 
 修改 `agents/*.md` 或 `plugin.json` 后，**WorkBuddy 热重载会吞掉 `settings.json`**（已复现 5 次）。同时 `validate_expert.py` 只校验 `.codebuddy-plugin/plugin.json`，不查 `.claude-plugin/plugin.json` —— 两端版本漂移从未被官方工具发现（2026-09-17 实证 v1.4.1→v1.5.1 漂移 2 个小版本）。
 
-故 `scripts/ensure_settings.py` 已升级为 doctor：4 项体检 + 1 项自愈。**任一告警都必须先处理再发布**：
+故 `scripts/ensure_settings.py` 已升级为 doctor：23 项体检 + 1 项自愈。**任一告警都必须先处理再发布**：
 
 ```bash
 cd ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
 
-# 5. 【必做】doctor 4 项（settings.json 自愈 + 版本/agent/门禁只读告警）
+# 5. 【必做】doctor 23 项（settings.json 自愈 + 版本/agent/门禁等只读告警）
 python3 scripts/ensure_settings.py
-#   [1/4] settings.json 存在且 agent 字段正确（缺失则自动重建）
-#   [2/4] WorkBuddy 与 ClaudeCode 两侧清单版本一致（漂移则告警）
-#   [3/4] 5 个 agent 文件齐全（缺失则告警）
-#   [4/4] 机械验证门禁 verify_deck.py 随包分发（缺失则告警）
-# 退出码 0 = 全绿可发布；非 0 = 有告警必须先处理
+#   退出码 0 = 全绿可发布；非 0 = 有告警必须先处理
+#   ⚠️ 全量体检含第 7 项「回归测试」——**会串行跑 scripts/ 下全部 test_*.py**
+#      （其中联网套件 test_three_source_online.py 约 25s），实测全量约 **120 秒**。
+
+# 5b. 【日常改包用】快速体检（跳过第 7 项回归测试）——实测约 **16 秒**
+python3 scripts/ensure_settings.py --quick
+#   → 改完包先跑这个（秒级反馈）；**发布前**再跑上面那条全量（含回归）。
 
 # 6. 官方校验 + 注册（必跑，doctor 取代不了）
 python3 /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/expert-manager/scripts/validate_expert.py .

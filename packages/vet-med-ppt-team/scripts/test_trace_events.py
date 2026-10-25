@@ -4,7 +4,7 @@
 test_trace_events.py — trace 事件「声明 vs 产出」回归（v3.17.0 B3-2）
 
 立项背景（不是"补几个事件"的例行动作）：
-  config/harness.yaml#observability.trace_events 声明了 12 个 trace 事件，
+  config/harness.yaml#observability.trace_events 声明了一组 trace 事件，
   但 v3.17.0 独立复核实测**只有 5 个有代码产出**（gate / stage_enter / stage_exit /
   budget_exceeded / no_progress），另外 7 个是**纯声明**：
       team_create / preflight / spawn / spawn_failed / degrade / member_return / error
@@ -15,7 +15,7 @@ test_trace_events.py — trace 事件「声明 vs 产出」回归（v3.17.0 B3-2
   这正是 v2.2.0 建立整个 harness 层的原始理由（"静默降级无人察觉"）被自己重犯。
 
 本文件把这件事钉成机器断言：
-  ① 12 个声明的事件**逐个**有真实产出（跑真命令 → 读真 trace 文件 → 断言事件在）；
+  ① 全部声明的事件**逐个**有真实产出（跑真命令 → 读真 trace 文件 → 断言事件在）；
   ② trace report 能报出"声明了但没产出"的差集（declared_events_missing）；
   ③ trace report 能报出"产出了但没声明"的差集（undeclared_events）——
      这是同型反向缺口（agent_spawn 曾是这种：代码在产、yaml 没登记）；
@@ -40,10 +40,23 @@ HARNESS = os.path.join(HERE, "harness.py")
 
 PASS, FAIL = [], []
 
-# yaml#observability.trace_events 声明的全部 12 个事件（唯一源 = config/harness.yaml）
-DECLARED_EVENTS = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
-                   "member_return", "gate", "stage_enter", "stage_exit",
-                   "budget_exceeded", "error", "no_progress")
+# yaml#observability.trace_events 声明的全部事件
+# ⚠ v3.18.0：**从 yaml 读**（唯一源 = config/harness.yaml），不再硬编码列表——
+#   硬编码副本正是「同一口径两处各写一套」的病灶：v3.18.0 加了 compaction 事件后，
+#   本文件因硬编码旧列表而误报失败（事件名是**声明与代码的契约**，改一处必须同步另一处——
+#   但更好的做法是**根本不要写第二份**）。
+def _declared_events_from_yaml():
+    """从 config/harness.yaml#observability.trace_events 读声明的事件名列表。"""
+    import yaml
+    ypath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "config", "harness.yaml")
+    with open(ypath, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    ev = ((cfg.get("observability") or {}).get("trace_events") or [])
+    return [str(x) for x in ev]
+
+
+DECLARED_EVENTS = tuple(_declared_events_from_yaml())
 
 
 def run(args, cwd=None):
@@ -116,7 +129,7 @@ def _make_deck(path):
         return False
 
 
-def test_声明的12个事件全部有代码产出():
+def test_声明的全部事件都有代码产出():
     """逐个跑真命令 → 读真 trace 文件 → 断言该事件在文件里。
 
     这是本任务的核心断言：**声明了却没有产出点**的事件，任何一个都会让本用例红。
@@ -165,10 +178,25 @@ def test_声明的12个事件全部有代码产出():
             workspace = w
             func = staticmethod(lambda a: (_ for _ in ()).throw(RuntimeError("注入的运行期异常")))
         _h.run_command(_Boom())
+        # compaction：v3.18.0 新增事件（`state compact` 状态压缩路径）
+        #   先造一个够大的状态文件（超 state_max_bytes 才有压缩意义），
+        #   再跑 state compact → 写 compaction 事件。
+        _big_state = os.path.join(w, ".workbuddy", "task_state.json")
+        os.makedirs(os.path.dirname(_big_state), exist_ok=True)
+        _big = {"task_id": "T1", "workflow": "WF-1", "current_stage": 1,
+                "stage_history": [{"stage": i, "status": "entered",
+                                   "ts": "2026-10-25T00:00:00+08:00",
+                                   "summary": "第 %d 闸的详细摘要，" % i + "长文本" * 200}
+                                  for i in range(60)],
+                "user_confirmations_pending": [], "tool_probe_results": {},
+                "budget": {}, "next_action": "继续", "compaction": {}}
+        with open(_big_state, "w", encoding="utf-8") as f:
+            json.dump(_big, f, ensure_ascii=False)
+        run(["state", "compact", "--workspace", w])
 
         evs = _trace_events(w)
         missing = [e for e in DECLARED_EVENTS if e not in evs]
-        check(f"trace：12 个声明事件全部有产出（实际产出 {sorted(set(evs))}）",
+        check(f"trace：{len(DECLARED_EVENTS)} 个声明事件全部有产出（实际产出 {sorted(set(evs))}）",
               not missing, f"缺产出：{missing}")
 
 

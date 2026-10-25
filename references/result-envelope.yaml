@@ -16,8 +16,7 @@
 #         agents/*.md 的回传格式章节
 
 schema_version: 1
-version: "3.17.0"
-
+version: "3.18.0"
 # ── 必填字段（harness.py 的 verify-envelope 按此校验；改这里即改校验器）────
 required:
   - agent_id

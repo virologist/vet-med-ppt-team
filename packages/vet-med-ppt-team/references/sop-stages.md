@@ -48,6 +48,29 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 <!-- DOMAIN_EXAMPLE_END -->
 7. **输出**【闸1｜任务冻结】并请用户确认 → **确认门 1/2**。
 
+### 闸1 的第 0 步：选域与选人（v3.18.0 新增 · 坍缩专家团）
+
+> <!-- DOMAIN_EXAMPLE_BEGIN -->
+> 规格原文：「依据输入的 PPT 或指定主题/模块（如**禽流感→禽流感病毒学家+禽病学家**）
+> **动态坍缩生成匹配的资深专家团队**，坍缩结果须先输出并与我对齐、**经确认后生效**」。
+> <!-- DOMAIN_EXAMPLE_END -->
+> 本节把该步落到闸1 之内（**先于**闸2 任何 spawn）——此前主流程 SOP 完全没有这一步，
+> 坍缩退化为「主理人记得才做」。
+
+| 步 | 动作 | 命令 / 判据 |
+|---|---|---|
+| 1 | 选**域** | `harness.py domain list` 看菜单 → 语义判断（**主理人做**，脚本不按关键词自动选） |
+| 2 | 路由并**选人** | `harness.py route --level <L> --domain <域id> --panel <id1,id2> --rationale "<理由>"` |
+| 3 | **输出给用户对齐** | 读 `collapse show` 的摘要：谁上场、各管哪块（覆盖知识轴）、职责边界、为什么选他 |
+| 4 | 用户确认 | `harness.py collapse confirm --id <域id> --task-id <tid> --actor user --decision "<用户裁决>" --rationale "<理由>"` |
+| 5 | 自检 | `harness.py gate1-check --workspace <W>`（六项冻结清单机器校验，未就绪 rc=1） |
+
+**三条硬约束**：
+- **未选人不得确认**：该域有专家面板而未指定 `--panel` 时，`collapse confirm` 直接拒绝（rc=1）。
+- **未确认不得装配**：装配器默认拒绝未确认态（rc=5，不产出 spawn prompt）；
+  确需先跑通用兜底时显式加 `--allow-unconfirmed`（输出标注降级，生产流程禁用）。
+- **沉默不构成确认**：`collapse confirm` 缺 `--decision` 即 rc=2；`--actor` 不得填 `team-lead`。
+
 ---
 
 ## 闸 2｜设计（苏学法 ∥ 严真奥，并行）

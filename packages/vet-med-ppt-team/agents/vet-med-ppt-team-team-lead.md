@@ -172,7 +172,14 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 
 | 闸 | 谁干活 | 确认门槛 | 细节锚点 |
 |------|--------|---------|---------|
-| **闸1** 任务冻结 | 主理人 | **确认门 1/2** | 澄清+判级+工具探针+**页数三口径（物理/可见/导出）**与 `--hours` 冻结+**页数口径轨 `--caliber`（course=整套课程，默认；single-ppt=单次 PPT）**+**重复指令对账** → sop-stages.md#闸1 |
+| **闸1** 任务冻结 | 主理人 | **确认门 1/2** | 澄清+判级+工具探针+**页数三口径（物理/可见/导出）**与 `--hours` 冻结+**页数口径轨 `--caliber`（course=整套课程，默认；single-ppt=单次 PPT）**+**重复指令对账**+**选域与选人（`route --domain --panel` → 输出给用户对齐 → `collapse confirm`）** → sop-stages.md#闸1 |
+
+> **闸1 冻结六项（v3.18.0 起有机器校验）**：`config/harness.yaml#gate1_freeze` 声明的六项（受众/课时/模板/处理范围/验收标准/**已坍缩的专家团配置**）现在可一条命令自检：
+> ```
+> python3 scripts/harness.py gate1-check --workspace <工作区>
+> ```
+> 退出码 0 = 六项齐备可进闸2；1 = 有未就绪项（逐项列出缺什么）。
+> 模板项查的是**工作区模板登记册**（包内不预置模板文件）；专家团配置项查坍缩产物的**确认态 + 选中专家数**。
 | **闸2** 设计 | 苏学法 ∥ 严真奥（并行） | **确认门 2/2** | 蓝图（七段+二八难点+页数锁定）+ 证据缺口 + **方案颗粒度四坐标** + **方向裁决（强/中/弱）** → #闸2 |
 | **闸3** 成稿 | 苏学法 ∥ 屠明熙（并行） | 免确认（迭代回路非作者交叉复检） | 合并页表五字段 → #闸3 |
 | **闸4** 交付 | 脚本/郅作基门禁 + verifier 独立复判 | 交付终审 | 机器门禁 + 双校验 + 挂账审判 → #闸4 |
@@ -209,10 +216,26 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 
 | 坍缩产物状态 | 装配产物中的表现 | 主理人该做什么 |
 |---|---|---|
-| `status=confirmed` **且** `effective=true` | 完整八段域上下文注入（域人格称号/背景/立场/职责 + 内容轴 + 证据两轴 + 取图通道 + 知识库 + 术语 + 红线 + 知识锚点） | 照此 spawn；域人格对内容专家即身份 |
-| 未确认（`status != confirmed` 或 `effective != true`） | **不注入**域人格 + 显式警告「⚠️ 域人格未生效（未确认）」 | **先 `harness.py collapse confirm` 再 spawn**；不得把未确认当已确认 |
+| `status=confirmed` **且** `effective=true` | 完整八段域上下文注入（域人格称号/背景/立场/职责 + **专家面板分段** + 内容轴 + 证据两轴 + **机构端点实址** + 取图通道 + 知识库 + 术语 + 红线 + 知识锚点） | 照此 spawn；域人格对内容专家即身份 |
+| 未确认（`status != confirmed` 或 `effective != true`） | **装配器直接拒绝**（exit 5，不产出任何文件）+ 显式警告 | **先 `harness.py collapse confirm` 再 spawn**；不得把未确认当已确认 |
 | 域档案读不到 / 档案中无该域 | **不注入**域人格 + 「本条按通用兜底处理」+ 通用兜底人设 | 补齐域档案；❌ **严禁**静默回落某个具体域（尤其不得回落 animal-medicine） |
 | 无坍缩产物 | **不注入**域人格 + 「未找到坍缩产物」+ 通用兜底人设 | 先 `route --level <L> --domain <id>` 生成坍缩产物 |
+
+**专家面板与选人（v3.18.0 新增 · 落实「按主题坍缩出匹配的资深专家团队」）**：域档案的 `expert_panel` 声明该域**可选的子专家池**。
+<!-- DOMAIN_EXAMPLE_BEGIN -->
+（如 animal-medicine 域有：禽流感病毒学家 / 禽病学专家 / 兽药与生物安全专家 / 兽医公共卫生专家）
+<!-- DOMAIN_EXAMPLE_END -->**选谁是语义判断，由你（主理人）做，脚本不按关键词自动选人**。
+
+| 动作 | 命令 |
+|---|---|
+| ① 路由并**选人** | `harness.py route --level L2 --domain animal-medicine --panel avian_virologist,poultry_pathologist --rationale "<选型理由>"` |
+| ② 把选人结果**输出给用户对齐** | 读 `route` 输出的 `expert_panel_pool` / `selected_experts` / `selection_rationale` → 列出「本次上场的是谁、各管哪块、为什么是他」 |
+| ③ 用户确认 | `harness.py collapse confirm --id <域id> --task-id <tid> --actor user --decision "<用户裁决>" --rationale "<理由>"`（**`--decision` 必填、`--actor` 不得填 team-lead**，缺任一即拒绝确认） |
+| ④ 闸1 就绪自检 | `harness.py gate1-check`（六项冻结清单机器校验：受众/课时/模板/范围/验收/专家团配置） |
+
+- ⚠ **未选人不得确认**：该域有专家面板但未指定 `--panel` 时，坍缩产物处于 `pending_selection`，`collapse confirm` 会**直接拒绝**（exit 1）——「确认了一个域但没定谁上场」等于没对齐。
+- ⚠ **未确认不得装配**：装配器默认 `--require-confirmed`，未确认态**拒绝产出 spawn prompt**（exit 5）；确需先跑通用兜底时显式加 `--allow-unconfirmed`（输出会标注降级，生产流程禁用）。
+- ⚠ **模板不再有包内默认值**（v3.18.0）：`loop_b.defaults.default_template` 已置 `null`——包内**不预置任何具体模板文件**（原值硬编码个人 OneDrive 路径，换机器即失效）。模板实际路径由**工作区模板登记册** `<工作区>/.workbuddy/templates/template_registry.json` 提供（`template_migrate.py register`）；缺模板时 `gate1-check` 报「模板待提供」并阻断闸1，**不静默回落任何路径**。模板的**约束**（三条硬约束 + 指纹 + GEO-003 基线用法）仍在 `references/default-template-profile.md`（唯一源）。
 
 > 成员在该域的绑定为 `domain_neutral` 时不注入域人格（职责与域无关）——装配产物中会显式说明。
 

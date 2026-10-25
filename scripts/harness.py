@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.17.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.18.0
 
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
@@ -535,6 +535,14 @@ def cmd_route(args):
                   f"   → **不回落任何域**（尤其不回落默认域）：域的选择是语义判断，"
                   f"由主理人读 `domain list` 菜单后显式指定。", file=sys.stderr)
             return 2
+        # ── v3.18.0：panel 选人合法性**先于落盘**校验（不落半成品）──
+        _sel, _sel_status, _sel_err = _select_experts(dom, getattr(args, "panel", "") or "")
+        if _sel_err:
+            print(f"⛔ {_sel_err}\n"
+                  f"   → 专家 id 必须是该域 expert_panel 里的真 id；"
+                  f"脚本**不按关键词自动选人**（选谁是语义判断，属主理人职责）。",
+                  file=sys.stderr)
+            return 2
         path, payload, _created = _write_collapse_artifact(cfg, dom, args)
         status = payload.get("status")
         c = _collapse_cfg(cfg)
@@ -544,6 +552,29 @@ def cmd_route(args):
         plan["domain"] = dom.get("id")
         plan["domain_profile_path"] = _domain_profiles_path(cfg)
         plan["role_persona"] = dom.get("role_persona")
+        # ── v3.18.0：专家面板进 plan（供主理人输出给用户对齐）──────────
+        panel_pool = payload.get("expert_panel") or []
+        selected = payload.get("selected_experts") or []
+        plan["expert_panel_pool"] = [
+            {"id": e.get("id"), "title": e.get("title"),
+             "coverage_axes": e.get("coverage_axes") or []}
+            for e in panel_pool if isinstance(e, dict)
+        ]
+        plan["selected_experts"] = [
+            {"id": e.get("id"), "title": e.get("title"),
+             "duty_boundary": e.get("duty_boundary")}
+            for e in selected if isinstance(e, dict)
+        ]
+        # 选人状态：explicit=已指定；pending_selection=该域有面板但尚未选人（待用户裁决）
+        plan["expert_selection_status"] = (
+            "explicit" if selected else
+            ("pending_selection" if panel_pool else "no_pool"))
+        if panel_pool and not selected:
+            plan["expert_selection_note"] = (
+                f"该域有 {len(panel_pool)} 位可选子专家，**尚未选人**——"
+                f"请按主题从下列 id 中挑选后执行 "
+                f"`route --level {args.level} --domain {domain_id} --panel <id1,id2>`；"
+                f"**未选人时不得进入确认流程**（确认的必须是具体的人选配置）。")
         plan["collapse_artifact"] = path
         plan["collapse_status"] = status
         plan["collapse_effective"] = effective
@@ -700,7 +731,38 @@ def _resolve_task_id(args, workspace):
     return "adhoc"
 
 
-def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path):
+def _select_experts(dom, panel_arg):
+    """按主理人指定的 id 列表，从域档案的 expert_panel 池里挑出本次坍缩的子专家。
+
+    ⚠ **分工宪法**：脚本**只装配/校验**，不按关键词/activation_hints 自动选人
+      （选谁是语义判断，属主理人职责）——因此：
+      · 传了 ids → 按 id 精确取（取不到就报错，由 cmd_route 拦截）
+      · 没传 ids → **不自动选**：返回空列表 + 状态 "pending_selection"，
+        交由主理人裁决后用 `--panel` 重跑 route（避免"脚本替用户做专家选型"）。
+
+    返回 (selected, status, error)：
+      selected = 选中的专家条目列表（完整字段，供装配器注入）
+      status   = "explicit" | "pending_selection" | "no_pool"
+      error    = 非法 id 时的说明（None 表示无错）
+    """
+    pool = [e for e in (dom.get("expert_panel") or []) if isinstance(e, dict)]
+    ids = [s.strip() for s in str(panel_arg or "").replace("，", ",").split(",") if s.strip()]
+    if not pool:
+        # 该域没有专家池 → 保持 v3.17.0 行为（单人格）
+        return [], "no_pool", None
+    if not ids:
+        return [], "pending_selection", None
+    by_id = {str(e.get("id")): e for e in pool if e.get("id")}
+    bad = [i for i in ids if i not in by_id]
+    if bad:
+        return [], "invalid_selection", (
+            f"未在域档案 expert_panel 中找到专家 id：{bad}；"
+            f"该域可用 id：{sorted(by_id)}")
+    selected = [by_id[i] for i in ids]
+    return selected, "explicit", None
+
+
+def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path, panel_arg=""):
     """组装坍缩产物（**只组装，不判断**）。
 
     · 选型理由由主理人（LLM）填（--rationale）；未填 → null + 状态"待补"，
@@ -746,6 +808,19 @@ def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path):
         "selection_rationale_status": "filled" if rationale else "pending_team_lead",
         "role_persona": dom.get("role_persona"),
         "role_persona_status": "proposed_pending_confirmation",
+        # ── v3.18.0：专家面板（坍缩出**多名**资深专家）────────────────
+        # 缘由（2026-10-25 从零诊断 G1）：规格要求「按主题/模块（如禽流感→禽流感病毒学家
+        #   +禽病学家）**动态坍缩生成匹配的资深专家团队**」，
+        #   但此前坍缩产物只带**单个** role_persona，成员集恒为同一批 5 人
+        #   ⇒「坍缩出专家团」在数据结构与代码路径上都不存在。
+        # 语义分工：
+        #   · expert_panel          = 该域**可选的子专家池**（声明式，取自域档案）
+        #   · selected_experts      = 本次坍缩**实际选中的子专家**（主理人指定）
+        #   · role_persona          = 域级**底座人格**（保留：上场者共守的底线与风格）
+        # 向后兼容：域档案无 expert_panel 时，expert_panel=[]、selected_experts=[]，
+        #   装配行为与 v3.17.0 完全一致（单人格）。
+        "expert_panel": dom.get("expert_panel") or [],
+        "selected_experts": _select_experts(dom, panel_arg)[0],
         "content_axes": dom.get("content_axes") or [],
         "evidence_hierarchy": dom.get("evidence_hierarchy") or {},
         "image_channel": dom.get("image_channel") or {},
@@ -785,7 +860,8 @@ def _write_collapse_artifact(cfg, dom, args):
             old = None
     if isinstance(old, dict) and old.get("status") == confirmed_status:
         return path, old, False
-    payload = _collapse_artifact_payload(cfg, dom, tid, rationale, path)
+    payload = _collapse_artifact_payload(cfg, dom, tid, rationale, path,
+                                        getattr(args, "panel", "") or "")
     if isinstance(old, dict):
         # 沿用此前已填的选型理由（本次未显式提供时不抹掉）
         if not rationale and old.get("selection_rationale"):
@@ -860,6 +936,39 @@ def cmd_collapse(args):
             return 1
         with open(path, encoding="utf-8") as f:
             obj = json.load(f)
+        # ── v3.18.0：输出**用户对齐摘要**（"谁上场、各管哪块、为什么是他"）──
+        # 规格：「坍缩结果须**先输出**并与我对齐」——只 dump 原始 JSON 不够，
+        #   主理人需要一份可直接念给用户听的摘要（含未选人提示）。
+        sel = obj.get("selected_experts") or []
+        pool = obj.get("expert_panel") or []
+        summary = {
+            "domain_id": obj.get("domain_id"),
+            "domain_display_name": obj.get("domain_display_name"),
+            "status": obj.get("status"),
+            "effective": obj.get("effective"),
+            "selected_experts": [
+                {"id": e.get("id"), "title": e.get("title"),
+                 "coverage_axes": e.get("coverage_axes") or [],
+                 "duty_boundary": e.get("duty_boundary")}
+                for e in sel if isinstance(e, dict)
+            ],
+            "expert_panel_pool": [
+                {"id": e.get("id"), "title": e.get("title")}
+                for e in pool if isinstance(e, dict)
+            ],
+            "selection_rationale": obj.get("selection_rationale"),
+            "confirmed_by": obj.get("confirmed_by"),
+            "confirmed_decision": obj.get("confirmed_decision"),
+            "confirmed_at": obj.get("confirmed_at"),
+        }
+        print("── 坍缩结果摘要（供与用户对齐）──")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        if pool and not sel:
+            print("\n⚠️ 该域有专家面板但**尚未选人**——本次坍缩未指定谁上场。")
+            print(f"   可选 id：{[e.get('id') for e in pool if isinstance(e, dict)]}")
+            print("   → 选人后重跑 `route --level <L> --domain <id> --panel <id1,id2>`；"
+                  "未选人不得进入确认流程。")
+        print("\n── 坍缩产物全文 ──")
         print(json.dumps(obj, ensure_ascii=False, indent=2))
         return 0
 
@@ -887,11 +996,56 @@ def cmd_collapse(args):
                   "   理由由**主理人**提供（脚本不猜）——请用 `--rationale \"<理由>\"` 重新执行。",
                   file=sys.stderr)
             return 1
+        # ── v3.18.0：确认必须带**用户裁决语义**（--decision）+ 确认人不得是执行方自己 ──
+        # 缺陷（2026-10-25 从零诊断 G2 实测）：此前 `--actor` 默认 "team-lead"，
+        #   即「主理人自己确认自己」在代码层畅通无阻，且无任何"用户已阅"字段
+        #   ⇒ 事后无法区分「人确认」与「自确认」，规格「经用户确认」无处落地。
+        # 对照：Loop B 的 `loop continue` 缺 `--decision` 即 exit 2（沉默不构成确认）——
+        #   说明本包别处做得到「强制裁决」，坍缩这条此前没做。
+        decision = (getattr(args, "decision", "") or "").strip()
+        if not decision:
+            print("⛔ 拒绝确认：缺少 `--decision`（用户裁决语义）。\n"
+                  "   规格要求「坍缩结果须先输出并与我对齐、**经确认后生效**」——"
+                  "沉默不构成确认（与 `loop continue --decision` 同一纪律）。\n"
+                  "   → 用 `--decision <裁决>` 重新执行，例："
+                  "`--decision \"用户已阅并确认该专家团配置\"`。",
+                  file=sys.stderr)
+            return 2
+        actor = (getattr(args, "actor", "") or "").strip()
+        if not actor:
+            print("⛔ 拒绝确认：未指定确认人（`--actor` 为空）。\n"
+                  "   → 请显式传 `--actor user`（或真实裁决人标识）。\n"
+                  "   理由：确认人不可缺省，否则事后无法区分「人确认」与「自确认」。",
+                  file=sys.stderr)
+            return 2
+        if actor == "team-lead":
+            print("⛔ 拒绝确认：`--actor team-lead` 是执行方自己，不构成「用户确认」。\n"
+                  "   → 请用 `--actor user`（或真实裁决人标识）重新执行。\n"
+                  "   理由：确认人是执行方 ⇒ 事后无法区分「人确认」与「自确认」。",
+                  file=sys.stderr)
+            return 2
+        # ── v3.18.0：该域有专家池但**尚未选人** → 不得确认 ──────────
+        # 规格：「坍缩出**匹配的资深专家团队**」——确认的必须是**具体的人选配置**，
+        #   而不是"确认了一个域"。未选人就确认 = 确认了一个空配置。
+        _pool = obj.get("expert_panel") or []
+        _sel = obj.get("selected_experts") or []
+        if _pool and not _sel:
+            ids = [e.get("id") for e in _pool if isinstance(e, dict) and e.get("id")]
+            print("⛔ 拒绝确认：该域有专家面板但**尚未选人**（selected_experts 为空）。\n"
+                  f"   可选专家 id：{ids}\n"
+                  "   → 先按主题选人并重新落盘："
+                  f"`route --level <L> --domain {dom.get('id')} --task-id {tid} "
+                  f"--panel <id1,id2>`\n"
+                  "   → 理由：确认的必须是**具体的人选配置**，"
+                  "「确认了一个域但没定谁上场」等于没对齐。",
+                  file=sys.stderr)
+            return 1
         confirmed_status = c.get("confirmed_status") or "confirmed"
         obj["status"] = confirmed_status
         obj["effective"] = True
         obj["confirmed_at"] = now_iso()
-        obj["confirmed_by"] = getattr(args, "actor", "") or "team-lead"
+        obj["confirmed_by"] = actor
+        obj["confirmed_decision"] = decision
         obj["selection_rationale"] = rationale
         obj["selection_rationale_status"] = "filled"
         obj["role_persona_status"] = "effective"
@@ -938,6 +1092,149 @@ def cmd_collapse(args):
         }, ensure_ascii=False, indent=2))
         return 0
     return 2
+
+
+# ─────────────────────── gate1 冻结清单校验 ───────────────────────
+def cmd_gate1_check(args):
+    """闸1 冻结清单的**机器校验**（v3.18.0 新增）。
+
+    缺陷（2026-10-25 从零诊断 G2 实测）：`config/harness.yaml#gate1_freeze`
+    声明了 6 项必须由用户逐条确认的冻结项，但**全包无任何代码读它**——
+    即"该确认的到底确认了没有"完全靠主理人自觉。
+    本子命令把该清单变成可校验的判据：
+      · audience / hours / template / scope / acceptance —— 取自 Loop B 的 intake；
+      · collapsed_team_config —— 取自坍缩产物的确认态（须 confirmed 且 effective）。
+
+    判据来源：config/harness.yaml#gate1_freeze（**唯一源**），本函数只执行不重定义。
+
+    退出码：0=全部就绪可进闸2；1=有未就绪项（阻断）；2=用法错误。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    items = cfg.get("gate1_freeze") or []
+    if not items:
+        print("⚠ config/harness.yaml#gate1_freeze 为空——闸1 无冻结清单可校验", file=sys.stderr)
+        return 2
+
+    # ── 收集各冻结项的就绪状态 ────────────────────────────────────
+    # intake 来源：优先 Loop B 状态文件（intake 字段），其次 task_state.json
+    intake = {}
+    lpath = os.path.join(os.path.abspath(w), ".workbuddy", "loopB_state.json")
+    if os.path.isfile(lpath):
+        try:
+            with open(lpath, encoding="utf-8") as f:
+                lb = json.load(f)
+            if isinstance(lb, dict) and isinstance(lb.get("intake"), dict):
+                intake = lb["intake"]
+        except Exception:
+            intake = {}
+    if not intake:
+        tpath = os.path.join(os.path.abspath(w), ".workbuddy", "task_state.json")
+        if os.path.isfile(tpath):
+            try:
+                with open(tpath, encoding="utf-8") as f:
+                    ts = json.load(f)
+                if isinstance(ts, dict) and isinstance(ts.get("intake"), dict):
+                    intake = ts["intake"]
+            except Exception:
+                intake = {}
+
+    def _intake_ready(key):
+        v = intake.get(key)
+        if v in (None, [], {}, ""):
+            return False, "未登记"
+        if isinstance(v, dict):
+            st = str(v.get("status") or "")
+            if st != "confirmed":
+                return False, f"状态为 {st or '未标'}（须 confirmed）"
+            return True, "已确认"
+        return True, "已登记"
+
+    # 模板：包内不预置具体模板（v3.18.0 G5）—— 查工作区模板登记册
+    template_state = None
+    reg_p = os.path.join(os.path.abspath(w), ".workbuddy", "templates", "template_registry.json")
+    if os.path.isfile(reg_p):
+        try:
+            with open(reg_p, encoding="utf-8") as f:
+                reg = json.load(f)
+            n = len(reg.get("templates") or [])
+            template_state = {"ready": n > 0, "detail": f"工作区模板登记册 {n} 份"}
+        except Exception as e:
+            template_state = {"ready": False, "detail": f"模板登记册解析失败：{e}"}
+    else:
+        template_state = {"ready": False,
+                          "detail": "无工作区模板登记册（<workspace>/.workbuddy/templates/"
+                                    "template_registry.json）——包内不预置任何模板文件，"
+                                    "请用 template_migrate.py register 登记后再进闸2"}
+
+    # 坍缩确认态
+    collapse_state = {"ready": False, "detail": "未找到坍缩产物（先 route --domain ...）"}
+    cdir = os.path.join(os.path.abspath(w), ".harness-runs")
+    if os.path.isdir(cdir):
+        for tid in sorted(os.listdir(cdir)):
+            sub = os.path.join(cdir, tid, "_collapse")
+            if not os.path.isdir(sub):
+                continue
+            for fn in sorted(os.listdir(sub)):
+                if not (fn.startswith("collapse_") and fn.endswith(".json")):
+                    continue
+                fp = os.path.join(sub, fn)
+                try:
+                    with open(fp, encoding="utf-8") as f:
+                        o = json.load(f)
+                except Exception:
+                    continue
+                if o.get("status") == "confirmed" and o.get("effective") is True:
+                    sel = o.get("selected_experts") or []
+                    collapse_state = {
+                        "ready": True,
+                        "detail": f"已确认（域 {o.get('domain_id')}，"
+                                  f"选中专家 {len(sel)} 位）",
+                        "artifact": fp,
+                    }
+                    break
+            if collapse_state.get("ready"):
+                break
+
+    checks = {
+        "audience": _intake_ready("audience"),
+        "hours": _intake_ready("periods"),
+        "scope": _intake_ready("scope"),
+        "acceptance": _intake_ready("acceptance"),
+        "template": (template_state["ready"], template_state["detail"]),
+        "collapsed_team_config": (collapse_state["ready"], collapse_state["detail"]),
+    }
+
+    rows, not_ready = [], []
+    for it in items:
+        iid = str(it.get("id") or "")
+        label = str(it.get("label") or iid)
+        required = bool(it.get("required", True))
+        ok, detail = checks.get(iid, (False, "无校验实现（判据缺失）"))
+        rows.append({"id": iid, "label": label, "required": required,
+                     "ready": ok, "detail": detail})
+        if required and not ok:
+            not_ready.append(iid)
+
+    out = {
+        "ok": not not_ready,
+        "total": len(rows),
+        "not_ready": not_ready,
+        "items": rows,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        for r in rows:
+            flag = "✓" if r["ready"] else ("⚠" if not r["required"] else "✗")
+            req = "" if r["required"] else "（非必填）"
+            print(f"  {flag} {r['label']}{req}：{r['detail']}")
+        if not_ready:
+            print(f"\n⛔ 闸1 未就绪 {len(not_ready)}/{len(rows)} 项：{not_ready}")
+            print("   → 未就绪项须补齐并经用户确认后方可进入闸2（闸1 是 user_confirm 门）。")
+        else:
+            print(f"\n✅ 闸1 全部就绪（{len(rows)}/{len(rows)}）——可进入闸2。")
+    return 0 if not not_ready else 1
 
 
 # ─────────────────────────── state ───────────────────────────
@@ -1053,7 +1350,213 @@ def cmd_state(args):
                 return 1
         print(json.dumps(st, ensure_ascii=False, indent=2))
         return 0
+    if args.action == "compact":
+        # v3.18.0 G6：把 `state validate` 报的那句「必须 compaction」变成**可执行的命令**。
+        # 此前全包无任何 compaction 实现（grep compact 在 scripts/ 下只有 init 置 {} 与报错文案），
+        #   超限后只能人工手改状态文件——而手改会绕过 task_id 台账比对、并可能写坏 JSON。
+        # 压缩是**有损**操作，故必须留下账本：compaction 键记录压前字节/压后字节/丢了什么。
+        with _StateLock(w, None, path=state_path(w) + ".lock"):
+            try:
+                st = read_state(w, strict=True)
+            except _StateCorrupt as e:
+                print(f"⛔ 拒绝压缩：{e}\n"
+                      f"   损坏文件已原样保留（**不覆盖、不重建**）——请人工修复。",
+                      file=sys.stderr)
+                return 1
+            if not st:
+                print(f"⛔ 无状态文件可压缩：{state_path(w)}\n"
+                      f"   → 先跑 `state init` 建状态，再执行 `state compact`。",
+                      file=sys.stderr)
+                return 1
+            try:
+                before = os.path.getsize(state_path(w))
+            except OSError:
+                before = 0
+            new_st, meta = _compact_state(st, cfg)
+            meta["bytes_before"] = before
+            # 压后字节数必须反映**最终落盘文件**的大小，而落盘内容里含 meta 本身
+            #   → 存在自指。这里用与 _atomic_write_json 完全一致的序列化方式
+            #     （json.dumps(..., ensure_ascii=False, indent=2)）迭代收敛：
+            #     按当前 meta 估一次 → 把估值写回 meta → 再估，直至稳定（至多 5 轮）。
+            for _ in range(5):
+                est = len(json.dumps(new_st, ensure_ascii=False, indent=2).encode("utf-8"))
+                if est == meta.get("bytes_after"):
+                    break
+                meta["bytes_after"] = est
+            # 原子写（复用 write_state：同目录临时文件 → fsync → os.replace）
+            try:
+                write_state(w, new_st, locked=True,
+                            expect_task_id=getattr(args, "task_id", "") or None)
+            except (_TaskIdConflict, _StateCorrupt) as e:
+                print(f"⛔ 拒绝压缩写入：{e}\n"
+                      f"   原状态文件已原样保留（**未改动**）。", file=sys.stderr)
+                return 1
+            try:
+                after = os.path.getsize(state_path(w))
+            except OSError:
+                after = 0
+            meta["bytes_after"] = after
+            _trace(w, cfg, "compaction", "main",
+                   {"task_id": new_st.get("task_id"),
+                    "bytes_before": before, "bytes_after": after,
+                    "dropped_count": sum(d.get("dropped_count", 0) for d in meta["dropped"]),
+                    "dropped_keys": [d.get("key") for d in meta["dropped"]]})
+            print(json.dumps({
+                "ok": True,
+                "bytes_before": before,
+                "bytes_after": after,
+                "saved_bytes": before - after,
+                "max_bytes": int((cfg.get("context") or {}).get("state_max_bytes", 32768)),
+                "within_limit": after <= int((cfg.get("context") or {}).get("state_max_bytes", 32768)),
+                "kept": sorted(new_st.keys()),
+                "must_keep": list(COMPACT_MUST_KEEP),
+                "dropped": meta["dropped"],
+                "dropped_count": sum(d.get("dropped_count", 0) for d in meta["dropped"]),
+                "state_path": state_path(w),
+            }, ensure_ascii=False, indent=2))
+            return 0
     return 2
+
+
+# ─────────────────────── 状态压缩（compaction）───────────────────────
+# 缺陷（v3.18.0 G6 实测）：`cmd_state validate` 会报「状态文件 N bytes 超过上限，
+#   必须 compaction」，但**全包没有任何 compaction 实现**——超限后只能人工手改状态文件，
+#   而手改会绕过 task_id 台账比对（v3.17.0 建的并发防护）并可能写坏 JSON。
+#   本段把"必须 compaction"这句报错变成**可执行的命令**。
+
+# 必保最小集：压缩时**绝不丢弃**的键（依据 references/sop-stages.md「Compaction 最小集策略」：
+#   ① task_id + workflow ② current_stage + next_action ③ 关键决策摘要 ④ 文件路径清单）。
+#   tool_probe_results / budget 同属"跨会话必须知道的事实"，一并必保。
+COMPACT_MUST_KEEP = ["task_id", "workflow", "current_stage", "next_action",
+                     "budget", "tool_probe_results"]
+
+# 可选白名单键：压缩后**仍超上限**时才丢弃，按此顺序（先丢可再生的）。
+#   quality_history 是 loopB_state.json 的**镜像**，真源在 Loop B 侧 → 先丢它；
+#   collapse 是域坍缩产物镜像、体量小 → 最后丢。
+COMPACT_DROP_ORDER = ["quality_history", "collapse"]
+
+
+def _compact_confirmations_pending(items):
+    """只保留**未决**的确认项；已确认的从历史里剥离。
+
+    判定：条目是 dict 且 status 属于已确认集合（confirmed/done/resolved/approved/accepted）
+    → 视为已决，剥离。非 dict（字符串等）**一律保留**——无法判定时保留是安全方向
+    （误丢一个待确认项 = 丢掉用户没拍板的事，比多留一条严重）。
+    """
+    done_status = {"confirmed", "done", "resolved", "approved", "accepted"}
+    kept = []
+    for it in items or []:
+        if isinstance(it, dict):
+            s = str(it.get("status") or it.get("state") or "").strip().lower()
+            if s in done_status:
+                continue
+        kept.append(it)
+    return kept
+
+
+def _compact_stage_history(hist, keep_n):
+    """只保留最近 keep_n 条 stage_history（列表尾部 = 最新）。
+
+    返回 (保留后的列表, 被丢弃的条数)。
+    """
+    h = list(hist or [])
+    if not isinstance(keep_n, int) or keep_n < 0 or len(h) <= keep_n:
+        return h, 0
+    return h[-keep_n:], len(h) - keep_n
+
+
+def _compact_state(st, cfg):
+    """把膨胀的状态文件裁剪回「必保最小集 + 最近 N 条历史 + 未决确认项」。
+
+    策略（每条都有出处，不靠"感觉"裁剪）：
+      ① 必保最小集（COMPACT_MUST_KEEP）——一个字节都不丢；
+      ② stage_history —— 只留最近 N 条（N = config/harness.yaml#context.state_history_keep，
+         默认 10）：它是状态文件**唯一无上限增长**的键（每次 `state set --stage` 追加一条），
+         也是历史上撑爆状态文件的元凶；
+      ③ user_confirmations_pending —— 只留未决项：已确认的确认项留在历史里没价值，
+         却让每次冷启动都要重读一遍；
+      ④ 其余**白名单内**的键（quality_history / collapse）默认保留；
+         只有在 ①②③ 做完**仍超上限**时，才按 COMPACT_DROP_ORDER 依次丢弃
+         （丢弃动作全部记进 compaction.dropped，不静默）；
+      ⑤ 白名单**外**的键——按既有「拒绝写入」逻辑处理：压缩不写它们
+         （`state set` 的白名单检查不因此放宽；压缩不是绕过白名单的后门）。
+
+    返回 (新状态, 压缩元信息)。
+    """
+    ctx = (cfg or {}).get("context") or {}
+    allowed = list(ctx.get("state_allowed_keys") or [])
+    try:
+        keep_n = int(ctx.get("state_history_keep", 10))
+    except (TypeError, ValueError):
+        keep_n = 10
+    max_bytes = int(ctx.get("state_max_bytes", 32768))
+
+    st = st if isinstance(st, dict) else {}
+    dropped = []
+
+    # ④ 白名单外的键：压缩不写（记录下来，让操作者知道有东西被拒了）
+    #    ⚠ allowed 为空（配置缺失）时**不做任何判定**——宁可全留也不误删。
+    unknown = [k for k in st if allowed and k not in allowed]
+    for k in unknown:
+        dropped.append({"key": k, "dropped_count": 1,
+                        "reason": "白名单外的键——压缩不写（`state set` 的白名单检查不放宽）"})
+
+    new = {}
+    # ① 必保最小集（逐个保留原值；缺失就缺，不伪造）
+    for k in COMPACT_MUST_KEEP:
+        if k in st:
+            new[k] = st[k]
+    # ② stage_history：只留最近 N 条
+    hist, n_hist = _compact_stage_history(st.get("stage_history"), keep_n)
+    if "stage_history" in st or hist:
+        new["stage_history"] = hist
+    if n_hist:
+        dropped.append({"key": "stage_history", "dropped_count": n_hist,
+                        "reason": f"只保留最近 {keep_n} 条（其余是历史噪声）"})
+    # ③ user_confirmations_pending：只留未决项
+    if "user_confirmations_pending" in st:
+        orig = st.get("user_confirmations_pending") or []
+        pend = _compact_confirmations_pending(orig)
+        new["user_confirmations_pending"] = pend
+        if len(pend) != len(orig):
+            dropped.append({"key": "user_confirmations_pending",
+                            "dropped_count": len(orig) - len(pend),
+                            "reason": "已确认的确认项从历史里剥离（只留未决项）"})
+    # ④ 其余白名单内的键：默认保留（allowed 为空 ⇒ 原样保留全部其余键）
+    if allowed:
+        for k in allowed:
+            if k in st and k not in new and k != "compaction":
+                new[k] = st[k]
+    else:
+        for k, v in st.items():
+            if k not in new and k != "compaction":
+                new[k] = v
+
+    # 压缩元信息（compaction 键本身必保——它是"压过没有/丢了什么"的账本）
+    def _size_of(obj):
+        return len(json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    # ①②③ 做完仍超上限 → 按 COMPACT_DROP_ORDER 依次丢弃可选键
+    guard = 0
+    while _size_of(new) > max_bytes and guard < len(COMPACT_DROP_ORDER):
+        guard += 1
+        key = COMPACT_DROP_ORDER[guard - 1]
+        if key not in new:
+            continue
+        val = new.pop(key)
+        dropped.append({"key": key,
+                        "dropped_count": len(val) if isinstance(val, (list, dict)) else 1,
+                        "reason": f"压缩后仍超 {max_bytes} bytes 上限，按优先级丢弃该可选键"})
+    new["compaction"] = {
+        "must_keep": list(COMPACT_MUST_KEEP),
+        "dropped": dropped,
+        "bytes_before": None,     # 由调用方填（需要磁盘上的原始大小）
+        "bytes_after": None,
+        "compacted_at": now_iso(),
+        "state_history_keep": keep_n,
+        "max_bytes": max_bytes,
+    }
+    return new, new["compaction"]
 
 
 # ─────────────────────────── budget ───────────────────────────
@@ -3025,6 +3528,90 @@ LOOP_TERMINATIONS = _FALLBACK_TERMINATIONS   # 兼容旧引用；实际判定一
 LOOP_INTAKE_A = ["audience", "periods", "template", "scope", "acceptance"]  # A 类五项：缺一即停
 
 
+def _intake_item_state(v):
+    """判定一个 A 类 intake 项的**就绪态**。返回 (state, detail)。
+
+    state 取值：
+      "missing"    —— 未登记 / 空值
+      "unconfirmed"—— 已登记但**未确认**（dict 且 status != "confirmed"）
+      "confirmed"  —— 已确认
+
+    ⚠ v3.18.0 新增「unconfirmed」态（缺陷 D2，2026-10-25 从零诊断实测复现）：
+      此前 intake 校验只判 `not intake.get(k)`，于是 A 类五项若值为
+      `{"value": "...", "status": "suggested"}`（**已填但未确认**），
+      `intake.get(k)` 为真 → 直接判 confirmed 并放行，与
+      `references/task-intake-checklist.md` 的「存在 suggested 即不得进入制作」矛盾。
+      ⇒ 未确认 ≠ 已确认，必须分开判。
+
+    兼容性：
+      · 纯标量 / 字符串 → 保持旧行为（非空即算已确认），不破坏既有纯标量用法；
+      · list           → 非空即算已登记（list 元素若为 dict 且含 status，
+                          则要求至少一个 status == "confirmed"）；
+      · dict           → 必须 status == "confirmed"。
+    """
+    if v in (None, [], {}, ""):
+        return "missing", "未登记"
+    if isinstance(v, dict):
+        st = str(v.get("status") or "").strip()
+        if st == "confirmed":
+            return "confirmed", "已确认"
+        if st:
+            return "unconfirmed", f"已登记但状态为 {st}（须 confirmed）"
+        return "unconfirmed", "已登记但未标 status（须 confirmed）"
+    if isinstance(v, list):
+        dicts = [x for x in v if isinstance(x, dict)]
+        if dicts:
+            if any(str(x.get("status") or "").strip() == "confirmed" for x in dicts):
+                return "confirmed", "已确认"
+            return "unconfirmed", "已登记但无 confirmed 条目"
+        return "confirmed", "已登记"
+    return "confirmed", "已登记"
+
+
+def _intake_item_confirmed(v):
+    """判定 A 类五项中的一项是否**已确认**（不只是"非空"）。布尔版（供简洁调用）。
+
+    背景（D2 实测复现）：此前 `cmd_loop intake` 与 `cmd_loop make-gate` 都只判
+    `not intake.get(k)`——而 A 类五项的登记格式是 dict
+    （见 references/task-intake-checklist.md:134）：
+        {"value": "高职大二", "status": "confirmed|suggested"}
+    一个 `status="suggested"`（**未确认**）的 dict 是非空的 ⇒ `intake.get(k)` 为真
+    ⇒ 被判为已确认 ⇒ 直接放行进制作。这与
+    references/task-intake-checklist.md:158-159 的硬要求
+    「A 类 5 项 status 必须全为 confirmed——存在 suggested 即不得进入制作阶段」
+    **直接矛盾**，且是"文档说要拦、代码不拦"的典型双声明失效。
+
+    ⚠ v3.18.0：核心判据统一在 `_intake_item_state()`（三态：missing / unconfirmed /
+      confirmed）；本函数只是它的布尔薄封装，供不需要区分"缺失 vs 未确认"的调用方使用。
+      两者**必须同源**——曾并存两份实现，正是本项目「同一口径两处漂移」的典型病灶。
+    """
+    state, _detail = _intake_item_state(v)
+    return state == "confirmed"
+
+
+def _intake_a_gaps(intake):
+    """把 A 类五项分成两组：**缺失**（没登记）与**未确认**（登记了但 status 非 confirmed）。
+
+    返回 (missing, unconfirmed) 两个列表，二者元素均为 A 类键名。
+    · missing     —— 键不存在，或值为空（None / "" / 空 list / 空 dict）
+    · unconfirmed —— 值非空但 `_intake_item_state(v)` 判为 "unconfirmed"
+
+    为什么必须区分这两组：两者对主理人的**处置动作不同**——
+      缺失 → "还没问，去问"；未确认 → "问过了但用户没拍板，去追认"。
+    混在一个 missing_A 里等于把"未确认"伪装成"缺失"，用户会以为没登记过，
+    从而绕过"追认"这一步直接重填——那正是 D2 缺陷得以放行的心理路径。
+    """
+    intake = intake if isinstance(intake, dict) else {}
+    missing, unconfirmed = [], []
+    for k in LOOP_INTAKE_A:
+        state, _detail = _intake_item_state(intake.get(k))
+        if state == "missing":
+            missing.append(k)
+        elif state == "unconfirmed":
+            unconfirmed.append(k)
+    return missing, unconfirmed
+
+
 def _sha256_file(path):
     """文件 sha256——冻结/失效判定与原件只读核验的唯一证据源（禁凭印象说话）。"""
     h = hashlib.sha256()
@@ -3494,7 +4081,11 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
     """
     lb = cfg.get("loop_b", {}) or {}
     la = cfg.get("loop_a", {}) or {}
-    # ── intake：九项登记（A 类五项齐 + 非空才算 confirmed）
+    # ── intake：九项登记（A 类五项齐 + **全部 confirmed** 才算 confirmed）
+    # v3.18.0 D2：此前只判 `not intake.get(k)`（非空即算确认），导致 A 类五项以
+    #   {"status": "suggested"}（未确认）登记时被判为已确认并放行进制作——
+    #   与 references/task-intake-checklist.md:158-159「存在 suggested 即不得进入制作」
+    #   直接矛盾。现统一走 _intake_a_gaps()：区分「缺失」与「未确认」两组。
     if args.action == "intake":
         if not args.file:
             print("用法错误：intake 必须带 --file <九项JSON>", file=sys.stderr)
@@ -3506,15 +4097,32 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             print(f"用法错误：--file 解析失败（{e}）", file=sys.stderr)
             return 2
         intake = st.setdefault("intake", {})
+        if getattr(args, "replace", False):
+            # ── v3.18.0：--replace 整体替换 ──────────────────────
+            # 缺陷（实测发现）：intake 此前是**增量合并**——本次文件里删掉的键
+            #   在状态文件里**永远删不掉**（旧值仍在）⇒ 用户/主理人"撤回某一项"
+            #   在系统里无法表达，缺失项会一直显示为已登记。
+            #   ⇒ 提供显式 --replace：本次文件即完整快照（未出现的键视为未登记）。
+            #   默认仍是合并（**向后兼容**既有递进式登记流程）。
+            intake.clear()
         for k, v in data.items():
             intake[k] = v
-        missing = [k for k in LOOP_INTAKE_A if not intake.get(k)]
-        intake["confirmed"] = not missing
-        _loop_hist(st, "intake", {"filled": sorted(data.keys()), "missing": missing})
+        missing, unconfirmed = _intake_a_gaps(intake)
+        # ⚠ intake["confirmed"] 的语义与类型**不变**（仍是 bool），保持向后兼容：
+        #   它现在的含义从"五项非空"收紧为"五项齐且全部 confirmed"。
+        intake["confirmed"] = not (missing or unconfirmed)
+        _loop_hist(st, "intake", {"filled": sorted(data.keys()),
+                                  "missing": missing, "unconfirmed": unconfirmed})
         _write_loop_state(w, "b", st)
-        out = {"confirmed": intake["confirmed"], "missing_A": missing}
+        # missing_A 字段名保留（兼容既有消费方）；新增 unconfirmed_A 区分"未确认"。
+        out = {"confirmed": intake["confirmed"], "missing_A": missing,
+               "unconfirmed_A": unconfirmed}
+        if unconfirmed:
+            out["note"] = (f"A 类五项中有 {len(unconfirmed)} 项登记了但 status 不是 confirmed"
+                           f"（{unconfirmed}）——须先在轮报中请用户追认，"
+                           f"存在 suggested 即不得进入制作")
         print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0 if not missing else 1
+        return 0 if not (missing or unconfirmed) else 1
 
     # ── add-item：条目登记（八字段中的可判定部分落盘）
     if args.action == "add-item":
@@ -3853,8 +4461,22 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         reasons = []
         intake = st.get("intake", {})
         if not intake.get("confirmed"):
-            miss = [k for k in LOOP_INTAKE_A if not intake.get(k)]
-            reasons.append(f"九项 A 类未齐（缺 {miss}）——不得用仓库默认值冒充")
+            # v3.18.0 D2：与 cmd_loop intake 走**同一个**判定函数 _intake_a_gaps()，
+            #   理由里必须写明是"未确认"还是"缺失"——两者的处置动作不同：
+            #   缺失 = 还没问；未确认 = 问过了但用户没拍板（须追认）。
+            miss, unconf = _intake_a_gaps(intake)
+            if miss:
+                reasons.append(f"九项 A 类未齐（缺 {miss}）——不得用仓库默认值冒充")
+            if unconf:
+                reasons.append(
+                    f"九项 A 类有 {len(unconf)} 项**未确认**（{unconf}）："
+                    f"登记了但 status 不是 confirmed——存在 suggested 即不得进入制作，"
+                    f"须先在轮报中请用户追认")
+            if not miss and not unconf:
+                # A 类五项其实都齐且都 confirmed，但 confirmed 标记为 false——
+                #   说明标记与实际不一致（可能被人手改过），必须显式暴露而不是放行。
+                reasons.append("intake.confirmed 标记为 false，但 A 类五项实际齐备且均已确认——"
+                               "标记与内容不一致，请重跑 `loop intake` 同步后再进制作")
         if c["pending"]:
             reasons.append(f"仍有 {len(c['pending'])} 条未冻结：{c['pending'][:10]}")
         if c["invalidated"]:
@@ -3930,17 +4552,102 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
 
 
 # ─────────────────────────── main ───────────────────────────
+def _read_json_readonly(path):
+    """只读读 JSON；文件不存在或解析失败返回 None（**不创建、不修改任何文件**）。
+
+    为什么不用 `read_state` / `_read_loop_state`：那两个都会经 `os.makedirs` 顺带
+    建出 `.workbuddy/` 目录，且 `read_state` 在解析失败时会打印告警并按空状态处理。
+    doctor 是**纯只读**的探针（iron-rules.md:73 定为"冷启动/任何新会话首查"），
+    它跑一次不该在工作空间里留下任何痕迹，故自己走一条纯读路径。
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠ {os.path.basename(path)} 解析失败（{e}），按无此状态处理", file=sys.stderr)
+        return None
+
+
+def _pending_work(w):
+    """扫工作空间里的**未完成任务**，产出冷启动可执行的恢复指引。
+
+    背景（D3 实测缺陷）：`cmd_doctor` 此前**完全不读** `loopB_state.json` /
+    `task_state.json`——会话中断后"是否恢复、从哪恢复"完全靠主理人（LLM）的记忆，
+    而 references/iron-rules.md:73 把 doctor 定为「冷启动/任何新会话首查」。
+    记忆不可靠 ⇒ 会话一断，"第 2 轮还有 3 条待冻结"这种事实就查不到了。
+
+    判定口径：
+      · loopB_state.json 存在且 `termination` 为空 → 未结束 → 报 kind="loopB"
+        （termination 非空 = 已终止，属历史，无需恢复）
+      · task_state.json 存在且 `current_stage` 不为 0 → 未完成 → 报 kind="task"
+        （current_stage == 0 = 任务刚初始化、尚未开工，无需恢复）
+
+    返回值：
+      · 无任何未完成项 → `None`（doctor 输出里为 null，**不输出空壳**）
+      · 有一项 → 该项字典（顶层带 `kind`，字段即 spec 要求的那几个）
+      · 有多项 → 以**优先级最高**的那项为主（顶层 `kind` + 该项字段），
+        其余放进 `also_pending` 列表（不丢信息）。
+
+    优先级：loopB > task。理由：loopB 处在"逐轮冻结/制作门"链条上，
+    恢复它需要逐条追认（动作更重、更不可逆），先报它更安全。
+    """
+    entries = []
+
+    # ── Loop B：未终止即未完成 ────────────────────────────────
+    lb = _read_json_readonly(os.path.join(w, ".workbuddy", "loopB_state.json"))
+    if isinstance(lb, dict) and not lb.get("termination"):
+        c = _loop_counts(lb)
+        hist = lb.get("history") or []
+        last_ts = hist[-1].get("ts") if hist and isinstance(hist[-1], dict) else None
+        entries.append({
+            "kind": "loopB",
+            "current_round": lb.get("current_round"),
+            "pending_items": c["pending"],
+            "frozen_items": c["frozen"],
+            "last_action_ts": last_ts or lb.get("created_at"),
+            # resume_hint 必须是**可直接执行**的命令串（不是散文描述）：
+            # `loop resume` 只报不推进并置 awaiting_user_confirm=true（等用户确认）。
+            "resume_hint": f"python3 scripts/harness.py loop resume --workspace {w}",
+        })
+
+    # ── task：current_stage != 0 即已开工未完成 ───────────────
+    ts = _read_json_readonly(os.path.join(w, ".workbuddy", "task_state.json"))
+    if isinstance(ts, dict) and ts.get("current_stage") not in (None, 0):
+        entries.append({
+            "kind": "task",
+            "current_stage": ts.get("current_stage"),
+            "next_action": ts.get("next_action", ""),
+            # 冷启动恢复入口 = 读状态最小集（references/sop-stages.md:207 的
+            # "Read task_state.json 最小集"），next_action 指明读完之后该干什么。
+            "resume_hint": f"python3 scripts/harness.py state get --workspace {w}",
+        })
+
+    if not entries:
+        return None
+    primary = entries[0]
+    if len(entries) > 1:
+        primary = dict(primary)
+        primary["also_pending"] = entries[1:]
+    return primary
+
+
 def cmd_doctor(args):
     """v3.4.0 R1：LLM 友好"可发现性表"——一次返回所有子命令的 usage/examples/exit_codes。
     根因（2026-10-14 实测 6 步 3 步参数错位）：argparse 仅在运行时暴露错误，
     AI 冷启动/新会话无 README 可查，本子命令填补"可发现性"缺口。
+
+    v3.18.0 D3：新增顶层 `pending_work` 段——冷启动**自动发现**未完成任务
+      （扫 loopB_state.json / task_state.json，见 `_pending_work`）。
+      无未完成项时该段为 null（不输出空壳）。本命令**只读**，不写任何状态文件。
     """
     table = [
         # (子命令, 一句话用途, 必填参数, 常用可选, 退出码, 示例)
         ("doctor",     "可发现性表（你正在看）",                     "无",      "无",          "0", "harness.py doctor"),
         ("preflight",  "开工前成员可用性预检",                        "--team",  "--workspace", "0/1", "harness.py preflight --team vet-med-ppt-team"),
         ("route",      "复杂度 L0-L3 → spawn 计划",                  "--level", "--workspace", "0/1", "harness.py route --level L2"),
-        ("state",      "任务状态机读写（init/get/set/validate）",      "action",  "--stage/--key/--value", "0/1/2", "harness.py state set --stage 1 --key deliverable --value <path>"),
+        ("state",      "任务状态机读写（init/get/set/validate/compact）", "action",  "--stage/--key/--value", "0/1/2", "harness.py state set --stage 1 --key deliverable --value <path>"),
         ("budget",     "预算计数（spawn/react/rework）",             "action",  "--kind/--n",  "0/1/2", "harness.py budget check --kind spawn"),
         ("trace",      "执行日志 JSONL（log/report）",                "action",  "--event/--actor/--detail", "0/2", "harness.py trace report"),
         ("spawn",      "v3.4.0：显式记录某成员 spawn（带 token 估算）",  "--agent", "--task-id/--input-bytes/--output-bytes", "0/1/2", "harness.py spawn --agent dvm-content-expert --task-id t1 --input-bytes 1200 --output-bytes 800"),
@@ -3959,8 +4666,10 @@ def cmd_doctor(args):
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
     ]
-    out = {"version": "v3.17.0", "executable": __file__,
+    out = {"version": "v3.18.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
+           # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
+           "pending_work": _pending_work(wkspace(args)),
            "exit_codes": {
                "0": "正常通过",
                "1": "存在需处置项（降级/预算超/状态非法/P0 阻断）",
@@ -4279,7 +4988,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.17.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.18.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -4307,6 +5016,10 @@ def main():
                    help="任务 ID（坍缩产物落盘用；不传则读 task_state.json 的 task_id）")
     p.add_argument("--rationale", default="",
                    help="选型理由（**主理人填**，脚本不猜）；不填则坍缩产物标记为待补")
+    # v3.18.0：专家面板选人——逗号分隔的 expert_panel id
+    p.add_argument("--panel", default="",
+                   help="坍缩选中的子专家 id（逗号分隔，取自该域 expert_panel）。"
+                        "**主理人显式指定**——脚本不按关键词自动选人")
     _ws(p)
     p.set_defaults(func=cmd_route)
 
@@ -4324,12 +5037,28 @@ def main():
     p.add_argument("--task-id", dest="task_id", default="", help="任务 ID")
     p.add_argument("--rationale", default="",
                    help="confirm：选型理由（主理人填；为空则拒绝确认）")
-    p.add_argument("--actor", default="team-lead", help="confirm：确认人")
+    # v3.18.0：--decision 改为**必填语义**（缺失即 exit 2，沉默不构成确认）
+    p.add_argument("--decision", default="",
+                   help="confirm：**用户裁决语义**（必填；缺失即拒绝确认）。"
+                        "例：\"用户已阅并确认该专家团配置\"")
+    # v3.18.0：--actor 默认值由 "team-lead" 改为空 —— 执行方自己不算「用户确认」；
+    #   留空时按「未指定确认人」拒绝（须显式传 user 或真实裁决人标识）
+    p.add_argument("--actor", default="",
+                   help="confirm：确认人标识（**不得**填 team-lead——执行方自己不构成用户确认；"
+                        "例：user / 用户本人标识）")
     _ws(p)
     p.set_defaults(func=cmd_collapse)
 
+    # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 六项）
+    p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（六项；未就绪 exit 1 阻断）")
+    p.add_argument("--json", action="store_true", help="以 JSON 输出")
+    _ws(p)
+    p.set_defaults(func=cmd_gate1_check)
+
     p = sub.add_parser("state", help="状态机读写与校验")
-    p.add_argument("action", choices=["init", "get", "set", "validate"])
+    # v3.18.0 G6：新增 compact——`state validate` 报「必须 compaction」时，
+    #   给的是一条**可执行命令**而不是一句没有下文的报错。
+    p.add_argument("action", choices=["init", "get", "set", "validate", "compact"])
     p.add_argument("--workflow", default="WF-1")
     p.add_argument("--stage", type=int)
     # v3.17.0：task_id 原子比对的显式入口——带上它才能验证"本次操作属于这个任务"
@@ -4508,6 +5237,9 @@ def main():
     p.add_argument("--max-rounds", dest="max_rounds", type=int, default=0,
                    help="start：任务级轮次上限（覆盖 harness.yaml#loop_b.budgets.max_rounds，须经用户确认）")
     p.add_argument("--file", help="intake：九项 JSON 路径 / add-item：条目内容文件路径")
+    p.add_argument("--replace", action="store_true",
+                   help="intake：本次文件即**完整快照**（未出现的键视为未登记）。"
+                        "默认是增量合并（向后兼容递进式登记）")
     p.add_argument("--items", help="freeze：条目 ID 列表，形如 I-001,I-002 或 I-001=a.md,I-002=b.md")
     p.add_argument("--item", help="rework：条目 ID")
     p.add_argument("--page", help="add-item：稳定页面 ID（如 s12）")

@@ -6,6 +6,236 @@
 
 ---
 
+## [v3.18.0] - 2026-10-25（第四次从零独立诊断：坍缩真专家团 + 确认强制化 + 联网端点入 prompt）
+
+> **诊断方式**：不沿用任何历史结论，按最新 12 维度需求为唯一基准重新编排
+> 「4 组并行子代理从零读文件 + 主理人逐条交叉核验（Grep 阳性对照）+ 运行时实测」。
+> 诊断证据：4 组独立报告（含 file:line 原文 + 实跑输出）+ 主理人复核实测。
+
+### 诊断期两条决定性实测证据
+
+1. **坍缩在真实运行中从未被触发过**：`.workbuddy/harness_trace.jsonl` 共 35 条事件，
+   **全部是 `team_create`**，且 `domain` 字段**全为 `null`**（L1=9 / L2=17 / L3=9）；
+   trace 中**无一条** `spawn` / `member_return` / `gate` 事件。
+2. **发布前体检实测 120.26 秒**（包内文档自陈「诊断耗时 <1s」）——根因是第 7 项
+   串行跑 `scripts/` 下全部 `test_*.py`（单套 `timeout=180`），其中联网套件
+   `test_three_source_online.py` 真联网约 25 秒。
+
+### ① 【P0·G1】坍缩从「注入 1 段域人格」升级为「坍缩出匹配的资深专家团队」
+
+**缺陷**（规格 vs 事实落差）：
+- 规格原文要求「依据输入的 PPT 或指定主题/模块（如**禽流感→禽流感病毒学家+禽病学家**）
+  动态坍缩生成匹配的资深专家团队」；
+- 事实：`domain-profiles.yaml` 只有**单个** `role_persona`（title/background/stance），
+  三域的 `member_bindings` **完全相同**（仅 `dvm-content-expert` 吃人格注入），
+  成员集恒为固定 5 人 ⇒ **「专家团」在数据结构与代码路径上都不存在**。
+
+**处置**：
+- `config/domain-profiles.yaml`：三域各增 `expert_panel[]`（子专家池，声明式）——
+  animal-medicine 4 位（avian_virologist / poultry_pathologist / vet_pharmacologist /
+  vet_public_health）、computing 3 位、business-training 3 位；
+  每位含 `title` / `background` / `stance` / `duties` / `duty_boundary` / `coverage_axes` /
+  `activation_hints`（后者是**给人看的选型线索**，脚本严禁据此自动选人）。
+- `scripts/harness.py`：
+  - 新增 `_select_experts()`（选人逻辑：主理人显式指定优先；未指定 → `pending_selection`，
+    **脚本不替用户做专家选型**）；非法 id **先于落盘**拦截（不落半成品）；
+  - 坍缩产物新增 `expert_panel`（池）+ `selected_experts`（本次选中）；
+  - `route` 新增 `--panel <id1,id2>`，并把 `expert_panel_pool` / `selected_experts` /
+    `expert_selection_status` 输出到 plan（供主理人**输出给用户对齐**）。
+- `scripts/assemble_domain_prompt.py`：装配产物新增「专家面板」段——**逐位子专家分段渲染**
+  （称号/背景/立场/职责/职责边界/覆盖知识轴），成员据此知道自己此刻扮演哪几位专家、各管哪块。
+
+**验证（实跑）**：
+```
+$ harness.py route --level L2 --domain animal-medicine --panel avian_virologist,poultry_pathologist ...
+  expert_selection_status: explicit
+$ harness.py collapse confirm --id animal-medicine --task-id T-G1 --actor user --decision "..." ...
+  selected_experts: 2 位
+$ assemble_domain_prompt.py --member dvm-content-expert --collapse-artifact <已确认产物> ...
+  ✅ 装配完成（27053 字符）| domain_context=effective
+  产物核验：▍专家 1：禽流感病毒学家 / ▍专家 2：禽病学专家
+```
+
+### ② 【P0·G2】「坍缩结果经确认后方可生效」从**声明**升级为**代码强制**
+
+**缺陷**：此前未确认态只打警告、仍 `rc=0` 并写出**完整 spawn prompt**（实测 24212 字符）
+⇒「未确认照样能 spawn」；`test_spawn_injection.py` 里名为 `test_T7b_..._is_blocked` 的用例
+**实际断言 `rc == 0`**；`gate1_freeze` 六项**全包无任何代码读取**；
+`collapse confirm` 的 `--actor` 默认 `"team-lead"` ⇒「主理人自己确认自己」畅通无阻。
+
+**处置**：
+- `scripts/assemble_domain_prompt.py`：新增 `--require-confirmed`（**默认开启**）与逃生口
+  `--allow-unconfirmed`；未确认态**拒绝产出装配产物**（`rc=5`，且不写文件）；
+- `scripts/harness.py`：`collapse confirm` 新增**必填** `--decision`（用户裁决语义，缺失 `rc=2`）
+  与 `--actor` 校验（**不得为 `team-lead`**，且不可缺省）；坍缩产物新增 `confirmed_decision`；
+  新增 `gate1-check` 子命令——把 `config/harness.yaml#gate1_freeze` 六项变成**机器可校验判据**
+  （受众/课时/模板/范围/验收/**已坍缩的专家团配置**），未就绪 `rc=1` 并逐项说明缺什么；
+- `scripts/test_spawn_injection.py`：T4/T4b 改为断言**真阻断**（`rc=5` + 不写文件），
+  新增 T4c 验证 `--allow-unconfirmed` 逃生口（放行但**仍不注入域人格**），
+  T7 端到端补 `--panel` / `--decision` / `--actor user` 与「两位子专家须被注入」断言。
+
+**验证（实跑）**：未确认装配 `rc=5` 且 `spawn.md` 不存在；缺 `--decision` `rc=2`；
+`actor=team-lead` `rc=2`；未选人时 `collapse confirm` `rc=1`；非法 `--panel` `rc=2` 且未落盘。
+
+### ③ 【P0·D1】机构权威源实端点**注入成员 prompt**（此前为 0）
+
+**缺陷**：`assemble_domain_prompt.py` 渲染 `evidence_hierarchy` 时只挑 5 个子键，
+`institutional_endpoints`（MSD 兽医手册 / WOAH 陆生法典 / WOAH 诊断试验与疫苗手册 /
+WOAH 疾病卡 / FAO 动物卫生 / WHO 人畜共患，共 6 条**实测可达端点**）**被丢弃**
+⇒ 成员只拿到机构**名称**、只能盲搜网页，**恰好违反同文件 `institutional_endpoints_note`
+自立的纪律**（"机构轴 = 端点直达，不得盲搜网页"）。
+
+**处置**：装配器新增「机构权威源实端点」段，逐条渲染 name/role/status/endpoint/
+retrieval_patterns/note/license_rule + 该纪律原文。
+
+**验证（实跑，装配产物 grep 计数）**：`msdvetmanual` 0→**6**、`woah.org` 0→**13**、
+`fao.org` 0→**6**、`who.int` 0→**5**；端点条目 7 处。
+
+### ④ 【P1·G5】默认模板**不再硬编码个人机器路径**
+
+**缺陷**：`config/harness.yaml#loop_b.defaults.default_template` 硬编码
+`/Users/biodog/.../OneDrive-Personal/.../禽病防治技术PPT模板.pptx`，且它是**闸1 冻结项**
+（`gate1_freeze.template`，required: true），V1 页眉 / V3 取色等验收判据全挂在它上面；
+该行还**不在任何 DOMAIN_EXAMPLE 哨兵块内**。
+
+**处置**：置 `null`（包内**不预置任何模板文件**）；模板实际路径改由**工作区模板登记册**
+`<工作区>/.workbuddy/templates/template_registry.json` 提供（`template_migrate.py register`）；
+模板**约束**（三条硬约束 + 指纹 + GEO-003 基线用法）留在 `references/default-template-profile.md`
+（唯一源）；新增 `template_profile_ref` 指向它。缺模板时 `gate1-check` 报「模板待提供」并阻断闸1，
+**不静默回落任何路径**。
+
+### ⑤ 【P1·G7】`marketplace.json` 版本漂移 + 巡检盲区
+
+**缺陷**：两份 `marketplace.json` 的 `plugins[0].version` 仍停在 **2.2.0**（包内实际 3.17.0），
+而体检第 14 项只核 8 处（**全是包内源**）⇒ **不覆盖 marketplace** —— 安装入口侧长期版本不符
+且**体检全绿**。这是「声明层≠执行层」在**发布侧**的实例。
+
+**处置**：4 份 marketplace.json 同步版本号；第 14 项新增 2 处 marketplace 校验
+（注意其 `version` 在 `plugins[0]` 下，不能复用 yaml 正则，须走 JSON 解析），
+并更新告警处置文案。**验证**：第 14 项输出由「8 处一致」变为「**10 处一致**」。
+
+### ⑥ 【P1·G8】发布前体检耗时**分层**（实测 120s → quick 16s）
+
+**缺陷**：全量体检实测 **120.26 秒**，而包内自陈「诊断耗时 <1s」；`--quick` 开关
+（跳过第 7 项回归测试）**存在但无任何文档/提示告知使用者** ⇒ 读者只会跑 120 秒那条。
+
+**处置**：`UPGRADE.md` 的必做段显式列出 `--quick`（日常改包，约 16 秒）与全量（发布前，含回归）；
+`ensure_settings.py` 全量模式启动时打印分层提示与实测耗时。
+
+### ⑦ 文档同步
+
+- `agents/vet-med-ppt-team-team-lead.md`：「成员人设注入协议」新增**专家面板与选人**四步表
+  （route --panel → 输出给用户对齐 → collapse confirm --decision/--actor user → gate1-check）、
+  域上下文状态表改为「未确认 → **装配器直接拒绝**（exit 5）」、新增模板来源说明；
+  闸1 行补「选域与选人」步骤与 `gate1-check` 自检命令。
+
+### ⑧ 【P0·D2】Loop B intake 确认态校验（此前「已填但未确认」照样放行）
+
+**缺陷**（实测复现）：`harness.py` 的 intake 与 make-gate 只判 `not intake.get(k)`，
+而 A 类五项的登记格式是 dict（`{"value": ..., "status": "confirmed|suggested"}`）——
+`status="suggested"`（**未确认**）的 dict 非空 ⇒ 被判为已确认 ⇒ **直接放行进制作**，
+与 `references/task-intake-checklist.md:158-159`「存在 suggested 即不得进入制作阶段」**直接矛盾**。
+
+**处置**：
+- 新增 `_intake_item_state()`——**三态**判定（missing / unconfirmed / confirmed）：
+  dict 必须 `status == "confirmed"`；list 元素带 status 时要求至少一条 confirmed；
+  **纯标量保持旧行为**（非空即已确认，不破坏既有递进式登记）；
+  `_intake_item_confirmed()` 降为薄封装（**两处实现必须同源**——曾并存两份，正是本项目
+  「同一口径两处漂移」的典型病灶）；
+- intake 分支输出新增 `unconfirmed_A`，把「缺失」与「未确认」**分开报告**
+  （处置动作不同：缺失=去问；未确认=去追认。混在一起等于把未确认伪装成缺失，用户会
+  绕过"追认"直接重填）；
+- make-gate 分支走**同一个**判定函数；
+- 新增 `loop intake --replace`：本次文件即**完整快照**（此前是增量合并⇒删掉的键永远删不掉，
+  用户"撤回某一项"在系统里无法表达）。默认仍是合并（向后兼容）。
+
+**验证（实跑）**：全 suggested → rc=1 且 `unconfirmed_A` 列全五项；全 confirmed → rc=0；
+纯标量 → rc=0（向后兼容）；缺两项 + `--replace` → rc=1 且 `missing_A` 精确列出那两项。
+
+### ⑨ 【P0·D3】冷启动**自动发现**未完成任务（维度 12）
+
+**缺陷**：`harness.py doctor`（新会话首查命令）**不读** `loopB_state.json` / `task_state.json`
+⇒ 会话中断后"是否恢复、从哪恢复"完全靠主理人记忆，**无机器托底**。
+
+**处置**：`doctor` 输出新增顶层 `pending_work` 段——扫 Loop B 状态（termination 为空即未结束）
+与 task_state（current_stage ≠ 0），报出轮次/待办/冻结项/下一步，并给出**可直接执行**的
+`resume_hint` 命令串。**无状态文件时该段为 null**（不输出空壳）。**只读**，不修改任何状态。
+
+**验证（实跑）**：空工作区 → `pending_work = null`；造未结束 Loop B + task_state →
+输出 `kind=loopB`（第 2 轮 / 待办 I-001 / 已冻 I-002）+ `resume_hint` 含 `loop resume`。
+
+### ⑩ 【P0·G6】`state compact` 状态压缩（此前「必须 compaction」只是一句报错）
+
+**缺陷**：`state validate` 报「状态文件 N bytes 超过上限，必须 compaction」，
+但**全包无任何 compaction 实现**（grep `compact` 在 scripts/ 下只有 init 置 `{}` 与报错文案）
+⇒ 超限后只能人工手改状态文件。
+
+**处置**：新增 `harness.py state compact`——
+必保 `task_id` / `workflow` / `current_stage` / `next_action` / `budget` / `tool_probe_results`；
+`stage_history` 只留最近 N 条（N = `config/harness.yaml#context.state_history_keep`，默认 10）；
+`user_confirmations_pending` 只留未决项；**丢弃动作全部记进 `compaction` 账本**（不静默）；
+原子写 + 写 `compaction` trace 事件（事件名已登记进 `observability.trace_events`）。
+
+**验证（实跑）**：117995 字节 → `state validate` rc=1 → `state compact` → 23837 字节 →
+`state validate` rc=0；必保六项全在；`stage_history` 裁到 10 条；账本记录丢弃 50 条。
+
+### ⑪ 【P0·G3】配图检索脚本（此前端点只有声明、**零实现**）
+
+**缺陷**：`domain-profiles.yaml` 登记了 Europe PMC 端点与许可规则，但**脚本侧零实现**
+（无下载器、无 API 客户端）⇒ 配图能力不可复现、不可审计、换机器即静默归零。
+
+**处置**：新增 `scripts/fetch_oa_image.py`——**端点从域档案读**（不硬编码 URL）；
+下载 → 落 `<out>/images/` → **回填 manifest 三字段**（`source_url` / `doi_pmcid` /
+`license_note`）；**许可红线**：许可规则缺失或含"待核实/未明"等标记 ⇒ **拒绝下载**（exit 4）
+并标 `[待核实]` 挂账，**绝不编造许可**；退避参数从 `config/domain_config.yaml#image_fetch.retry`
+读且**每次退避显式告警**（不静默 sleep）；新增 `scripts/test_fetch_oa_image.py`（7 用例，不依赖真实网络）。
+
+**验证（实跑）**：7/7 OK；反例——把端点改成硬编码常量后 T5 **精确报警**
+（"脚本未使用域档案里的端点——说明端点被硬编码了"），复原后恢复绿。
+
+### ⑫ 【P0·G4】图注要素统一为「通用骨架 + 域扩展」
+
+**缺陷**：图注要素**四套定义并存**（`visual-rules.yaml#caption_five_elements` 域口径 5 项 /
+`seven-dimension-rubric.md:107` 域无关 5 项 / `dvm-content-expert.md` 3 项 /
+各域 `caption_elements` 又不同），且 rubric **自认冲突并声明「本文件不替 config 做决定」**
+——即明知冲突而不调和 ⇒ 判据随域而变，与"通用诊断工作流"目标直接冲突。
+
+**处置**：
+- `visual-rules.yaml` 新增 **`caption_base_elements`（通用骨架·唯一源）**：对象 / 来源与许可 /
+  教学意义；`caption_five_elements` 保留为**历史键**（向后兼容）并标 deprecated；
+- 三域的 `caption_elements` → **`caption_extra_elements`（域扩展）**，并去掉与骨架重复的项
+  （如"教学意义"）；
+- `seven-dimension-rubric.md` 的 V5 口径改为指向骨架+扩展（**不再自认冲突**）；
+- `dvm-content-expert.md` / `visual-slide-designer.md` 的图注要求改为**引用唯一源**；
+- 装配器同时呈现骨架与域扩展并标注二者角色。
+
+### ⑬ 【P1】防漂移守卫升级为 **AST 真实读取点**判据
+
+**教训（v3.18.0 实测）**：T11a 守卫首版用 `if "institutional_endpoints" not in src` 判"是否接线"，
+反例验证时把读取改成 `inst_eps = []`（字面量仍在文件里）→ **守卫没红**——文本判据是假的。
+改为 **AST 真实读取点**采集（`X.get("k")` / `X["k"]` / 字典字面量三种形态），
+反例随即精确报警（"装配器无 institutional_endpoints 的真实读取点"），复原后恢复绿。
+
+新增守卫：`T11a` 面板/端点接线 · `T11b` SOP 须写选域选人四步 · `T11c` 面板 id 唯一且字段齐 ·
+`T11d` 图注骨架与域扩展**不得重复** · `T11e` 包内不得有第三套图注定义。
+**反例验证**：域扩展塞入骨架重复项 → T11d **精确报警**，复原后绿。
+
+### ⑭ 【P1】`test_trace_events.py` 去硬编码（同一口径两处漂移的又一次复发）
+
+该文件把「声明的事件列表」硬编码成 12 元组，而 v3.18.0 加了 `compaction` 事件后
+**误报失败**——正是「同一口径两处各写一套」的病灶。改为**从 yaml 读**（唯一源），
+并为 `compaction` 补真实触发路径（造大状态文件 → `state compact`）。
+
+### 回归
+
+`pytest scripts/` **187 passed / 3 skipped**（基线 167 → +20 用例，零失败）；
+`test_spawn_injection.py` 19/19 OK · `test_arch_drift.py` 16/16 OK ·
+`test_gate1_check.py` 7/7 OK · `test_fetch_oa_image.py` 7/7 OK · `test_trace_events.py` 10/10 OK；
+体检 23/23 通过（第 14 项 10 处版本一致；第 23 项域绑定残留 0）；
+双树 `diff -rq` 零差异。
+
+---
+
 ## [v3.17.0+批次B] - 2026-10-25（v3.17.0 发布后从零复核的修复批次）
 
 > **为什么不是 v3.18.0**：本批次是对 v3.17.0 的**发布后从零复核**发现的缺陷修复，
