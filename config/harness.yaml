@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.19.4"
+version: "3.20.0"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -266,6 +266,10 @@ delta_gate:
   insert_font_at_creation: true    # 新元素文字规格创建时即达合规（正文≥12pt），禁"先插后调"两步走
   image_caption_requires_reading: true  # 图像类图注/讲稿必须先逐张判读图像本体；判读不出不得写
   caption_missing_element_policy: "explicit_todo"  # 图注要素缺项必须显式挂账，禁静默省略
+  # ⚠ v3.20.0 诚实标注：**insert_font_at_creation 无执行器**——"创建时即设字体"是
+  #   **写入时行为**，成品文件态无痕迹（与 OOXML 病例 API-001 同型），结构性不可判定。
+  #   其余 8 键已由 scripts/loop_contract.py 落地（baseline/delta/空间审计/判读留痕/挂账），
+  #   执行面与不可判定面**不得混说**：不得因本键出现在输出里就宣称"已由代码强制"。
 
 # ── 双层 Loop 隔离（v3.8.0 增补 B）───────────────────────────
 # 背景：Loop A（改专家团工程）与 Loop B（处理用户真实课件）此前共用
@@ -301,6 +305,10 @@ loop_b:
     partial_accept_freezes_only_named: true  # 部分接受只冻结被点名条目
     rework_stays_in_round: true   # 返修仍属当前轮，不进位
     invalidation: "sha256"        # 内容文件哈希变化 → 该条目批准自动失效，须重审
+    # v3.20.0 新增（此前无此键，六项是 round-review-sop.md#5 里的文档数字，代码无从得知）：
+    #   轮报必展示项数——校验"六项齐全且非空"，**不锁键名**（SOP 只规定内容不规定键名，
+    #   锁键名等于另立一份 schema，与 SOP 漂移时又是一处双源）。
+    required_items: 6
   budgets:                        # 全部可调；达上限只暂停报告，禁止宣布通过
     max_rounds: 8
     max_items_per_round: 5        # v3.8.0 N3：每轮条目上限（小批是让用户真正读完的关键）

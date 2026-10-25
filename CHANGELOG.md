@@ -6,6 +6,122 @@
 
 ---
 
+## [v3.20.0] - 2026-10-26（33 键「声明未接线」收口：判据层从 Markdown 下沉为代码）
+
+> **起因**：v3.19.3 的 L3 逐键定性在 75 个死配置里确认了一个结构性事实——
+> `config/harness.yaml` 的 `loop_a`(4) + `loop_b`(20) + `delta_gate`(9) = **33 键**
+> **整批"配了但没有任何代码读取者"**。v3.9.0「双层 Loop 契约下沉批」只把**动作层**
+> 下沉为代码（loop 子命令 13 个动作），而 yaml 里的**默认值段 / 轮审判据 /
+> 增量门禁判据**三类仍躺在配置里当 Markdown 纪律用。
+> 本版把其中**可判定的 32 键**全部落为代码判定，剩 3 键据实标注为不可判定。
+
+### ★ 结论：32 键已接线，3 键据实标注不可判定（不伪造执行器）
+
+| 段 | 键数 | 处置 | 执行面 |
+|---|---|---|---|
+| `loop_a` | 5（含 `enabled`） | 全接线 | 批次门（先确认/最小补丁/回归必跑）+ 环开关 + 状态路径 |
+| `loop_b` | 21（含 `enabled`） | 全接线 | 单写者/原件只读/并存守卫/轮审五判据/检索预算/默认档 |
+| `delta_gate` | 9 | **8 接线 + 1 不可判定** | 基线字段/自引入阻断/报告格式守恒/空间审计/判读留痕/图注挂账 |
+| 合计 | 34 | 32 接线 + 2 不可判定（`trigger`×2 属语义判定，`insert_font_at_creation` 属写入时行为） | |
+
+### ① 新增 `scripts/loop_contract.py`：判定层唯一源（795 行）
+
+- **纯函数、全配置驱动、禁硬编码**：阈值、字段名、格式串、路径一律从 `config/harness.yaml` 读；
+  缺键/空值/非法值一律**告警 + 显式回落**，回落写进 `notes` 由调用方透出（静默回落 = 不设防）。
+- **只做确定性判定**：路径解析、集合比对、计数、格式与守恒校验。
+  "最小到什么程度算最小""判读是否属实"仍归人与 LLM——**不宣称自己判了**。
+- **回落表刻意用元组列表而非字典字面量**（`_FALLBACK = [(k, v), ...]` + `_FB = dict(_FALLBACK)`）：
+  `ensure_settings` 第 18 项用 AST 收集真实读取点，其中第③种形态是**字典字面量的字符串键**——
+  若回落表写成字典，它会被当成"有代码读取者"，于是**回落表自己把死配置刷成绿色**。
+
+### ② `scripts/harness.py`：loop 子命令从 13 动作扩到 23 动作
+
+新增 **Loop A 批次门**（`batch-open` / `batch-close` / `batch-status`）——
+此前 `confirm_before_each_batch` / `patch_discipline` / `regression_required` 三个键
+**零读取者**（把它们改成 false 不会有任何行为变化）。
+`batch-close` 三条判据：① 未 `--confirmed` → exit 1；② `regression_required` 没跑齐 → exit 1；
+③ `patch_discipline=minimal` → 用 `git status` 比对**实际改动集合 ⊆ 声明集合**。
+⚠ ③ 判的是"有没有超出声明范围"，**不是**"改得多不多"；包目录非 git 仓库时**不做比对并显式告警**。
+
+新增 **Loop B 判据动作**（`review` / `retrieval` / `baseline` / `delta` / `geo-baseline` / `defaults`）：
+- `review`：轮报六项齐全才让 `continue` 进位（此前只是文档纪律）
+- `retrieval`：每轮检索次数计数，超 `retrieval_budget_per_round` 即拦（此前该键零命中）
+- `baseline`：基线字段按 `delta_gate.baseline_fields` 逐项校验，**字段名来自配置**（加字段不用改代码）
+- `delta`：自引入新缺陷阻断 + 报告格式守恒校验（`P0 = 基线 + 自引入`）+ 空间审计
+- `defaults`：打印默认档 + 引用文件存在性核验 + 生成 intake 待确认模板
+  （**全部 status=suggested** —— 制作前置门只认 confirmed，"不得用仓库默认值冒充用户确认"由代码保证）
+
+### ③ 修一处真实漂移：Loop A 状态文件路径
+
+配置写 `<包>/.workbuddy/loopA_state.json`，代码此前硬写 `<工作区>/.workbuddy/loopA_state.json`
+——改配置不改行为。Loop B 两者恰好同值，故此漂移长期无人发现。
+
+### ④ 第 18 项从「提示不阻断」改为「阻断」
+
+v3.19.2 就报出了这 33 键，但因为**只提示不阻断**，它们在随后三轮里**反复被重新发现、反复未被处置**
+（v3.19.2 → v3.19.3 登记 → v3.19.4 逐键定性 → v3.20.0 才接线）。
+不阻断 ⇒ 每次都是"下次再说" ⇒ 核心禁忌永远清不干净。
+基线已归零后再出现死键，只可能是**新增**（新增配置忘接线 / 新增人读型忘登记），两种都须当次处置。
+
+### ⑤ 撤销 `loop_a`/`loop_b`/`delta_gate` 整段的人读型登记
+
+只保留 3 个确属不可判定的键，用带文件前缀的限定路径登记：
+`harness.loop_a.trigger` / `harness.loop_b.trigger`（判环是**语义判定**，代码不判环）、
+`harness.delta_gate.insert_font_at_creation`（"创建时即设字体"是**写入时行为**，
+成品文件态无痕迹，与 OOXML 病例 API-001 同型，**结构性不可判定**）。
+⚠ 执行面与不可判定面**不得混说**——不得因某键出现在输出里就宣称已由代码强制。
+
+### ⑥ 本批实测揪出的 3 个真缺陷（均由成员/独立验证发现，非自述）
+
+1. **标量接口被破坏 ⇒ 开关恒真（最严重）**：`enabled()` 等 5 个函数一度返回 `(值, 是否回落)` 元组，
+   而调用点是 `if not enabled(...)` —— **非空元组恒真 ⇒ 环启用检查永不拦截**。
+   "接线了却不设防"，比没接线更危险。现统一为标量，并在 `--self-check` 加了 6 项**类型守卫**。
+2. **`retrieval_check` 直接 TypeError**：`limit = retrieval_budget(cfg, notes)` 拿到元组就比大小。
+3. **`image_caption_requires_reading=false` 关不掉**：同上，`if not required:` 分支是死代码。
+
+三条都已由 `scripts/test_loop_contract.py`（87 例）加了**形态守卫**，下次同类缺陷在测试阶段就红。
+
+### ⑦ 版本号同步：10 处 → **12 处**
+
+新增 `config/language-profile.yaml` 与 `config/external-tools.yaml` 两处——它们带 `version` 键却
+**不在第 14 项巡检清单**（v3.19.0 新增文件时漏了巡检）。与第 14 项自己踩过的坑完全同型
+（4 处 → 8 处 → 10 处，每次都是"新发现一处漏掉"）。
+
+### ⑧ 文档追不上代码：`dual-loop-governance.md` §2 重写
+
+原文写"以上三条是配置声明 + 文档契约，不是代码级强制——`harness.py` 尚未实现
+`loop_a.forbidden_paths` 的写前校验"——**这句话自 v3.9.0 起就是错的**（`loop check-path` 已实现）。
+现改为逐条标注**实际强制面**：授权不互通=否（语义判定）/ 状态不互通=是 / 目录不互通=是（非沙箱）/
+单写者=是（不防冒名）/ 环总开关=是。**不得对外宣称"两环隔离已由代码完全强制"**。
+
+### 独立验证（16 条「改配置 → 行为跟着变」，全部通过）
+
+驱动真实 CLI（被测 harness.py 与被改 yaml **同源**，在临时副本里跑）：
+
+| 判据 | 反例 | 结果 |
+|---|---|---|
+| `loop_b.enabled` | 置 false | `status` 被拒（exit 1）✓ |
+| `loop_b.single_writer` | 改成他人 | 写动作被拒；改回则放行（不误杀）✓ |
+| `loop_b.coexist_with` | 撞 `state_file` | `start` 被拒（exit 2，不覆盖 task_state）✓ |
+| `loop_b.round_review.required` | 置 false | `continue` 不再因缺轮报被拦 ✓ |
+| `loop_b.budgets.retrieval_budget_per_round` | 改 10 | 第 11 次检索被拦；上限 30 则不拦 ✓ |
+| `delta_gate.baseline_fields` | 加 `export_pages` | 旧数据立刻判缺（字段名真来自配置）✓ |
+| `delta_gate.report_format` | 改格式串 | 报告行跟着变 ✓ |
+| `delta_gate.insert_spatial_audit` | 拿不出 lint 报告 | 按**未做**阻断（不是放行）✓ |
+| `delta_gate.miss_needs_human_review` | 基线缺字段 | 不按 0 处理，转人工复核 ✓ |
+| `loop_b.defaults.*` | 改受众等 | intake 模板内容跟着变，且 **status 全为 suggested** ✓ |
+
+### 诚实边界（本版不宣称的能力）
+
+- ① `loop_a.trigger` / `loop_b.trigger`：**判环是语义判定**，代码不判——"这句话在改专家团还是在改课件"
+  由主理人追问（dual-loop-governance §1 的追问表）。
+- ② `delta_gate.insert_font_at_creation`：**结构性不可判定**（写入时行为，成品文件态无痕迹）。
+- ③ `single_writer` **不防冒名**：平台无身份认证，成员照样可传 `--actor team-lead`。
+- ④ `check-path` **不是沙箱**：拦不住成员绕开脚本直接写文件（平台无 hook）。
+- ⑤ 判据层只做确定性判定，**不判内容的专业对错**。
+
+---
+
 ## [v3.19.4] - 2026-10-25（35 键逐键独立定性：抓出 3 个被批量登记埋没的漏消费）
 
 > **起因**：v3.19.3 的 L3 用「段名批量登记」把 75 死键压到 0。批量高效，

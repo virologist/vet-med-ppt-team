@@ -89,21 +89,18 @@ def patch_text(text, old, new):
     return text.replace(old, new, 1)
 
 
-def unpack(v):
-    """把取值函数的返回统一成 (值, 回落标志)；裸值形态的回落标志为 None。
+def _fallback_literal_is_dict(src):
+    """回落表 `_FALLBACK` 的声明处是不是**字典字面量**（第 18 项会当读取点收集）。
 
-    为什么需要这个适配：本模块这几个取值函数历史上返回 `(值, fell_back)` 二元组，
-    v3.20.0 收尾时正在统一成裸值。测试断言的是"值来自配置"这件事本身，
-    不该被返回形态迁移反复打断——故两种形态都认，`fell` 为 None 时跳过回落断言。
+    返回 True / False；找不到 `_FALLBACK` 赋值时返回 None（声明被改名/删除，
+    由调用方单独处理——不能让"找不到"悄悄等于"没问题"）。
     """
-    if isinstance(v, tuple) and len(v) == 2:
-        return v[0], v[1]
-    return v, None
-
-
-def same_shape(sample, value):
-    """按 sample 的返回形态包装 value——用于"破坏实现"时伪造同形状的常量返回。"""
-    return (value, False) if isinstance(sample, tuple) else value
+    import ast
+    for n in ast.parse(src).body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "_FALLBACK"
+                                             for t in n.targets):
+            return isinstance(n.value, ast.Dict)
+    return None
 
 
 def drop_line(text, line):
@@ -925,8 +922,10 @@ class TestT20ConfigGetters(_Base):
     delta_gate_cfg / loop_a_batch_cfg 的取值必须来自 yaml。"""
 
     def test_T20_positive_values_from_yaml(self):
-        self.assertTrue(unpack(LC.geo_baseline_required(self.cfg))[0])
-        self.assertEqual(unpack(LC.retrieval_budget(self.cfg))[0], 30)
+        # 这两个是**返回标量**的函数：直接断言，不做形态适配（接口已定，见
+        # TestScalarReturnContract——形态错了由那里的 assertIsInstance 红，此处不抹平）。
+        self.assertIs(LC.geo_baseline_required(self.cfg), True)
+        self.assertEqual(LC.retrieval_budget(self.cfg), 30)
         rr = LC.round_review_cfg(self.cfg)
         self.assertTrue(rr["required"])
         self.assertEqual(rr["required_items"], 6)
@@ -956,13 +955,13 @@ class TestT20ConfigGetters(_Base):
         """
         t = patch_text(HARNESS_TEXT, "    geo_baseline_required: true",
                        "    geo_baseline_required: false")
-        self.assertFalse(unpack(LC.geo_baseline_required(cfg_of(t)))[0])
+        self.assertIs(LC.geo_baseline_required(cfg_of(t)), False)
 
     def test_T20_reverse_retrieval_budget(self):
         """反例：budgets.retrieval_budget_per_round 30→12 ⇒ 返回值跟着变。"""
         t = patch_text(HARNESS_TEXT, "    retrieval_budget_per_round: 30",
                        "    retrieval_budget_per_round: 12")
-        self.assertEqual(unpack(LC.retrieval_budget(cfg_of(t)))[0], 12)
+        self.assertEqual(LC.retrieval_budget(cfg_of(t)), 12)
 
     def test_T20_reverse_round_review_items(self):
         """反例：round_review.required_items 6→4 ⇒ round_review_cfg 跟着变。"""
@@ -1021,11 +1020,9 @@ class TestT21FallbackVisibility(_Base):
         """
         t = drop_line(HARNESS_TEXT, "    retrieval_budget_per_round: 30\n")
         notes = []
-        v, fell = unpack(LC.retrieval_budget(cfg_of(t), notes))
+        v = LC.retrieval_budget(cfg_of(t), notes)
         self.assertEqual(v, 30, "缺键时应回落内置值 30")
-        if fell is not None:
-            self.assertTrue(fell, "必须标记为走了回落")
-        self.assertTrue(notes, "回落必须可见，不得静默（裸值形态下 notes 是唯一载体）")
+        self.assertTrue(notes, "回落必须可见，不得静默（标量接口下 notes 是唯一载体）")
         self.assertTrue(any("回落内置值" in n and "30" in n for n in notes),
                         f"note 必须写明回落到哪个值，实得 notes={notes}")
 
@@ -1073,6 +1070,80 @@ class TestT22Placeholders(_Base):
                          "relative/y.yaml")
 
 
+# ══════════════ 返回契约：标量接口的形态守卫 ══════════════
+class TestScalarReturnContract(_Base):
+    """返回**标量**的 6 个取值函数必须真的是标量——不得是 (值, 是否回落) 元组。
+
+    为什么单列一类（v3.20.0 实测的两个缺陷都出在这里）：
+      · `retrieval_budget` 返回元组 ⇒ `retrieval_check` 里 `used > limit` 直接
+        TypeError ⇒ 检索预算这条判据**完全没接上**（D1）；
+      · `image_caption_requires_reading` 返回元组 ⇒ `if not required:` 恒为假
+        ⇒ yaml 里把开关改 false，代码照样强制判读留痕（D2）。
+    共同机理：调用点写的是 `if not f(...)` / `used > f(...)`，而**非空元组恒为真**、
+    且不能与数值比较 ⇒ 开关形同虚设。这类缺陷靠"读代码"很难发现，
+    只能靠形态断言在测试阶段就红。
+
+    ⚠ 本类一律**直接断言**，不做任何形态适配：曾经为接口不稳定期加过
+      `unpack()`（同时接受标量与元组），它恰好会把本类要抓的缺陷抹平——
+      已被删除，接口已定，不允许再留"让断言永远为真"的旁路。
+    """
+
+    def test_scalar_shape_of_all_six_getters(self):
+        """正例：6 个取值函数的返回类型必须精确（是否回落一律走 notes）。"""
+        self.assertIsInstance(LC.enabled(self.cfg, "a"), bool, "enabled → bool")
+        self.assertIsInstance(LC.enabled(self.cfg, "b"), bool, "enabled → bool")
+        self.assertIsInstance(LC.original_readonly(self.cfg), bool,
+                              "original_readonly → bool")
+        self.assertIsInstance(LC.geo_baseline_required(self.cfg), bool,
+                              "geo_baseline_required → bool")
+        self.assertIsInstance(LC.image_caption_requires_reading(self.cfg), bool,
+                              "image_caption_requires_reading → bool")
+        self.assertIsInstance(LC.single_writer(self.cfg), str, "single_writer → str")
+        budget = LC.retrieval_budget(self.cfg)
+        self.assertIsInstance(budget, int, "retrieval_budget → int")
+        self.assertNotIsInstance(budget, bool,
+                                 "retrieval_budget 不能是 bool（bool 是 int 的子类，"
+                                 "`used > True` 会静默把上限当成 1）")
+
+    def test_D1_guard_retrieval_check_compares_scalar(self):
+        """D1 守卫：`used > limit` 必须能比——返回元组会直接 TypeError。
+
+        如果 `retrieval_budget` 退回元组形态，**retrieval_check()** 会从"判超预算"
+        变成"抛异常"，本条立刻红（不再需要靠人眼在 `--self-check` 输出里发现）。
+        """
+        ok, msg = LC.retrieval_check(self.cfg, 31)
+        self.assertIsInstance(ok, bool, "retrieval_check 第一返回值应是 bool")
+        self.assertFalse(ok, "31 > 30 应判超预算")
+        self.assertIn("30", msg, "上限值应来自配置而不是把元组打印出来")
+        self.assertTrue(LC.retrieval_check(self.cfg, 30)[0], "30 ≤ 30 应通过")
+
+    def test_D2_guard_image_caption_switch_off_is_reachable(self):
+        """D2 守卫：`image_caption_requires_reading=false` 这条分支必须**真能走到**。
+
+        如果这个函数退回元组形态，**image_caption_check()** 里 `if not required:`
+        永不成立 ⇒ 配置关不掉、note 也写不出来（"看起来有开关，实际没有"）。
+        本条同时断言"读到 False"与"false 分支真的被走到（放行 + 留痕）"。
+        """
+        t = patch_text(HARNESS_TEXT, "  image_caption_requires_reading: true",
+                       "  image_caption_requires_reading: false")
+        cfg_off = cfg_of(t)
+        self.assertIs(LC.image_caption_requires_reading(cfg_off), False,
+                      "配置改 false 后必须读到 False（读到元组 ⇒ 开关关不掉）")
+        notes = []
+        ok, msg = LC.image_caption_check(cfg_off, "", notes)
+        self.assertTrue(ok, "关闭时不强制——若无判读记录仍判失败，说明 false 分支没走到")
+        self.assertEqual(msg, "", "关闭时不产出失败原因")
+        self.assertTrue(any("不强制" in n for n in notes),
+                        f"false 分支必须写明未强制，实得 notes={notes}")
+
+    def test_D2_guard_switch_on_still_blocks(self):
+        """D2 反向：开关为 true 时**必须**强制——不能因为修了 false 分支就全放行。"""
+        self.assertIs(LC.image_caption_requires_reading(self.cfg), True)
+        ok, msg = LC.image_caption_check(self.cfg, "")
+        self.assertFalse(ok, "配置为 true 且无判读记录时必须判失败")
+        self.assertIn("判读记录", msg)
+
+
 # ══════════════ 双向验证：破坏被测实现 ⇒ 反例必须翻转 ══════════════
 class TestImplementationBreak(_Base):
     """把 loop_contract 的**判据实现**破坏掉，确认上面的正/反例真的在测东西。
@@ -1088,16 +1159,17 @@ class TestImplementationBreak(_Base):
         t = patch_text(HARNESS_TEXT, "loop_b:\n  enabled: true",
                        "loop_b:\n  enabled: false")
         cfg_b = cfg_of(t)
-        self.assertFalse(unpack(LC.enabled(cfg_b, "b"))[0], "前提：未破坏时应判 False")
+        self.assertFalse(LC.enabled(cfg_b, "b"), "前提：未破坏时应判 False")
         orig = LC.enabled
-        sample = orig(cfg_b, "b")   # 摸清返回形态（标量 / 二元组），伪造同形状的假实现
-        LC.enabled = lambda cfg, loop, notes=None: same_shape(sample, True)
+        # 破坏方式按**接口契约**来：enabled 必须返回标量 bool，
+        # 故假实现也返回标量 True（不再伪造“同形状”，那是给形态迁移留的旁路）。
+        LC.enabled = lambda cfg, loop, notes=None: True
         try:
-            self.assertTrue(unpack(LC.enabled(cfg_b, "b"))[0],
+            self.assertTrue(LC.enabled(cfg_b, "b"),
                             "实现被硬编码后判定未翻转——T1 反例没经过 enabled()，是恒真断言")
         finally:
             LC.enabled = orig
-        self.assertFalse(unpack(LC.enabled(cfg_b, "b"))[0], "复原后必须重新转红")
+        self.assertFalse(LC.enabled(cfg_b, "b"), "复原后必须重新转红")
 
     def test_break_retrieval_budget_flips_T9_reverse(self):
         """破坏 retrieval_budget ⇒ 恒返回 30 ⇒ 上限 5、used 6 的反例必须翻转。"""
@@ -1106,8 +1178,7 @@ class TestImplementationBreak(_Base):
         cfg5 = cfg_of(t)
         self.assertFalse(LC.retrieval_check(cfg5, 6)[0], "前提：未破坏时应判超预算")
         orig = LC.retrieval_budget
-        sample = orig(cfg5)   # 同形状伪造：把预算写死成 30（等于"配置不接线"的回归）
-        LC.retrieval_budget = lambda cfg, notes=None: same_shape(sample, 30)
+        LC.retrieval_budget = lambda cfg, notes=None: 30   # 写死成内置值 = "配置不接线"
         try:
             self.assertTrue(LC.retrieval_check(cfg5, 6)[0],
                             "预算被写死后判定未翻转——T9 反例没经过 retrieval_budget()")
@@ -1198,15 +1269,38 @@ class TestFallbackTableInvisibility(_Base):
         return pts
 
     def test_fallback_table_is_not_a_dict_literal(self):
-        """反例前置：`_FALLBACK` 必须是元组列表，写成字典字面量会被 AST 误认成读取点。"""
+        """正例：`_FALLBACK` 的声明处**不得是字典字面量**。
+
+        ⚠ 为什么必须用 AST 判据而不是字符串匹配：第 18 项收集的第③种读取点形态是
+          **字典字面量的字符串键**。断言源码里含 `_FALLBACK = (` 这种字符串写法，
+          对 `_FALLBACK = dict([...])`、`_FALLBACK = {...}` 这些同样危险（或更危险）
+          的改法一律放行 ⇒ 字符串断言是假绿。只有按 AST 看声明节点的**语法形态**
+          才是真判据：不是 ast.Dict ⇒ 不会被当读取点收集。
+        """
         with open(LC_PATH, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("_FALLBACK = [", src,
-                      "_FALLBACK 必须是（元组）列表——写成字典字面量会被 AST 当成"
-                      "「有读取者」，把死配置刷绿")
-        self.assertNotIn("_FALLBACK = {", src)
-        self.assertIn("_FB = dict(_FALLBACK)", src,
-                      "运行时查表应走 dict(_FALLBACK)（保持声明处是列表形态）")
+        self.assertIs(_fallback_literal_is_dict(src), False,
+                      "_FALLBACK 声明处不得是字典字面量（会被第 18 项误判为「有读取者」）")
+        # 运行时查表仍应可用：声明处是列表，运行时转成 dict（两者不可合二为一）
+        self.assertEqual(dict(LC._FALLBACK), LC._FB,
+                         "_FB 必须是 _FALLBACK 的字典视图（否则回落取值对不上）")
+
+    def test_fallback_table_guard_is_sensitive(self):
+        """反例：把回落表改成**字典字面量** ⇒ 上面那条守卫必须抓出来（转红）。
+
+        如果这个值改了，**第 18 项死配置巡检**的判定应该跟着变——
+        回落表自己就把 32 个键刷成"有读取者"，真正的读取点被删掉也看不出来。
+        本条用内存里的源码副本验证守卫的敏感性，不落盘、不动 loop_contract.py。
+        """
+        with open(LC_PATH, encoding="utf-8") as f:
+            src = f.read()
+        i = src.index("_FALLBACK = [")
+        j = src.index("\n]\n", i) + 3
+        dict_src = (src[:i] + "_FALLBACK = {\n" +
+                    "".join(f'    "{k}": {v!r},\n' for k, v in LC._FALLBACK) +
+                    "}\n" + src[j:])
+        self.assertIs(_fallback_literal_is_dict(dict_src), True,
+                      "改成字典字面量后守卫未报出——说明这条守卫是恒真断言，没在测形态")
 
     def test_deleted_yaml_key_falls_back_and_warns(self):
         """反例：整行删掉 loop_b.single_writer ⇒ 回落内置值 team-lead 且**留痕**。"""
