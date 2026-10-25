@@ -43,3 +43,6 @@ __pycache__/
 #   内容含用户本机绝对路径（/Users/<用户名>/…），会随分发包泄漏本地目录结构。
 #   它是运行期产物，不是包内容 —— 已在 v3.17.0 从版本库移除并加此忽略。
 .workbuddy/
+
+# 运行时标记：register_expert.py 写入的预览会话 ID（不入库）
+.pending-preview-session
