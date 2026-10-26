@@ -549,6 +549,62 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
     if _kb_warn:
         lines.append(f"- ⚠ 装载告警：{_kb_warn}")
 
+    # ── v3.21.1：深度出处 / 四层受众 / 模块模板 / 用户指定源策略 ────────
+    # 这 4 段此前在 config/domain-profiles.yaml 里配了、但**从未进快照** ⇒
+    # 装配产物里没有 ⇒ 成员拿不到"深度三档的出处"（= 该专业教学标准的要求用词，
+    # 正是"用专业标准耦合 PPT 诊断"的落点）、四层受众差异、模块/页序模板、用户指定源策略。
+    # 实测（AST）：这 4 个键在 scripts/ 里 0 处读取点。
+    _dss = pick("depth_scale_source") or {}
+    if isinstance(_dss, dict) and _dss:
+        lines.append("【二之二、深度三档的出处（专业标准要求）】")
+        if _dss.get("standard"):
+            lines.append(f"- 专业标准：{_dss['standard']}")
+        if _dss.get("core_course"):
+            lines.append(f"- 核心课程：{_dss['core_course']}")
+        if _dss.get("note"):
+            lines.append(f"- 说明：{_dss['note']}")
+        lines.append("- ⚠ 本页深度（了解/理解/掌握）**以此标准的用词为准**；"
+                     "标准未覆盖处按通用三档，并显式标注「标准未覆盖」")
+
+    _ap = pick("audience_profile") or {}
+    if isinstance(_ap, dict) and _ap:
+        lines.append("【二之三、受众分层（本域差异）】")
+        for k in ("layer_notes", "data_requirements", "case_forms"):
+            v = _ap.get(k)
+            if isinstance(v, list) and v:
+                lines.append(f"- {k}：")
+                lines += _bullets(v)
+        if _ap.get("job_context"):
+            lines.append(f"- 岗位语境：{_ap['job_context']}")
+
+    _cmt = pick("course_module_templates") or []
+    if isinstance(_cmt, list) and _cmt:
+        lines.append("【二之四、模块/页序模板（本域现成骨架）】")
+        for tpl in _cmt:
+            if not isinstance(tpl, dict):
+                continue
+            lines.append(f"- {tpl.get('title') or tpl.get('id')}"
+                         + (f"（适用：{tpl['applies_to']}）" if tpl.get("applies_to") else ""))
+            mods = tpl.get("modules") or []
+            if mods:
+                for m in mods:
+                    if isinstance(m, dict):
+                        lines.append(f"  · {m.get('name')}"
+                                     + (f" —— {m.get('focus')}" if m.get("focus") else ""))
+            if tpl.get("note"):
+                lines.append(f"  ⚠ {tpl['note']}")
+
+    _uss = pick("user_supplied_sources") or {}
+    if isinstance(_uss, dict) and _uss:
+        lines.append("【二之五、用户指定源策略】")
+        if _uss.get("intake_field"):
+            lines.append(f"- 指定源登记处：{_uss['intake_field']}")
+        for k, label in (("default_strategy", "优先级"),
+                         ("conflict_rule", "冲突处置"),
+                         ("traceability_rule", "可追溯要求")):
+            if _uss.get(k):
+                lines.append(f"- {label}：{_uss[k]}")
+
     term = pick("terminology")
     if term:
         lines.append("【六、术语规范】")

@@ -12,7 +12,7 @@
 #
 # 覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件（团队级定制）
 
-version: "3.21.0"
+version: "3.21.1"
 # ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
 # Q2 默认：animal-medicine / microbiology / pet / tcm-vet
 domains:

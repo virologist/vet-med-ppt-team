@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.21.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.21.1
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -1083,6 +1083,21 @@ def _collapse_artifact_payload(cfg, dom, task_id, rationale, artifact_path, pane
         "content_axes": dom.get("content_axes") or [],
         "evidence_hierarchy": dom.get("evidence_hierarchy") or {},
         "image_channel": dom.get("image_channel") or {},
+        # ── v3.21.1（独立复验新发现）：4 个域档案字段此前**零代码读取点** ──
+        # 实测（AST 口径）：depth_scale_source / audience_profile /
+        #   course_module_templates / user_supplied_sources 在 scripts/ 里**0 处读取**
+        #   ⇒ 它们在 config/domain-profiles.yaml 里配了、却**从未进快照**，
+        #   装配产物里也就没有 ⇒ 成员拿不到：
+        #     · depth_scale_source —— **深度三档的出处**（= 该专业教学标准的要求用词），
+        #       这正是"用专业标准耦合 PPT 诊断与设计"的落点；缺它 ⇒ 深度要求无据可依；
+        #     · audience_profile —— 四层受众的差异（层说明/数据要求/病例形态/岗位语境）；
+        #     · course_module_templates —— 该域的模块/页序模板（模块化优化的现成骨架）；
+        #     · user_supplied_sources —— 用户指定源策略（优先级/冲突/可追溯规则）。
+        # ⇒ 补进快照 + 装配器渲染（见 assemble_domain_prompt.py 的【二之三】段）。
+        "depth_scale_source": dom.get("depth_scale_source") or {},
+        "audience_profile": dom.get("audience_profile") or {},
+        "course_module_templates": dom.get("course_module_templates") or [],
+        "user_supplied_sources": dom.get("user_supplied_sources") or {},
         # v3.19.1·S1：知识库路由改从**唯一源** external-tools.yaml 取并按域过滤
         #   （此前从域档案取，v3.19.0 迁移后恒为空 ⇒ 装配器误渲染「本域无知识库」）
         "knowledge_bases": _kb_list,
@@ -6443,7 +6458,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.21.0", "executable": __file__,
+    out = {"version": "v3.21.1", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -6773,7 +6788,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.21.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.21.1")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

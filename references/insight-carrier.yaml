@@ -44,8 +44,7 @@ sources:
   axes_roster: config/harness.yaml#insight_carrier.axes # 轴 ↔ 成员映射（编排信息，非 schema）
 
 schema_version: 1
-version: "3.21.0"
-
+version: "3.21.1"
 # ── 枚举 ──────────────────────────────────────────────────────────────
 enums:
   target_kind:
