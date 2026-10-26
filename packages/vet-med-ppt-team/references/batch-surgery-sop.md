@@ -9,6 +9,12 @@
 | 键 | 值 | 依据 |
 |---|---|---|
 | `min_font_pt` | 12.0 | 注入文本（预测钩子/任务卡/页脚/揭示语）一律按正文红线，禁 8pt/10pt"小字脚注"侥幸 |
+
+> **v3.22.0 G1 补**：上表四键的**唯一源 = `config/visual-rules.yaml#overlay_injection`**
+> （段名 `overlay_injection`，**不是** `batch_surgery`）。执行者 = `scripts/inject_notes.py`：
+> 启动即读该段并打印一行，随后按「注入脚本前置断言」四条逐处判定。
+> ⚠ 此段自 v3.22.0 起**有真实代码读取点**（此前只有声明、AST 读取点 0 处，
+> 而本文声称「缺一即拒跑」——实际从未执行过）。
 | `require_empty_slot` | true | 注入前必须探测空位：目标页无 ≥注入框尺寸的空白区 → **拆页**，禁止硬叠 |
 | `max_overlap_ratio` | 0.15 | 注入框与任何既有文本框重叠超 15% = 注入失败，回滚该页 |
 | `sample_review_ratio` | 0.20 | 屠明熙抽样复核下限 20%；verify_deck 报告的几何红灯页 100% 复查 |

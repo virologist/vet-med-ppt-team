@@ -6,6 +6,80 @@
 
 ---
 
+## [v3.22.0] - 2026-10-26（第二轮独立诊断的 7 项修复：G1–G7）
+
+> 依据：v3.21.1 基线上的**第二轮从零独立诊断**（13 维度，不沿用历史结论）。
+> 诊断报告全文见工作区 `04-test/v3.21.1-第二轮从零诊断与对齐方案.md`。
+> 修复顺序（管家节点确认）：G6 → G3/G4/G5 → G1 → G2 → G7。
+
+### G6 · `insights add` 缺 `--task-id` ⇒ 静默写 default 载体（跨任务混装）
+病灶实测：`add` 不带 `--task-id` 时 task_id 缺省 "" ⇒ 落 `_runs/default/_insights/carrier.json`，
+rc=0 无告警。修法：除 `init` 外，动作缺 `--task-id` ⇒ **exit 2**（载体按任务隔离）。
+
+### G3 · 洞察载体入闸 1（第 9 项冻结项）
+病灶：`sop-stages.md` 写「目标集登记完成前**不得 spawn 任何成员**」，但 `gate1_freeze` 八项
+无载体项 ⇒ 跳过 `insights init` 照样放行。修法：新增 `insight_carrier_targets`
+（载体已登记 + 目标数），`gate1-check` 校验；留 `--allow-no-carrier` 显式豁免口（纯诊断单用）。
+
+### G4 · 待裁决条目数并入收敛判定
+病灶：`no_progress` 只看 verify_deck 的 P0/P1/P2 ⇒ 看不到「冲突挂 5 轮无人裁决」这种
+真实不收敛形态（课件 P0 降为 0 ⇒ 机器判已收敛 ⇒ 带着矛盾收口）。
+修法：`continue` 读载体 `needs_adjudication` 计数 ⇒ 进质量快照 `pending_adjudications` + 显式告警。
+
+### G5 · 同内容重提的机器提示（`possible_duplicate_of`）
+病灶：R2 只查 ID 唯一 ⇒ rejected 的提案换个 `insight_id` 原样再提，rc=0 直接入载体。
+修法：同 target + 同轴 + proposal 全同 ⇒ 载体记 `possible_duplicate_of`（**只提示不阻断**——
+精确去重是语义判断，仍归人）。
+
+### G1 · 批量注入四前置断言落地（**声明了 8 个月没人读**）
+病灶：`references/batch-surgery-sop.md:16-22` 写「注入脚本前置断言（必须实现，缺一即拒跑）」，
+而四键 `min_font_pt` / `require_empty_slot` / `max_overlap_ratio` / `sample_review_ratio`
+在 `scripts/` 里 **AST 读取点 0 处**；实际注入脚本 `inject_notes.py` 只读 1 个键。
+修法：`inject_notes.py` 落地四断言——①读配置（缺则告警+回落，不崩）②注入字号 < min ⇒ 拒写
+（`font_below_min`）③空位检测 + 与既有文本框两两求交 > max_overlap_ratio ⇒ 拒写
+（`overlap_exceeded` / `no_empty_slot`）④每页输出注入结果清单（页码/坐标/字号/重叠值/写或拒+拒因）。
+**唯一源 = `config/visual-rules.yaml#overlay_injection`**（复用既有段，不另立新段）。
+
+### G2 · 图表布局规范（起步：建议级）
+病灶：`visual-rules.yaml` **无 chart 段**、`verify_deck` **无图表检查**、量规无条目 ⇒
+维度 6「图表布局规范」在配置/门禁/量规三层皆缺。
+修法：新增 `chart` 段（图区占比 min/max；`enabled: false` 建议级起步，先积累证据）；
+`verify_deck` 新增 `check_chart_layout`（只判**图区面积比**——确定性可判）；
+问题类型**不登记进 severity** ⇒ 落 unknown_out（**明示、不阻断**）。
+
+### G7 · 装配体量分段表 + 超阈值告警
+病灶：装配产物实测 **71,543 字符**，而 `context.summary_max_chars: 800` 只管**回传摘要**、
+管不到**注入体量**；注入逐版叠加 ⇒ 关键纪律有被中后段稀释的风险。
+修法：装配器输出分段字符占比；总长超 60,000 告警。⚠ **不自动裁剪**——裁哪段是内容决策，归主理人。
+
+### 本批实测揪出的真缺陷（独立验证发现，非自述）
+
+1. **【P0】G5 标记写错条目**：初版把 G5 块放在 `rec` 定义**之前**而块内引用 `rec`
+   ⇒ 首次执行 NameError 被 `except: pass` 静默吞掉；更糟的是**第二次**迭代时 `rec`
+   已是**上一轮迭代的残留值** ⇒ 标记被写到**错误的条目**上（实测出现 `s1-C-01` 自指 `s1-C-01`，
+   而真正该被提示的 `s1-C-02` 反而没有）。修法：块移到 `rec` 赋值**之后**。
+2. **【P1】G4 的 task_id 来源不一致**：`insights init --task-id T-1` 写 `_runs/T-1/`，
+   而读取器从 loop 状态取 id（无状态文件 ⇒ `default`）⇒ 载体找不到、待裁决数**恒 0**。
+   修法：改为**遍历** `.harness-runs/*/` 全部载体（与 `_insight_carrier_state` 同口径）。
+3. **【P1】T1b 反向例的前提被合法改变**：它固定拿 `overlay_injection.*` 当"仍无人读"的样例，
+   而 G1 正要让这四键有读取点 ⇒ 删掉人读型登记后它们本就不该变死 ⇒ 反例转红。
+   修法：样例段**动态挑选**（当前仍无 AST 读取点者）+ 计数模式兼容标量/列表两种输出形态
+   （`seg.` 与 `seg =`）——**不是削弱断言，是让它换个仍成立的样例**。
+4. **【P2】双源漂移**：G1 执行者曾新增 `batch_surgery` 段，与既有 `overlay_injection` 段
+   四键完全重复 ⇒ 同一纪律两份配置。已统一为复用 `overlay_injection`（`batch_surgery` 归零）。
+
+### 残留（如实登记，未假装已覆盖）
+
+- **图表规范只实现了"图区面积比"**：坐标轴标注字号 / 图例位置 / 表格布局**尚无执行器**
+  （需解析 chart XML 与表格形状，判据边界未清）——`config/visual-rules.yaml#chart.unimplemented` 已列明。
+- **G1 的"注入框"是虚拟落点**：`inject_notes.py` 只写备注页、没有版面坐标，
+  空位/重叠判定按"讲稿要点提升为页内叠加元素时的落点矩形"建模（会话层给坐标，脚本判）。
+- **G1 拒写后无"拆页建议"链路**：拒写只记清单，不自动生成拆页建议（拆页是内容决策）。
+- **G1 拒写不占名额、顺延下一页**：属口径微调（否则一次拒写会让整册覆盖率缺口被误算）。
+- 判环仍为语义判定；`tools_whitelist` 无代码强制力（平台限制）；载体只承载结构与留痕。
+
+---
+
 ## [v3.21.1] - 2026-10-26（独立复验新发现：4 个域档案字段从未进快照 → 补接线）
 
 > v3.21.0 发布后的**第 3 轮独立复验**（跨专业复用真实可用性）里发现的第 24 个

@@ -175,6 +175,8 @@ def _load_threshold():
             "severity": dict(_FALLBACK["severity"]),
             # v3.16.0：建议级（rubric）检查开关，缺省用内置值（默认全关）
             "checks": {k: dict(v) for k, v in _FALLBACK["checks"].items()},
+            # v3.22.0 G2：图表布局规范（**独立顶层段**，不进 checks ⇒ 不进第 19 项核对清单）
+            "chart": dict(rules.get("chart") or {}) if isinstance(rules.get("chart"), dict) else {},
         }
         gate = rules.get("gate") or {}
         if "p2_note_coverage" in gate:
@@ -527,6 +529,83 @@ def body_frame_chars(adapters, slide_height):
         total += len(a["text"])
         n += 1
     return total, n
+
+
+def _chart_rules():
+    """读 config/visual-rules.yaml#chart（v3.22.0 G2）。
+
+    缺口背景（第二轮独立诊断 P2）：此前 visual-rules.yaml 无 chart 段、verify_deck
+    无图表检查 ⇒ 维度 6「图表布局规范」在配置/门禁/量规三层皆缺。
+    ⚠ 缺配置 ⇒ 回落内置默认并**显式告警**（本包铁律：静默回落 = 不设防）。
+    """
+    node = THRESHOLD.get("chart") or {}
+    if not isinstance(node, dict) or not node:
+        print("⚠ config/visual-rules.yaml#chart 缺失或为空 → 图表检查按内置默认"
+              "（enabled=false / 占比 0.15–0.60）处理", file=sys.stderr)
+        return {"enabled": False, "area_ratio": {"min": 0.15, "max": 0.60}}
+    ar = node.get("area_ratio") if isinstance(node.get("area_ratio"), dict) else {}
+    return {
+        "enabled": bool(node.get("enabled")),
+        "area_ratio": {
+            "min": float(ar.get("min", 0.15) or 0.15),
+            "max": float(ar.get("max", 0.60) or 0.60),
+        },
+    }
+
+
+def check_chart_layout(slide, idx, rules, page_area):
+    """图表页的**图区占比**检查（v3.22.0 G2 · 建议级）。
+
+    判据（确定性，可机器判）：
+      · 「图表页」= 页内存在 chart（graphicFrame）或 picture；
+      · 图区占比 = 图表类形状面积之和 / 页面面积；
+      · 占比 < min ⇒ 「图表图区占比过小」（图挤角落，讲不下去）；
+      · 占比 > max ⇒ 「图表图区占比过大」（图挤满版面，讲解空间被吞）。
+
+    ⚠ **只判面积比**。坐标轴标注字号 / 图例位置 / 表格布局**本版未实现**
+      （需解析 chart XML 与表格形状，判据边界未清）⇒ 如实登记为残留，
+      不假装已覆盖（config/visual-rules.yaml#chart.unimplemented 已列明）。
+    ⚠ **问题类型不登记进 severity** ⇒ 落在 unknown_out（明示、**不阻断**），
+      与既有 rubric 建议级同口径。
+    """
+    out = []
+    if not rules.get("enabled"):
+        return out
+    try:
+        total = 0
+        n_chart = 0
+        for sh in slide.shapes:
+            kind = str(getattr(sh, "shape_type", "") or "")
+            is_chart = "CHART" in kind or sh.has_chart if hasattr(sh, "has_chart") else ("CHART" in kind)
+            is_pic = "PICTURE" in kind
+            if not (is_chart or is_pic):
+                continue
+            try:
+                area = int(sh.width) * int(sh.height)
+            except Exception:
+                continue
+            total += area
+            if is_chart:
+                n_chart += 1
+        if total <= 0 or page_area <= 0:
+            return out
+        ratio = total / float(page_area)
+        ar = rules.get("area_ratio") or {}
+        if ratio < float(ar.get("min", 0.15)):
+            out.append({"slide": idx, "type": "图表图区占比过小",
+                        "detail": f"图区占比 {ratio*100:.1f}% < {float(ar.get('min',0.15))*100:.0f}%"
+                                  f"（图挤角落，讲解空间被浪费）",
+                        "snippet": f"{n_chart} 个图表"})
+        elif ratio > float(ar.get("max", 0.60)):
+            out.append({"slide": idx, "type": "图表图区占比过大",
+                        "detail": f"图区占比 {ratio*100:.1f}% > {float(ar.get('max',0.60))*100:.0f}%"
+                                  f"（图挤满版面，讲解空间被吞）",
+                        "snippet": f"{n_chart} 个图表"})
+    except Exception as e:
+        out.append({"slide": idx, "type": "图表布局检查异常",
+                    "detail": f"检查异常（{type(e).__name__}: {str(e)[:60]}）——按未判处理",
+                    "snippet": ""})
+    return out
 
 
 def _shape_colors(shape):
@@ -891,6 +970,14 @@ def verify(path, hours=3, strict=False, caliber=None):
             continue
         visible.append((idx, slide))
     stats["visible_slides"] = len(visible)
+
+    # ── v3.22.0 G2：图表图区占比检查（建议级；未登记 severity ⇒ 明示不阻断）──
+    _chart_rules_cfg = _chart_rules()
+    if _chart_rules_cfg.get("enabled"):
+        _page_area = int(prs.slide_width) * int(prs.slide_height)
+        for _i, _s in visible:
+            for _iss in check_chart_layout(_s, _i, _chart_rules_cfg, _page_area):
+                issues.append(_iss)
 
     has_toc = False          # 目录页
     has_quiz = False         # 题页

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.21.1
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.22.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -1484,6 +1484,42 @@ def _knowledge_channel_state(w):
     return True, "外部通道探测全部可用；知识库归属无冲突"
 
 
+def _insight_carrier_state(w, cfg, args=None):
+    """闸1 第 9 项：洞察载体目标集已登记（v3.22.0 G3 · 第二轮独立诊断 P3）。
+
+    病灶：sop-stages 闸1 写「目标集登记完成前不得 spawn 任何成员」（硬约束），
+    但 gate1-check 不校验载体 ⇒ 跳过 insights init 直接 spawn 照样放行，
+    「载体是唯一事实源」退化为文档自觉。
+    判据：载体文件存在且 targets 非空（init 至少登记了一个 page/module 目标）。
+    逃生口：--allow-no-carrier（纯诊断单不落载体时用；输出标注降级，非静默）。
+    """
+    if getattr(args, "allow_no_carrier", False):
+        return (True, "已用 --allow-no-carrier 显式豁免（纯诊断单）——降级留痕，不阻断")
+    c = _ic_cfg(cfg)
+    run_dir, _carrier_path, _parts = _ic_paths(cfg, w, "")
+    # 载体按 task 级存放在 .harness-runs/<task_id>/<carrier_rel> 下；
+    # 闸1 校验**任一**任务级载体（闸1 时点往往还没定 task_id，须扫全部任务目录）。
+    # ⚠ 首版实现误写成 dirname(dirname(carrier_path))——task_id="" 时 carrier_path
+    #   落在 .harness-runs/default/ 下，两次 dirname 只到 default/，扫不到兄弟任务目录
+    #   ⇒ init 过的载体永远查不到（假阴性，实测复现）。正确基准 = run_dir 的父目录。
+    base = run_dir if os.path.basename(run_dir) == ".harness-runs" else os.path.dirname(run_dir)
+    found = False
+    if os.path.isdir(base):
+        for t in sorted(os.listdir(base)):
+            cp = os.path.join(base, t, c["carrier_rel"])
+            if os.path.isfile(cp):
+                try:
+                    d = json.load(open(cp, encoding="utf-8"))
+                    if isinstance(d, dict) and d.get("targets"):
+                        found = True
+                        n = len(d["targets"])
+                        return (True, f"载体已登记（{t}：{n} 个目标）")
+                except Exception:
+                    continue
+    return (False, "未发现已登记目标的洞察载体——先跑 `insights init --task-id <tid> "
+                   "--target <id> --kind page|module`（或纯诊断单加 --allow-no-carrier 显式豁免）")
+
+
 def cmd_gate1_check(args):
     """闸1 冻结清单的**机器校验**（v3.18.0 新增）。
 
@@ -1596,6 +1632,8 @@ def cmd_gate1_check(args):
         "delivery_language": _delivery_language_state(intake),
         # ── v3.19.0 新增第 8 项：知识库路由就绪度（维度 10/13）────
         "knowledge_channel": _knowledge_channel_state(w),
+        # ── v3.22.0 G3 新增第 9 项：洞察载体目标集（第二轮独立诊断 P3）────
+        "insight_carrier_targets": _insight_carrier_state(w, cfg, args),
     }
 
     rows, not_ready = [], []
@@ -4941,6 +4979,51 @@ def _carrier_to_parts(carrier):
     return out
 
 
+def _pending_adjudications(w, cfg=None, loop="b"):
+    """读载体里的**待人工裁决**条目数（v3.22.0 G4）。
+
+    病灶（第二轮独立诊断 P4）：`no_progress` 收敛判据只看 verify_deck 的
+    P0/P1/P2 缺陷数 ⇒ **看不到"洞察条目积压未裁决"这种真实的不收敛形态**：
+    冲突挂 5 轮没人裁，但课件 P0 已降为 0 ⇒ 机器判"已收敛" ⇒ 任务带着矛盾收口。
+    ⇒ 本函数把载体的 needs_adjudication 计数取出来，并进质量快照（extra 字段
+      `pending_adjudications`），非零时在 continue 输出里**显式告警**。
+
+    边界：**只计数、不判严重度**（哪条该先裁是语义判断，归主理人）。
+    载体不存在 ⇒ 返回 0（没有载体 = 这次不用洞察载体，不是缺陷）。
+    """
+    c = _ic_cfg(cfg or {})
+    try:
+        ic = _ic()
+        if ic is None:
+            return 0
+        # ⚠ **扫全部任务目录**（v3.22.0 修正）：初版从 loop 状态文件取 task_id，
+        #   而 `insights init --task-id T-1` 写的是 `_runs/T-1/`；两处 task_id 来源不一致
+        #   ⇒ 载体找不到、待裁决数恒 0（实测复现）。
+        #   ⇒ 与 `_insight_carrier_state` 同口径：**遍历** `.harness-runs/*/` 下所有载体。
+        total = 0
+        runs = os.path.join(os.path.abspath(w), ".harness-runs")
+        if not os.path.isdir(runs):
+            return 0
+        for tid in sorted(os.listdir(runs)):
+            cp = os.path.join(runs, tid, c["carrier_rel"])
+            if not os.path.isfile(cp):
+                continue
+            try:
+                with open(cp, encoding="utf-8") as f:
+                    carrier = json.load(f)
+            except Exception:
+                continue
+            na = carrier.get("needs_adjudication")
+            if isinstance(na, list):
+                total += len(na)
+            else:
+                # 载体里没这字段 ⇒ 用 detect_conflicts 现算（同一判据，不另立一套）
+                total += len(ic.detect_conflicts(carrier, None, []))
+        return total
+    except Exception:
+        return 0
+
+
 def cmd_insights(args):
     """洞察载体子命令组（v3.21.0 · 多专家单载体）。
 
@@ -4967,6 +5050,18 @@ def cmd_insights(args):
 
     notes = []
     task_id = getattr(args, "task_id", "") or ""
+    # ── v3.22.0 G6：除 init 外，动作缺 --task-id ⇒ **拒绝执行** ──────────
+    # 病灶（第二轮独立诊断 P6，实测亲踩）：`insights add` 不带 --task-id 时
+    #   task_id 缺省 "" ⇒ _ic_paths 用 "default" ⇒ 产物静默落进
+    #   `_runs/default/_insights/carrier.json` —— **跨任务混载体**（A 任务的分片
+    #   进 B 任务的 default 载体），且 rc=0 无任何告警，事后难拆。
+    # ⇒ init 容忍（它就是建载体，必须先有 task 概念）；其余动作一律要求显式指定。
+    #   注意：--task-id 缺省不是"用 default"，而是"你没说清是哪个任务的载体"。
+    if action != "init" and not task_id:
+        print(f"用法错误：`insights {action}` 必须带 --task-id <任务ID>——"
+              f"载体按任务隔离（RUN_DIR=<workspace>/.harness-runs/<task_id>），"
+              f"缺省会落进 default 载体并与其他任务混装。", file=sys.stderr)
+        return 2
     run_dir, carrier_path, parts_dir = _ic_paths(cfg, w, task_id)
 
     # ── init：登记目标集（幂等；已存在不���空）─────────────────────────
@@ -5008,6 +5103,15 @@ def cmd_insights(args):
         pf = getattr(args, "part", "")
         if not pf:
             print("用法错误：add 必须带 --part <分片JSON>", file=sys.stderr)
+            return 2
+        # ── v3.22.0 G6（第二轮独立诊断 P6）：add/merge/verify/freeze 缺 --task-id ⇒ 拒跑 ──
+        # 病灶（实测可复现）：task_id 缺省 "" → _ic_paths 落 .harness-runs/default/
+        #   ⇒ A 任务的分片静默写进 default 载体，跨任务混载体且无告警，事后难拆。
+        # init 可以容忍缺省（首次登记本来就没有历史载体）；其余四个动作必须显式指定。
+        if not task_id:
+            print("用法错误：add 必须带 --task-id <任务ID>——缺省会静默写进 default 载体，"
+                  "跨任务混载体（第二轮独立诊断 G6）。init 可不带；"
+                  "add/merge/verify/render/freeze 一律必带。", file=sys.stderr)
             return 2
         if not os.path.isfile(pf):
             print(f"依赖缺失：分片不存在 {pf}", file=sys.stderr)
@@ -5069,6 +5173,10 @@ def cmd_insights(args):
 
     # ── merge：合并全部分片 ──────────────────────────────────────────
     if action == "merge":
+        if not task_id:
+            print("用法错误：merge 必须带 --task-id <任务ID>（缺省会读/写 default 载体，"
+                  "跨任务混载体——第二轮独立诊断 G6）", file=sys.stderr)
+            return 2
         carrier = _ic_read_json(carrier_path) or {
             "schema_version": 1, "task_id": task_id, "targets": [],
             "merge_errors": [], "needs_adjudication": [],
@@ -5095,6 +5203,10 @@ def cmd_insights(args):
 
     # ── verify：结构校验 + 冲突检出 ──────────────────────────────────
     if action == "verify":
+        if not task_id:
+            print("用法错误：verify 必须带 --task-id <任务ID>（缺省会读/写 default 载体，"
+                  "跨任务混载体——第二轮独立诊断 G6）", file=sys.stderr)
+            return 2
         carrier = _ic_read_json(carrier_path)
         if carrier is None:
             print(f"依赖缺失：载体不存在 {carrier_path}"
@@ -5132,6 +5244,10 @@ def cmd_insights(args):
 
     # ── render：轮报投影 ─────────────────────────────────────────────
     if action == "render":
+        if not task_id:
+            print("用法错误：render 必须带 --task-id <任务ID>（缺省会读/写 default 载体，"
+                  "跨任务混载体——第二轮独立诊断 G6）", file=sys.stderr)
+            return 2
         carrier = _ic_read_json(carrier_path)
         if carrier is None:
             print(f"依赖缺失：载体不存在 {carrier_path}", file=sys.stderr)
@@ -5143,6 +5259,10 @@ def cmd_insights(args):
 
     # ── freeze：稳定 digest 写回 ─────────────────────────────────────
     if action == "freeze":
+        if not task_id:
+            print("用法错误：freeze 必须带 --task-id <任务ID>（缺省会读/写 default 载体，"
+                  "跨任务混载体——第二轮独立诊断 G6）", file=sys.stderr)
+            return 2
         carrier = _ic_read_json(carrier_path)
         if carrier is None:
             print(f"依赖缺失：载体不存在 {carrier_path}", file=sys.stderr)
@@ -5858,6 +5978,14 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                 print(f"⚠ 手工 --p0/--p1/--p2（{args.p0}/{args.p1}/{args.p2}）与报告"
                       f"（{q['p0']}/{q['p1']}/{q['p2']}）冲突：**以报告为准**"
                       f"（工具自报不算数），手工值仅存证不采用。", file=sys.stderr)
+            # v3.22.0 G4：待裁决条目数并进质量快照（非零即"带着矛盾在推进"）
+            _pend_adj = _pending_adjudications(w, cfg, loop="b")
+            if _pend_adj:
+                extra["pending_adjudications"] = _pend_adj
+                print(f"⚠ 洞察载体有 {_pend_adj} 个目标**待人工裁决**（多轴并存）——"
+                      f"已记入本轮质量快照。课件缺陷数下降**不等于**任务收敛："
+                      f"未裁决的冲突会让 `insights verify` / `insights freeze` 继续阻断，"
+                      f"请先裁决再进位。", file=sys.stderr)
             snap = _loop_quality_snapshot(st, rnd_end, q["p0"], q["p1"], q["p2"],
                                           source=src, extra=extra)
             _loop_hist(st, "quality_snapshot", snap)
@@ -6458,7 +6586,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.21.1", "executable": __file__,
+    out = {"version": "v3.22.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -6788,7 +6916,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.21.1")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.22.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -6856,8 +6984,10 @@ def main():
     p.set_defaults(func=cmd_collapse)
 
     # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 六项）
-    p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（六项；未就绪 exit 1 阻断）")
+    p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（九项；未就绪 exit 1 阻断）")
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
+    p.add_argument("--allow-no-carrier", dest="allow_no_carrier", action="store_true",
+                   help="v3.22.0 G3：纯诊断单不落洞察载体时的显式豁免（输出标注降级，非静默）")
     _ws(p)
     p.set_defaults(func=cmd_gate1_check)
 

@@ -453,6 +453,32 @@ def merge_parts(parts, cfg=None, notes=None):
             # 重复 ID 也**追加**（两版都在），下游靠 merge_errors 知道有重复
             rec = dict(e)
             rec.setdefault("_origin", f"{pid}/{paxis}")
+            # ── v3.22.0 G5（第二轮独立诊断 P5）：同内容重提的机器提示 ──
+            # 病灶（实测复现）：rejected 的提案换个 insight_id 原样再提，rc=0 直接入载体
+            #   —— R2 只查 ID 唯一，R6 自认"内容去重是语义判断"。
+            # 边界不变：**只提示不阻断**（proposal 全同才提示；近似判定是语义，仍归人）。
+            #   提示写进**本条目**的 possible_duplicate_of，裁决者一眼可见。
+            #
+            # ⚠ **v3.22.0 修正**：初版把本块放在 `rec` 定义**之前**，而块内引用 `rec`
+            #   ⇒ 首次执行时 NameError 被 `except: pass` 静默吞掉；更糟的是**第二次**迭代时
+            #   `rec` 已是**上一轮迭代的残留值** ⇒ 标记被写到**错误的条目**上（实测出现
+            #   s1-C-01 自指 s1-C-01，而真正该被提示的 s1-C-02 反而没提示）。
+            #   ⇒ 本块必须在 `rec` 赋值**之后**执行，且用**局部变量**持有命中项，不依赖 rec。
+            _prop = str(e.get("proposal") or "").strip()
+            if _prop:
+                for _t0 in by_target.values():
+                    if (str(_t0.get("target_id") or ""),
+                            str(_t0.get("target_kind") or "")) != key:
+                        continue
+                    for _e0 in _t0.get("insights") or []:
+                        if (str(_e0.get("axis") or "") == str(e.get("axis") or "")
+                                and str(_e0.get("proposal") or "").strip() == _prop
+                                and _e0.get("insight_id") != e.get("insight_id")):
+                            # 仅首见即止；不阻断（边界见上）
+                            rec["possible_duplicate_of"] = _e0.get("insight_id")
+                            break
+                    if rec.get("possible_duplicate_of"):
+                        break
             if iid and iid in seen_ids and len(tgt["insights"]) and \
                     any(x.get("insight_id") == iid for x in tgt["insights"]):
                 rec["_duplicate_of"] = iid

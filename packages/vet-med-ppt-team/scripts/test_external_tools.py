@@ -224,7 +224,11 @@ class TestExternalTools(unittest.TestCase):
         ids = [str(i.get("id")) for i in (cfg.get("gate1_freeze") or [])]
         self.assertIn("delivery_language", ids, "gate1_freeze 缺 delivery_language")
         self.assertIn("knowledge_channel", ids, "gate1_freeze 缺 knowledge_channel")
-        self.assertEqual(len(ids), 8, f"闸1 清单应为 8 项，实得 {len(ids)}")
+        # v3.22.0 G3：闸1 新增第 9 项 `insight_carrier_targets`
+        #   （洞察载体目标集——"目标集登记完成前不得 spawn 成员"此前只是文档，无门禁）
+        self.assertIn("insight_carrier_targets", ids,
+                      "gate1_freeze 缺 insight_carrier_targets")
+        self.assertEqual(len(ids), 9, f"闸1 清单应为 9 项，实得 {len(ids)}")
 
     # ── T13 v3.19.1·S2：非法域 id 必须被点破（归因正确）────────
     def test_T13_invalid_domain_is_flagged(self):

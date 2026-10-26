@@ -1132,6 +1132,38 @@ def main() -> int:
     # v3.21.0：洞察载体写入契约注入（载体段紧随域上下文段，人设不注入规范就不会被遵守）
     prompt = insert_carrier_section(prompt, _render_carrier_context(args.member, run_dir))
 
+    # ── v3.22.0 G7：装配体量分段表 + 超阈值告警（不裁剪，决策归人）────────
+    # 病灶（第二轮独立诊断 P7，实测）：装配产物实测 **71,543 字符**——
+    #   `context.summary_max_chars: 800` 只管**回传摘要**，管不到**注入体量**；
+    #   而注入是逐版叠加的（域上下文八段 + 载体段 + 语言判据 + 深度/受众/模块/指定源四段…）
+    #   ⇒ 关键纪律有被中后段稀释的风险（成员对超长 prompt 的注意力衰减）。
+    # ⇒ 这里**只报体量与分段占比**，并超阈值时告警——**不自动裁剪**：
+    #   裁哪段是内容决策（哪段对本次任务更重要），归主理人。
+    _segs = []
+    for _name, _beg, _end in (("角色定义", ROLE_BEGIN, ROLE_END),
+                              ("域上下文", DOMAIN_BEGIN, DOMAIN_END),
+                              ("洞察载体", CARRIER_BEGIN, CARRIER_END)):
+        _i = prompt.find(_beg)
+        if _i < 0:
+            continue
+        _j = prompt.find(_end, _i)
+        if _j < 0:
+            continue
+        _segs.append((_name, _j - _i))
+    _other = len(prompt) - sum(x[1] for x in _segs)
+    _segs.append(("其他（任务包/资源清单/域上下文各子段）", _other))
+    _tot = len(prompt)
+    _warn_at = 60000
+    log("📏 装配体量分段（占总字符 %）：" + " · ".join(
+        f"{n} {v/(_tot or 1)*100:.0f}%" for n, v in _segs))
+    if _tot > _warn_at:
+        print(f"⚠ 装配产物 {_tot} 字符，超过告警阈值 {_warn_at}——"
+              f"注入体量逐版叠加，成员对超长 prompt 的注意力会衰减。"
+              f"分段占比见上方 📏 行。\n"
+              f"   → **本工具不自动裁剪**：裁哪段属内容决策（哪段对本次任务更重要），"
+              f"请主理人按分段占比决定保留什么，或把该段下沉到 references/ 按需读取。",
+              file=sys.stderr)
+
     if args.out:
         Path(args.out).expanduser().write_text(prompt, encoding="utf-8")
         log(f"✅ 已写入：{args.out}（{len(prompt)} 字符）")

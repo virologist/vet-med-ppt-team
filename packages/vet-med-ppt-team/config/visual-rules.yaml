@@ -188,8 +188,31 @@ checks:
 
 # ── 叠加层注入规范（v2.0.0 新增，防"A轨加框制造红灯"——09-26 实测 486 处重叠 + 8pt 钩子教训）──
 # 消费方：A轨批量注入脚本前置断言 + 屠明熙抽样复核 + 郅作基门禁
+# v3.22.0 G1：这四键自此**由 scripts/inject_notes.py 真正读取**——
+#   此前只有声明没有执行者（AST 读取点 0 处），而 references/batch-surgery-sop.md
+#   声称「注入脚本前置断言，缺一即拒跑」。本段是这四键的**唯一源**。
+# ── 图表布局规范（v3.22.0 G2）─────────────────────────────────────
+# 缺口实测（第二轮独立诊断 P2）：visual-rules.yaml 此前**无 chart/table 段**，
+#   verify_deck 也**无图表检查** ⇒ 维度 6「图表布局规范」在配置/门禁/量规三层皆缺，
+#   图表页只能靠通用字号/重叠判据兜底。
+# ⚠ **起步口径：enabled=false（建议级，默认不启用）**，与既有 rubric 建议级
+#   （title_position_consistency / image_area_ratio）同构——
+#   先积累证据，不贸然阻断（新增阻断项 = 放松既有判据的反面风险）。
+#   开启方式：把 enabled 改 true，或命令行走 --chart-check。
+# ⚠ **本版只实现"图区占比"**（面积比，确定性可判）；
+#   坐标轴标注字号 / 图例位置 / 表格布局**尚未实现**（需解析 chart XML 与表格形状，
+#   判据边界未清）⇒ 如实登记为残留，**不得**假装已覆盖。
+chart:
+  enabled: false
+  area_ratio:
+    min: 0.15        # 图表页的图区占页面面积下限（低于此值 = 图挤在角落，讲不下去）
+    max: 0.60        # 上限（高于此值 = 图挤满版面，讲解空间被吞）
+  # ⚠ 以下三项**尚无执行器**（保留占位以免将来重复设计；本版不判）
+  unimplemented: [axis_label_min_pt, legend_required, table_layout]
+
 overlay_injection:
   min_font_pt: 12.0          # 注入文本（钩子/任务卡/页脚）不得低于正文红线——试做12pt批量8pt的两张皮事故禁止复发
   require_empty_slot: true   # 注入前必须检测空位；无空位 → 拆页，禁止硬叠
   max_overlap_ratio: 0.15    # 注入框与既有文本框重叠超此值 = 注入失败
   sample_review_ratio: 0.20  # 屠明熙抽样复核比例（下限20%，几何红灯页100%复查）
+

@@ -1117,9 +1117,12 @@ def check_dead_config_keys(expert_dir):
         # visual-rules.yaml#theme.* —— 主题色令牌槽位（消费方 = 工作区 theme.yaml +
         #   屠明熙抽取登记；本文件只定义槽位结构，明确"值不在此定义"）
         "enforce_source_theme", "max_new_colors_per_slide", "token_slots",
-        # visual-rules.yaml#overlay_injection.* —— 叠加层注入规范（消费方 = A 轨批量
-        #   注入脚本前置断言【会话层执行】+ 屠明熙抽样复核；sample_review_ratio 是人复核比例）
-        "overlay_injection",
+        # ⚠ v3.22.0 G1：visual-rules.yaml#overlay_injection.* 的**人读型登记已撤**——
+        #   这四键自 v3.22.0 起由 scripts/inject_notes.py **真正读取**（AST 读取点 ≥1）
+        #   ⇒ 不再需要"人读型"豁免；留着反而会掩盖"接线被删掉"这类回归
+        #   （豁免在前 ⇒ 无读取点也不报死配置 ⇒ 假绿）。
+        #   sample_review_ratio 仍是**人复核比例**（语义），但它与另三键同段，
+        #   段级读取点已存在 ⇒ 撤段级登记不影响其合法性。
         # ── v3.19.1：第六次从零诊断·S3 ──
         # domain_config.yaml#three_source_check.source_verification.*.format_fallback
         #   —— 书籍/标准的**离线校验兜底**（isbn_checksum / gb_number_format）：

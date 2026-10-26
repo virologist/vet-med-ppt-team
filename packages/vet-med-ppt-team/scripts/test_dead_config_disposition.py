@@ -64,24 +64,54 @@ class TestDeadConfigDisposition(unittest.TestCase):
 
         这条是防假绿的关键：证明"键消失"是**登记起的作用**，
         而不是判据恰好放过了它。
+
+        ⚠ **v3.22.0 修正：样例段改为动态挑选**（不再写死 `overlay_injection`）。
+          原实现固定拿 `overlay_injection.*` 当样例——而 v3.22.0 G1 把这四键
+          **真正接上了线**（inject_notes.py 读它们）⇒ 有代码读取点 ⇒
+          删掉人读型登记后它们**本就不该**变死 ⇒ 反向例的前提被合法改变 ⇒ 转红。
+          ⇒ 改为：从 known_textual 登记里**动态挑一个当前仍无 AST 读取点**的段
+            （否则它被人读型登记豁免着，删掉登记就该重现），挑不到即 skip。
+          这样后续任何接线都不会再打破这条护栏。
         """
         src = ES.read_text(encoding="utf-8")
+        # ① 动态挑样例段：known_textual 里、且当前无 AST 读取点的段名
+        sys.path.insert(0, str(ES.parent))
+        import ensure_settings as _es_mod
+        reads = _es_mod._collect_ast_reads(str(ES.parent))
+        candidates = []
+        for seg in ("shrink_order", "token_slots", "enforce_source_theme",
+                    "max_new_colors_per_slide", "format_fallback", "legacy_compat",
+                    "overlay_injection"):
+            if f'"{seg}",' not in src:
+                continue
+            if not reads.get(seg):
+                candidates.append(seg)
+        if not candidates:
+            self.skipTest("known_textual 里已无「仍无人读」的登记段——"
+                          "本反例暂时失去样例，待补充新的登记段")
+        seg = candidates[0]
         try:
-            t = src.replace('        "overlay_injection",\n', "", 1)
-            self.assertNotEqual(t, src, "反例构造失败：登记行未命中")
+            t = src.replace(f'        "{seg}",\n', "", 1)
+            self.assertNotEqual(t, src, f"反例构造失败：登记行 {seg!r} 未命中")
             ES.write_text(t, encoding="utf-8")
             es2 = _load_es()
             out2 = _run_dead(es2)
-            n = out2.count("overlay_injection.")
+            # ⚠ 计数模式：**不能**用 f"{seg}."——死配置输出对**列表型**键是
+            #   `visual-rules.yaml#density.shrink_order = [...]`（段名后**无点**），
+            #   而标量键才是 `...#overlay_injection.min_font_pt`（有点）。
+            #   原实现固定用 `overlay_injection.`（标量段）才碰巧成立；
+            #   改成动态样例（可能是列表型键）后必须两种形态都数。
+            n = out2.count(f"{seg}.") + out2.count(f"{seg} =")
             self.assertGreater(n, 0,
-                               f"去掉登记后 overlay_injection.* 未重现（{n} 个）"
+                               f"去掉登记后 {seg}.* 未重现（{n} 个）"
                                "——说明登记机制无效或判据有其它漏洞")
         finally:
             ES.write_text(src, encoding="utf-8")
             # 复原后必须归绿（防止反例测试自身把包弄坏）
             out3 = _run_dead(_load_es())
-            self.assertEqual(out3.count("overlay_injection."), 0,
-                             "复原后 overlay_injection.* 未归绿——源文件可能未还原")
+            n3 = out3.count(f"{seg}.") + out3.count(f"{seg} =")
+            self.assertEqual(n3, 0,
+                             f"复原后 {seg}.* 未归绿——源文件可能未还原")
 
     # ── T2：path_prefixes 自动派生（不再漏新段）────────────────────────
     def test_T2_path_prefixes_derived_from_known_textual(self):
