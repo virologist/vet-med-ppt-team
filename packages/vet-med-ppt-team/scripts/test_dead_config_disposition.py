@@ -71,47 +71,77 @@ class TestDeadConfigDisposition(unittest.TestCase):
           删掉人读型登记后它们**本就不该**变死 ⇒ 反向例的前提被合法改变 ⇒ 转红。
           ⇒ 改为：从 known_textual 登记里**动态挑一个当前仍无 AST 读取点**的段
             （否则它被人读型登记豁免着，删掉登记就该重现），挑不到即 skip。
-          这样后续任何接线都不会再打破这条护栏。
+            这样后续任何接线都不会再打破这条护栏。
+
+        ⚠ **v3.23.0 再修正：改为**自足式合成反例**（不再依赖内置登记的偶然状态）。
+          v3.23.0 给第 18 项加了**块级证据层**（父级配置段被代码整块取走 ⇒
+          该子树随父级被消费），且第 18 项另有人读型登记的**路径前缀白名单**
+          （`.gates` 等）⇒ 内置登记里已**找不到**一个"只靠自身登记才存活"的键：
+            · `shrink_order` 落在被整块读取的 `density` 段下（块级证据兜住）
+            · `legacy_compat` 落在 `.gates` 路径前缀白名单里（段级豁免兜住）
+          ⇒ 动态挑样例的路走不通（会退化成 skip，护栏名存实亡）。
+          ⇒ 改为**自造样例**：在隔离副本里 ① 造一个无任何证据的探针配置键
+            ② 在 `known_textual` 里为它加一行登记 ③ 断言它因此不判死
+            ④ 撤掉那行登记 ⑤ 断言它**必须重新变死**。
+          这样「键消失是**登记**起的作用」被**确定性地**证明，
+          且不再随判据层数（路径级/块级/弱证据）演进而失效。
+          ⚠ 全程在**隔离副本**上做（tempdir），不改包内文件——
+            原实现直接改包内 ES 再复原，写盘瞬间会让并行体检读到半截文件
+            （历轮已踩过：worker 写盘瞬间误报"文件丢失"）。
         """
-        src = ES.read_text(encoding="utf-8")
-        # ① 动态挑样例段：known_textual 里、且当前无 AST 读取点的段名
-        sys.path.insert(0, str(ES.parent))
-        import ensure_settings as _es_mod
-        reads = _es_mod._collect_ast_reads(str(ES.parent))
-        candidates = []
-        for seg in ("shrink_order", "token_slots", "enforce_source_theme",
-                    "max_new_colors_per_slide", "format_fallback", "legacy_compat",
-                    "overlay_injection"):
-            if f'"{seg}",' not in src:
-                continue
-            if not reads.get(seg):
-                candidates.append(seg)
-        if not candidates:
-            self.skipTest("known_textual 里已无「仍无人读」的登记段——"
-                          "本反例暂时失去样例，待补充新的登记段")
-        seg = candidates[0]
+        import shutil
+        import tempfile
+        import yaml
+
+        seg = "__probe_t1b_reg_seg_v2303"
+        leaf = "__probe_t1b_reg_leaf_v2303"
+        tmp = Path(tempfile.mkdtemp(prefix="hb-t1b-"))
         try:
-            t = src.replace(f'        "{seg}",\n', "", 1)
-            self.assertNotEqual(t, src, f"反例构造失败：登记行 {seg!r} 未命中")
-            ES.write_text(t, encoding="utf-8")
-            es2 = _load_es()
-            out2 = _run_dead(es2)
-            # ⚠ 计数模式：**不能**用 f"{seg}."——死配置输出对**列表型**键是
-            #   `visual-rules.yaml#density.shrink_order = [...]`（段名后**无点**），
-            #   而标量键才是 `...#overlay_injection.min_font_pt`（有点）。
-            #   原实现固定用 `overlay_injection.`（标量段）才碰巧成立；
-            #   改成动态样例（可能是列表型键）后必须两种形态都数。
-            n = out2.count(f"{seg}.") + out2.count(f"{seg} =")
-            self.assertGreater(n, 0,
-                               f"去掉登记后 {seg}.* 未重现（{n} 个）"
-                               "——说明登记机制无效或判据有其它漏洞")
+            shutil.copytree(PKG / "config", tmp / "config")
+            shutil.copytree(PKG / "scripts", tmp / "scripts")
+            es_tmp = tmp / "scripts" / "ensure_settings.py"
+            hy = tmp / "config" / "harness.yaml"
+
+            # ① 造探针配置键（全新段 ⇒ 无路径级、无块级、无同名证据）
+            data = yaml.safe_load(hy.read_text(encoding="utf-8"))
+            data[seg] = {leaf: True}
+            hy.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                          encoding="utf-8")
+
+            # ② 在副本的 known_textual 里为该段加登记
+            es_src = es_tmp.read_text(encoding="utf-8")
+            marker = "    known_textual = {\n"
+            self.assertIn(marker, es_src, "known_textual 定义未找到")
+            es_src2 = es_src.replace(marker, marker + f'        "{seg}",\n', 1)
+            es_tmp.write_text(es_src2, encoding="utf-8")
+
+            def _run_on(tmp_root):
+                spec = importlib.util.spec_from_file_location(
+                    "es_t1b_tmp", tmp_root / "scripts" / "ensure_settings.py")
+                m = importlib.util.module_from_spec(spec)
+                sys.modules["es_t1b_tmp"] = m
+                spec.loader.exec_module(m)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = m.check_dead_config_keys(str(tmp_root))
+                return rc, buf.getvalue()
+
+            # ③ 有登记 ⇒ 不判死
+            rc_with, out_with = _run_on(tmp)
+            self.assertNotIn(f"{seg}.{leaf}", out_with,
+                             "★ 登记在案却被判死——登记机制本身失效")
+
+            # ④ 撤掉登记
+            es_tmp.write_text(es_src, encoding="utf-8")
+
+            # ⑤ 撤登记后必须重新变死
+            rc_without, out_without = _run_on(tmp)
+            self.assertNotEqual(rc_without, 0,
+                                "★ 撤掉登记后第 18 项仍转绿——登记机制无效或判据有其它漏洞")
+            self.assertIn(f"{seg}.{leaf}", out_without,
+                          f"撤掉登记后 {seg}.{leaf} 未重现于死配置清单")
         finally:
-            ES.write_text(src, encoding="utf-8")
-            # 复原后必须归绿（防止反例测试自身把包弄坏）
-            out3 = _run_dead(_load_es())
-            n3 = out3.count(f"{seg}.") + out3.count(f"{seg} =")
-            self.assertEqual(n3, 0,
-                             f"复原后 {seg}.* 未归绿——源文件可能未还原")
+            shutil.rmtree(tmp, ignore_errors=True)
 
     # ── T2：path_prefixes 自动派生（不再漏新段）────────────────────────
     def test_T2_path_prefixes_derived_from_known_textual(self):

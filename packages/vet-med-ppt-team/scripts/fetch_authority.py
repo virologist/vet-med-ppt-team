@@ -355,6 +355,26 @@ def main() -> int:
                 json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
         return EXIT_OK
 
+    # ── v3.23.0 F6：未给任何可执行通道输入 ⇒ **用法错误**，不是「全通道失败」────
+    # 病灶（第三轮从零诊断 P-6，实测可复现）：
+    #   `fetch_authority.py --purpose "..." --domain "..."`（脚本自述的常规用法）
+    #   ⇒ results=[] / problems=[] / 退出码 **3（EXIT_ALL_FAILED）**，
+    #   但**一个通道都没尝试过**（本脚本只在给了 --pmid / --source-json / --record
+    #   时才真正执行）。⇒ 报「全通道失败」是**假失败**：与「网络故障」不可区分，
+    #   会把人引向错误的排查方向（去查网络，而不是查用法）。
+    if not args.pmid and not args.source_json and not args.record:
+        if args.out:
+            Path(args.out).expanduser().write_text(
+                json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        log("⛔ 未给任何可执行通道的输入（--pmid / --source-json / --record 都没有）——"
+            "这是**用法错误**，**不是**「全通道失败」。\n"
+            "   → 只想看编排决策：加 --plan\n"
+            "   → 想核验 PMID 存在性：加 --pmid <PMID>\n"
+            "   → 想核验用户指定源：加 --source-json <文件>\n"
+            "   → 会话层已执行的 L2 通道要回填：加 --record <文件>")
+        return EXIT_USAGE
+
     if args.out:
         Path(args.out).expanduser().write_text(
             json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

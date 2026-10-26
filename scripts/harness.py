@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.22.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.23.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -5444,7 +5444,32 @@ def cmd_loop(args):
                   f"用 `loop resume` 恢复，或加 --force 重建（会丢失冻结记录）。", file=sys.stderr)
             return 1
         base = os.path.splitext(os.path.basename(deck))[0]
-        wip = os.path.abspath(args.wip) if args.wip else os.path.join(os.path.dirname(deck), f"{base}_wip")
+        # ── v3.23.0 F5：wip 相对路径按 **workspace** 解析（不再按 cwd）────────────
+        # 病灶（第三轮从零诊断 P-5，实测可复现）：
+        #   原实现 `os.path.abspath(args.wip)` —— 相对路径按**当前工作目录**解析，
+        #   而同一函数里 `state_file` 落在 `workspace/.workbuddy/` ⇒ **两个基准不一致**。
+        #   后果：`cd <专家包目录> && python3 scripts/harness.py ... --wip 相对名`
+        #   ⇒ 工作副本目录建在**专家包本体里**（实测在包根生成 `测试课件/`）。
+        #   该目录被 .gitignore 遮蔽 ⇒ git status 仍显示"干净"，
+        #   而本包用**文件拷贝**发布到 OneDrive 镜像与包内 `packages/` 镜像
+        #   ⇒ **脏目录会被一起带走**（发布污染）。
+        #   同时违反包内 loop_b.original_readonly「原件只读」纪律。
+        # 修法：相对路径以 workspace 为基准；并加一道守卫——
+        #   解析结果落在专家包目录内 ⇒ 拒绝并提示（防再次污染发布物）。
+        if args.wip:
+            wip = (args.wip if os.path.isabs(args.wip)
+                   else os.path.join(w, args.wip))
+            wip = os.path.abspath(wip)
+        else:
+            wip = os.path.join(os.path.dirname(deck), f"{base}_wip")
+        _exp_root = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _wip_real = os.path.realpath(wip)
+        if _wip_real == _exp_root or _wip_real.startswith(_exp_root + os.sep):
+            print(f"⛔ 拒绝：工作副本目录落在**专家包目录内**（{_wip_real}）——"
+                  f"运行期产物会污染发布物（.gitignore 遮蔽 ⇒ git 看不出来，"
+                  f"但文件拷贝式发布会带走）。\n"
+                  f"   → 改用 --workspace 内的相对路径，或绝对路径。", file=sys.stderr)
+            return 1
         stt = os.stat(deck)
         # 预算可确认参数：轮次上限允许任务级覆盖（dual-loop-governance 要求"提出为可确认参数"）
         eff_budgets = dict(budgets)
@@ -6586,7 +6611,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.22.0", "executable": __file__,
+    out = {"version": "v3.23.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）

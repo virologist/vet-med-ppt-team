@@ -12,7 +12,7 @@
 #
 # 覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件（团队级定制）
 
-version: "3.22.0"
+version: "3.23.0"
 # ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
 # Q2 默认：animal-medicine / microbiology / pet / tcm-vet
 domains:
@@ -299,6 +299,14 @@ three_source_check:
     announcement_no: '(?:公告|通告)\s*(?:第)?\s*[0-9]{1,5}\s*号'
 
 # ── 5 闸扩展（Q1 追加 stage 4，v3.3.0 起生效） ───────────────
+# ⚠ **v3.23.0 口径澄清**（第三轮从零诊断 P-4，实测）：本段的 `active` / `name` /
+#   `notes` 是**人读型声明**，**不是**可执行开关——scripts/ 全量无任何读取点
+#   （实测 `scripts/` 内 "gates" 段 0 处读取；命中的全是另一个键 `confirm_gates`
+#   与测试文件名 `test_five_gates.py`）。
+#   ⇒ **把 `active` 改成 false 不会关闭任何一闸**（假 affordance）。
+#   机器判据的真实位置：`harness.yaml#gate_exit_codes`（退出码，被 cmd_gate 消费）
+#   与 `verify_deck.py` 的门禁判定；本段只负责**向人说明五闸是什么**。
+#   处置口径与 `legacy_compat` 一致：登记为人读型，不假装是开关。
 gates:
   0: {name: "闸1 任务冻结", active: true,  legacy_compat: true}
   1: {name: "闸2 设计",     active: true,  legacy_compat: true}

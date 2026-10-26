@@ -1043,6 +1043,96 @@ def _collect_ast_reads(scripts_dir):
     return reads
 
 
+def _collect_chain_reads(scripts_dir):
+    """用 AST 重建**链式访问路径**（v3.23.0 · 第三轮诊断 F1）。
+
+    背景（第三轮从零诊断 P-1，实测可复现）：
+      第 18 项的 alive 判定是 `n_full in norm_reads or n_leaf in norm_reads`——
+      **末段键名同名即算"已被代码读取"**。而 `norm_reads` 含 1268 个键名
+      （`enabled` 27 处 / `note` 47 处 / `max_retries` 7 处…），
+      ⇒ 新增配置键只要与代码中任意键名重名，就自动判为"已接线"⇒ **死配置门假绿**。
+      反向例实测：往未登记新段放一个叶名为 `enabled` 的键 ⇒ 第 18 项 rc=0（漏检）；
+      同一段放唯一名键 ⇒ 检出。**唯一差异是叶名是否重名。**
+
+    本函数把 `x.get("a").get("b")["c"]` 还原为 `a.b.c`，
+    让"这条配置路径是否真被访问过"有了**路径级**证据，
+    而不再依赖"末段名字是否撞车"。
+
+    返回：规范化后的点分路径集合（含各级后缀）。
+    局限（如实标注）：链在**函数传参**处会断（`f(cfg["x"])` 之后链不可知），
+      也断在**动态键名**处（`d[k]`，k 非字面量）与 `**` 解包处——
+      这些场景由"父级整块消费"层兜底（见 check_dead_config_keys）。
+    """
+    import ast
+
+    def _chain(node, binds=None):
+        """还原访问链；返回点分路径或 None（链根不可知时返回首段）。
+
+        v3.23.0 增两种还原能力（否则本包主流读法会被误判为弱证据）：
+          ① **节访问器约定**：`f(cfg, "段名")` ⇒ 视作访问 "段名"
+             （本包 `loop_contract.py::_section(cfg, name)` 即此形态——
+              段名以实参传入，纯属性链在此断裂）。
+          ② **局部变量绑定**：`x = f(cfg, "段名")` ⇒ `x` 等价于 "段名"，
+             后续 `x.get("键")` 可还原为 "段名.键"。
+        """
+        binds = binds if binds is not None else {}
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and node.args):
+            a = node.args[0]
+            if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                base = _chain(node.func.value, binds)
+                return f"{base}.{a.value}" if base else a.value
+        if isinstance(node, ast.Subscript):
+            sl = node.slice
+            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                base = _chain(node.value, binds)
+                return f"{base}.{sl.value}" if base else sl.value
+        # ② 局部变量绑定：x = <链> ⇒ x 的链 = 该链
+        if isinstance(node, ast.Name) and node.id in binds:
+            return binds[node.id]
+        # ① 节访问器约定：f(cfg_like, "段名")
+        if isinstance(node, ast.Call) and node.args:
+            _last = node.args[-1]
+            _first = node.args[0]
+            if (isinstance(_last, ast.Constant) and isinstance(_last.value, str)
+                    and isinstance(_first, ast.Name)
+                    and any(_t in _first.id.lower() for _t in ("cfg", "conf", "config"))):
+                return _last.value
+        return None
+
+    def _norm(s):
+        return "".join(ch for ch in str(s).lower() if ch.isalnum() or ch == "_")
+
+    paths = set()
+    for fn in sorted(os.listdir(scripts_dir)):
+        if not fn.endswith(".py"):
+            continue
+        fp = os.path.join(scripts_dir, fn)
+        try:
+            tree = ast.parse(open(fp, encoding="utf-8", errors="replace").read())
+        except Exception:
+            continue
+        # 先收集局部变量绑定（单名赋值：x = <可还原链>）
+        binds = {}
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Assign) and len(n.targets) == 1
+                    and isinstance(n.targets[0], ast.Name)):
+                c = _chain(n.value, binds)
+                if c:
+                    binds[n.targets[0].id] = c
+        for node in ast.walk(tree):
+            c = _chain(node, binds)
+            if not c:
+                continue
+            segs = c.split(".")
+            for i in range(len(segs)):
+                paths.add(_norm(".".join(segs[i:])))
+            # 前缀（父级被整块取走的证据：段根本身入集）
+            for i in range(1, len(segs)):
+                paths.add(_norm(".".join(segs[:i])))
+    return paths
+
+
 def check_dead_config_keys(expert_dir):
     """v3.12.0：死配置巡检（第 18 项）——「配了但没人读」的配置键。
 
@@ -1192,6 +1282,23 @@ def check_dead_config_keys(expert_dir):
     #   （overlay_injection / theme / loop_b / delta_gate / stages / language-profile
     #   各段 …）⇒ 新段的登记**从未生效**（这是 L3 确证的核心判据缺陷）。
     #   现改为：原有 7 段 ∪ known_textual 中的裸段名（不含点号的条目）。
+    #
+    # ── v3.23.0 F2：把「末段键名豁免」与「段级豁免」**分开**────────────
+    #   病灶（第三轮从零诊断 P-2）：`known_textual` 里混着两类条目——
+    #     · **末段键名**（description / version / name / note / comment / duty /
+    #       label_zh / label_en）：本意是「这些名字的键是给人读的」
+    #     · **段名**（stages / collapse / observability / ima / standards /
+    #       channels / terminology / consistency / report_only …）：本意是
+    #       「这一整段由主理人/会话层消费」
+    #   而 `path_prefixes` 把**两类都**派生成了段级白名单 ⇒
+    #   **凡挂在名为 name/note/description/version/duty/comment 的段下的键，
+    #   一律自动豁免**——新增的、确实没人读的键也照样绿灯。
+    #   修法：通用词只按**末段键名**豁免（规则①保留），不再派生为段级白名单；
+    #   真正的段级登记（stages/collapse/…）维持原样。
+    known_leaf_only = {
+        "description", "version", "name", "note", "comment", "duty",
+        "label_zh", "label_en",
+    }
     path_prefixes = (
         ".disease_modules",     # 课程目录内容（case_extract.py 按域整体读取疾病名）
         ".gates",               # 五闸人读判据（机器判据在 verify_deck）
@@ -1201,7 +1308,8 @@ def check_dead_config_keys(expert_dir):
         ".members",             # 成员能力/权限声明（供 spawn 前判断）
         ".domains",             # 域标签与命名规范（展示元数据）
     ) + tuple(f".{_seg}" for _seg in sorted(known_textual)
-              if "." not in _seg and not _seg.startswith("_"))
+              if "." not in _seg and not _seg.startswith("_")
+              and _seg not in known_leaf_only)
 
     # v3.19.3：人读型判据补强——除末段键名外，**任一路径前缀段**命中
     #   known_textual 即算人读型（修复：原判据只查末段键名，而登记写的是段名
@@ -1210,7 +1318,10 @@ def check_dead_config_keys(expert_dir):
     #   支持两种登记形态：
     #     · 裸段名（`loop_b`）        → 匹配任一文件的该段
     #     · 带文件前缀（`visual-rules.gate`）→ 只匹配该文件的该段（防同名段歧义）
-    _kt_bare = {k for k in known_textual if "." not in k}
+    # ⚠ v3.23.0 F2：裸段名集合**排除通用词**（known_leaf_only）——
+    #   它们只按末段键名豁免，不得作为段级白名单（否则整段自动绿灯）。
+    _kt_bare = {k for k in known_textual
+                if "." not in k and k not in known_leaf_only}
     _kt_qualified = {k for k in known_textual if "." in k}
 
     def _is_textual(fname: str, full: str) -> bool:
@@ -1234,6 +1345,44 @@ def check_dead_config_keys(expert_dir):
 
 
     dead, alive, textual = [], 0, 0
+    # v3.23.0 F1：块级证据计数 + 弱证据（仅末段同名撞车）清单
+    block, weak, weak_reg, weak_list = 0, 0, 0, []
+
+    # ── v3.23.0 F1：**弱证据登记区**（known_weak）────────────────────────
+    # 弱证据 = 该键**只**因「末段键名与代码中某键同名」而被判为已接线。
+    # 这**不是**路径级证据（父级被整块取走也算块级），故不能默认算数。
+    # 登记 = 承认「这个键确实只靠同名，另有原因不被代码读」。
+    # ⚠ 登记时必须写明理由；只登记不解释 = 把假绿固化，与本项纪律相悖。
+    known_weak = {
+        # language-profile.yaml#languages.*.{label,script} —— 语言**展示元数据**
+        #   （zh-CN 简体中文/Hans、en English/Latn）：供成员与装配器按受众语言选字体、
+        #   做简繁校对用。**当前无脚本消费点**（第三轮诊断实测：代码与文档 0 处引用
+        #   `languages` 段）⇒ 旧口径下它是靠「末段同名（label / script）」**碰巧**
+        #   被算作已接线——典型假绿。改为**显式登记**，把「没人读」这件事写明。
+        "language-profile.languages",
+    }
+
+    def _is_weak_registered(fname: str, full: str) -> bool:
+        """弱证据登记判定：支持「限定路径」与「带文件前缀的段名」两种形态。"""
+        _segs = full.split(".")
+        _stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+        if full in known_weak:
+            return True
+        for _k in known_weak:
+            if "." not in _k:
+                # 裸段名：命中路径中任一段
+                if _k in _segs[:-1]:
+                    return True
+            else:
+                _kf, _, _kp = _k.partition(".")
+                if _kf == _stem and _segs[:len(_kp.split("."))] == _kp.split("."):
+                    return True
+        return False
+
+    # ── v3.23.0 F1：链式访问路径（路径级证据的唯一来源）────────────────
+    # 由 _collect_chain_reads 从 AST 重建 `x.get("a").get("b")["c"]` ⇒ "a.b.c"，
+    # 使"这条配置路径是否真被访问"有了路径级判据，而不再依赖末段键名是否撞车。
+    chain_reads = _collect_chain_reads(scripts_dir)
 
     def walk(node, path, fname):
         """递归收集叶子键。
@@ -1243,7 +1392,7 @@ def check_dead_config_keys(expert_dir):
         在别的分支下也可能出现，只查末段会误报；反过来，只查整条路径会漏报
         「代码读了同名字段但走的是另一条分支」，故**两段都查，任一命中即算有读取者**。
         """
-        nonlocal alive, textual
+        nonlocal alive, textual, block, weak, weak_reg
         if isinstance(node, dict):
             for k, v in node.items():
                 walk(v, f"{path}.{k}" if path else str(k), fname)
@@ -1259,15 +1408,46 @@ def check_dead_config_keys(expert_dir):
             # 去掉数组下标（YAML 里不会有，这里防御性处理）
             leaf = leaf.split("[")[0]
             n_full, n_leaf = norm(full), norm(leaf)
+            _segs = full.split(".")
             # 路径段命中：逐段检查 `domains.active` → `.domains.active`、`.domains`、`.active`
             # （v3.13.0 曾写成只拼 segs[i:]，漏掉 i=0 的单段前缀 `.domains`，导致白名单整条失效）
-            seg_hit = any("." + ".".join(full.split(".")[:i + 1]) in path_prefixes
-                          for i in range(len(full.split("."))))
-            # AST 判据：整条路径或末段键名任一命中真实读取点即算"有人消费"
-            if (n_full and n_full in norm_reads) or (n_leaf and n_leaf in norm_reads):
+            seg_hit = any("." + ".".join(_segs[:i + 1]) in path_prefixes
+                          for i in range(len(_segs)))
+            # ── v3.23.0 F1：alive 判定由「末段同名即算接线」改为**三层证据** ──
+            # 病灶（第三轮从零诊断 P-1，反向例实测可复现）：
+            #   原口径 `n_full in norm_reads or n_leaf in norm_reads`——**末段键名同名**
+            #   即算「已被代码读取」。norm_reads 含 1268 个键名（enabled 27 处 / note 47 处），
+            #   ⇒ 新增配置键只要与代码中任意键名重名就自动判为已接线 ⇒ **死配置门假绿**。
+            #   反向例：未登记新段放叶名 `enabled` 的键 ⇒ rc=0（漏检）；同段唯一名 ⇒ 检出。
+            # 三层证据：
+            #   A 路径级（强）：链式访问路径命中该键的**整条路径或 ≥2 段后缀**
+            #   B 块级  （强）：**父级路径**被代码整块取走 ⇒ 该子树随父级被消费
+            #   C 名级  （弱）：仅末段键名撞车 ⇒ **不可信**，须登记理由（known_weak）
+            _a_path = False
+            for _i in range(len(_segs) - 1):        # 末段单独命中不算路径级证据
+                _cand = norm(".".join(_segs[_i:]))
+                if _cand and _cand in chain_reads:
+                    _a_path = True
+                    break
+            _b_block = False
+            for _i in range(len(_segs) - 1):        # 真前缀 ⇒ 父级被整块取走
+                _cand = norm(".".join(_segs[:_i + 1]))
+                if _cand and _cand in chain_reads:
+                    _b_block = True
+                    break
+            if (n_full and n_full in norm_reads) or _a_path or _b_block:
                 alive += 1
+                if _b_block and not _a_path and not (n_full and n_full in norm_reads):
+                    block += 1
             elif seg_hit or _is_textual(fname, full):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
+            elif n_leaf and n_leaf in norm_reads:
+                # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
+                if _is_weak_registered(fname, full):
+                    weak_reg += 1
+                else:
+                    weak += 1
+                    weak_list.append((fname, full, node))
             else:
                 dead.append((fname, full, node))
 
@@ -1349,11 +1529,12 @@ def check_dead_config_keys(expert_dir):
                     not isinstance(_x, (dict, list)) for _x in _node):
                 list_valued[f"{cf}#{_path}"] = len(_node)
 
-    if dead:
+    if dead or weak_list:
 
         uniq = list(seen.values())
-        print(f"[18/{N}] ℹ 提示：{len(uniq)} 个配置键在 scripts/ 中无读取者"
-              f"（代码读取 {alive} 项 · 人读型登记 {textual} 项 · "
+        print(f"[18/{N}] ℹ 提示：{len(uniq) + len(weak_list)} 个配置键无**路径级**读取证据"
+              f"（代码读取 {alive} 项〔其中块级消费 {block} 项〕 · 人读型登记 {textual} 项 · "
+              f"弱证据登记 {weak_reg} 项 · "
               f"另有 {len(dead) - len(uniq)} 条为同键多值重复，已按唯一键计）")
         # v3.19.3（L3）：**全量输出**——原实现截断为前 12 条，其余条目**永远不可见**，
         #   ⇒ 人工无法复核 ⇒ 这本身是工具缺陷（体检项形同虚设）。
@@ -1374,6 +1555,15 @@ def check_dead_config_keys(expert_dir):
         if len(shown) < len(uniq):
             print(f"     · … 还有 {len(uniq) - len(shown)} 项"
                   f"（本次按 VET_DEAD_CONFIG_LIMIT={_limit} 截断；unset = 全量）")
+        if weak_list:
+            print(f"     ── 弱证据（**仅**末段键名与代码中某键同名，不构成路径级证据）："
+                  f"{len(weak_list)} 项 ──")
+            for fname, path, val in weak_list:
+                print(f"     · {fname}#{path} = {val!r}")
+            print("        ⇒ 处置：① 改为路径级读取（改代码读整条路径）"
+                  "② 登记到 known_weak 并写明理由 ③ 删掉该配置键。")
+            print("        ⚠ 旧口径下这类键因「末段同名」被算作已接线 ⇒ **假绿**"
+                  "（第三轮诊断 P-1 已实证：新增叶名 `enabled` 的键根本检不出来）。")
         print("     → 处置三选一：「① 删掉 ② 实现读取 ③ 登记白名单」——"
               "本次修掉的 three_source 阈值属 ②。")
         # ── v3.20.0：**由"提示不阻断"改为阻断** ────────────────────
@@ -1390,8 +1580,11 @@ def check_dead_config_keys(expert_dir):
               "此后任何未登记死键都属新增项，须当次三选一处置，不得挂账。")
     else:
         print(f"[18/{N}] ✓ 无死配置（{len(cfg_files)} 个 config 文件："
-              f"代码读取 {alive} 项 · 人读型登记 {textual} 项）")
-    return 1 if dead else 0
+              f"代码读取 {alive} 项〔其中块级消费 {block} 项〕 · 人读型登记 {textual} 项 · "
+              f"弱证据登记 {weak_reg} 项）")
+    # v3.23.0 F1：弱证据（仅末段同名撞车）**同样阻断**——
+    #   旧口径把它算作已接线 ⇒ 新增的死配置键只要名字撞车就能混过这道门（假绿）。
+    return 1 if (dead or weak_list) else 0
 
 
 def check_fallback_drift(expert_dir):
