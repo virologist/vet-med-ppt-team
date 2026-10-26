@@ -20,7 +20,7 @@ inject_notes.py — 讲稿备注注入工具（v3.22.0）
   （min_font_pt / require_empty_slot / max_overlap_ratio / sample_review_ratio）
   在 scripts/ 里 **0 处读取**——SOP 写明「注入脚本前置断言必须实现，缺一即拒跑」，
   实际一条都没执行过。本版全部落地：
-    断言① 读配置：启动即读 visual-rules.yaml#batch_surgery 四键并打印一行；
+    断言① 读配置：启动即读 visual-rules.yaml#overlay_injection 四键并打印一行；
           缺段/缺键 ⇒ 显式告警 + 回落内置默认值（本包铁律：静默回落 = 不设防），**不崩**
     断言② 字号：注入字号 < min_font_pt ⇒ 拒写该处，原因 font_below_min
     断言③ 空位+重叠：注入框落点与页内既有文本框两两求交，交面积/较小面积 > max_overlap_ratio
@@ -66,10 +66,10 @@ SLOT_GRID_STEP_IN = 0.25   # 空位网格探测步长（与 surgery_deck.py 找�
 
 # 注入字号（SOP §1 红线：注入文本一律按正文红线 12pt）。
 # 此前脚本**完全不设字号**（继承母版，无从断言）；现固定 12.0 并在写入前对
-# yaml#batch_surgery.min_font_pt 断言——「注入字号」从此有确定值可查、可拒。
+# yaml#overlay_injection.min_font_pt 断言——「注入字号」从此有确定值可查、可拒。
 NOTE_FONT_PT = 12.0
 
-# batch_surgery 四键回落默认值（与 visual-rules.yaml 里写的值相同）
+# overlay_injection 四键回落默认值（与 visual-rules.yaml 里写的值相同）
 _BS_DEFAULTS = {
     "min_font_pt": 12.0,
     "require_empty_slot": True,
@@ -88,8 +88,8 @@ def load_cov():
         return 0.80
 
 
-def load_batch_surgery():
-    """断言①：读 visual-rules.yaml#batch_surgery 注入纪律四键。
+def load_overlay_injection():
+    """断言①：读 visual-rules.yaml#overlay_injection 注入纪律四键。
 
     缺段/缺键 ⇒ 显式告警 + 回落内置默认值（默认值与 yaml 同值）——静默回落 = 不设防；
     但**不因此中断运行**（配置缺失不该让工具崩，告警本身就是可追责痕迹）。
@@ -98,9 +98,9 @@ def load_batch_surgery():
     cfg = {}
     try:
         with open(RULES_YAML, encoding="utf-8") as f:
-            cfg = (yaml.safe_load(f) or {}).get("batch_surgery") or {}
+            cfg = (yaml.safe_load(f) or {}).get("overlay_injection") or {}
     except Exception as e:
-        print(f"⚠ visual-rules.yaml 读取失败（{e}），batch_surgery 整段回落内置默认值（与 yaml 同值）",
+        print(f"⚠ visual-rules.yaml 读取失败（{e}），overlay_injection 整段回落内置默认值（与 yaml 同值）",
               file=sys.stderr)
     raw = {
         "min_font_pt": cfg.get("min_font_pt"),
@@ -111,7 +111,7 @@ def load_batch_surgery():
     bs = {}
     for k, v in raw.items():
         if v is None:
-            print(f"⚠ batch_surgery.{k} 未配置，回落内置默认值 {_BS_DEFAULTS[k]!r}（与 yaml 同值）",
+            print(f"⚠ overlay_injection.{k} 未配置，回落内置默认值 {_BS_DEFAULTS[k]!r}（与 yaml 同值）",
                   file=sys.stderr)
             bs[k] = _BS_DEFAULTS[k]
         else:
@@ -265,7 +265,7 @@ def _parse_box_arg(s):
 
 
 def process(path, cov, bs, dry_run, inject_box=None):
-    """注入一册课件；bs = batch_surgery 四键（断言①②③④都在这里执行）。"""
+    """注入一册课件；bs = overlay_injection 四键（断言①②③④都在这里执行）。"""
     prs = Presentation(path)
     stats = {"visible": 0, "had_note": 0, "injected": 0, "still_missing": 0,
              "rejected_overlap": 0, "rejected_font": 0, "rejected_no_empty_slot": 0}
@@ -371,9 +371,9 @@ def main():
             sys.exit(2)
 
     cov = load_cov()
-    bs = load_batch_surgery()
+    bs = load_overlay_injection()
     # 断言①：启动即打印已读取的四键值（证明已 Read visual-rules.yaml，SOP「缺一即拒跑」的读键项）
-    print(f"批量注入纪律已读取（visual-rules.yaml#batch_surgery）："
+    print(f"批量注入纪律已读取（visual-rules.yaml#overlay_injection）："
           f"min_font_pt={bs['min_font_pt']} require_empty_slot={bs['require_empty_slot']} "
           f"max_overlap_ratio={bs['max_overlap_ratio']} sample_review_ratio={bs['sample_review_ratio']}")
 
@@ -388,7 +388,7 @@ def main():
 
     print(f"备注注入（dry_run={a.dry_run}）：目标覆盖率 ≥ {cov:.0%} / 课件 {len(rels)} 份")
     report = {"version": "3.22.0", "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-              "dry_run": a.dry_run, "threshold": cov, "batch_surgery": bs,
+              "dry_run": a.dry_run, "threshold": cov, "overlay_injection": bs,
               "inject_box_in": list(inject_box) if inject_box else None,
               # 提示级：屠明熙抽样复核下限（几何红灯页另 100% 复查，见 SOP §1）
               "sample_review_ratio_hint": f"注入页至少 {bs['sample_review_ratio']:.0%} 须屠明熙抽样复核",
