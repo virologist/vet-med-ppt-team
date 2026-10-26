@@ -147,3 +147,74 @@ v3.17.0 新增「专家团动态坍缩」：route --domain 落盘 → collapse c
 - See Also: ERR-20261022-001
 
 ---
+
+## [LRN-20261026-001] best_practice
+
+**Logged**: 2026-10-26T22:20:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: testing
+
+### Summary
+「末段键名同名」不能当作「该配置已被代码读取」的证据——静态判据必须落到**路径级**，否则判据本身会被键名撞车静默绕过
+
+### Details
+第 18 项（死配置巡检）自 v3.20.0 起是**阻断级**门，历轮主线（33 键 → 24 个 → …）全靠它兜底。
+但原判定是 `n_full in norm_reads or n_leaf in norm_reads`——**末段键名同名即算已接线**。
+而 `norm_reads` 收录 1268 个键名（`enabled` 27 处 / `note` 47 处 / `max_retries` 7 处，
+其中 390 个**仅**来自字典字面量）⇒ 新增配置键只要与代码中任意键名重名就自动绿灯。
+
+反向例（隔离副本实测）：未登记新段放叶名 `enabled` 的键 ⇒ rc=0 **漏检**；
+同段放唯一名键 ⇒ 检出。**唯一差异是叶名是否撞车** ⇒ 同名碰撞可独立造成假绿。
+量化：1433 个 alive 判定中**路径级强证据只有 22 个（1.5%）**，其余 98.5% 靠撞名。
+
+修法：alive 改**三层证据**——A 路径级（AST 链式路径，≥2 段后缀）/ B 块级（父段整块取走，
+计数可见）/ C 名级（**弱证据须登记 `known_weak`**，同样阻断）。
+链式重建须支持本包两种主流读法：**节访问器约定**（`_section(cfg, "段名")`——段名以实参传入，
+纯属性链在此断裂）与**局部变量绑定**（`x = f(cfg, "段名")`）。补齐后弱证据 17 → 4。
+
+### Suggested Action
+任何"静态判据型"门禁，上线前必须构造**反向例**证明它能失败：
+① 找代码里高频出现的通用键名（enabled/note/target/count…）；
+② 在未登记新段放一个同名键 ⇒ 门禁须转红；
+③ 再放一个唯一名键 ⇒ 门禁须同样转红（证明不是无差别全盘变红）。
+判据若只能靠"名字出现过"成立，它就不是判据，是巧合。
+
+### Metadata
+- Source: error
+- Related Files: scripts/ensure_settings.py, scripts/test_dead_config_criteria.py, scripts/test_dead_config_disposition.py
+- Tags: 静态判据, 路径级证据, 同名碰撞, 假绿, 反向例
+
+---
+
+## [LRN-20261026-002] gotcha
+
+**Logged**: 2026-10-26T22:20:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: tooling
+
+### Summary
+macOS 自带 BSD grep **不支持 BRE 的 `\|` 分支**——`grep -n "a\|b" file` 静默返回空，看起来像「不存在」
+
+### Details
+本轮取证时用 `grep -n "font_below_min\|overlap_exceeded\|..." scripts/inject_notes.py` 搜四断言，
+返回空 ⇒ 差点误报「v3.22.0 G1 四断言未落地」。改用 `grep -E` / ripgrep（Grep 工具）后证伪：
+四断言**确实存在**（`inject_notes.py:20-30, 69-121`）。
+
+BSD grep 遇到不支持的分支表达式时**不报错、不输出**，退出码 1——
+与「确实没有匹配」完全无法区分。这与包内长期强调的「假阳性必须为零」同源：
+**取证工具本身也会造假绿**。
+
+### Suggested Action
+取证阶段的「搜不到」必须用**两种不同工具**各验一次（`grep -E` 与 ripgrep），
+否则「未找到」会被当成「不存在」。
+推论：报告里凡写「不存在 / 零处命中」的结论，都必须附**工具名 + 命令**，
+以便他人用另一工具复核。
+
+### Metadata
+- Source: error
+- Related Files: scripts/inject_notes.py, scripts/ensure_settings.py
+- Tags: grep, macOS, BSD, 取证工具, 假绿, 可复核性
+
+---
