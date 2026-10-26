@@ -199,16 +199,24 @@ checks:
 #   （title_position_consistency / image_area_ratio）同构——
 #   先积累证据，不贸然阻断（新增阻断项 = 放松既有判据的反面风险）。
 #   开启方式：把 enabled 改 true，或命令行走 --chart-check。
-# ⚠ **本版只实现"图区占比"**（面积比，确定性可判）；
-#   坐标轴标注字号 / 图例位置 / 表格布局**尚未实现**（需解析 chart XML 与表格形状，
-#   判据边界未清）⇒ 如实登记为残留，**不得**假装已覆盖。
+# ⚠ v3.22.0 只实现"图区占比"（面积比，确定性可判）。
+# v3.23.1 W1：**再落地两项**（判据已实证可确定性解析，且同为建议级不阻断）：
+#   axis_label_min_pt —— 图表坐标轴刻度标注字号下限（chartSpace XML 内
+#     catAx/valAx 段的 a:defRPr sz，多值取最小；轴未写 txPr = 继承默认、
+#     无从判定 ⇒ 不误报）。**缺省 = 不判**（保守起步，先积累证据）。
+#   legend_required —— 多系列（≥2 个 c:ser）图表必须有 <c:legend>；
+#     单系列不需要（图例即系列名）。**缺省 = 不判**（老课件单系列图多，
+#     默认开启会噪音爆炸）。
+#   table_layout —— **仍不实现**（表格布局判据边界未清，如实保留占位）。
 chart:
   enabled: false
   area_ratio:
     min: 0.15        # 图表页的图区占页面面积下限（低于此值 = 图挤在角落，讲不下去）
     max: 0.60        # 上限（高于此值 = 图挤满版面，讲解空间被吞）
-  # ⚠ 以下三项**尚无执行器**（保留占位以免将来重复设计；本版不判）
-  unimplemented: [axis_label_min_pt, legend_required, table_layout]
+  # axis_label_min_pt: 12       # ← 建议值 12pt（正文红线同源）；缺省不判
+  # legend_required: true       # ← 建议值 true；缺省不判
+  # ⚠ 以下一项**尚无执行器**（保留占位以免将来重复设计；本版不判）
+  unimplemented: [table_layout]
 
 overlay_injection:
   min_font_pt: 12.0          # 注入文本（钩子/任务卡/页脚）不得低于正文红线——试做12pt批量8pt的两张皮事故禁止复发

@@ -1146,7 +1146,12 @@ def _write_collapse_artifact(cfg, dom, args):
         try:
             with open(path, encoding="utf-8") as f:
                 old = json.load(f)
-        except Exception:
+        except Exception as e:
+            # v3.23.1 W4：文件存在却解析失败 = **半截文件**（历轮踩过：并行写盘被读到一半）。
+            # 静默当 None ⇒ 已填的 selection_rationale 被无告警抹掉。
+            # 判定仍继续（写路径是幂等重建），但必须在 stderr 留痕。
+            print(f"⚠ 坍缩产物存在但解析失败（{e}）——按无旧产物重建，"
+                  f"此前已填的选型理由将丢失：{path}", file=sys.stderr)
             old = None
     if isinstance(old, dict) and old.get("status") == confirmed_status:
         return path, old, False
@@ -1194,7 +1199,13 @@ def cmd_collapse(args):
                     try:
                         with open(fp, encoding="utf-8") as f:
                             obj = json.load(f)
-                    except Exception:
+                    except Exception as e:
+                        # v3.23.1 W4：坏文件不能静默消失（否则已确认产物在 list 里"查无此人"），
+                        # 以 broken 条目显式列出（不中断整个 list）。
+                        items.append({"task_id": tid, "path": fp,
+                                      "status": "unparseable",
+                                      "effective": False,
+                                      "error": f"{type(e).__name__}: {str(e)[:80]}"})
                         continue
                     items.append({
                         "domain_id": obj.get("domain_id"),
@@ -1467,7 +1478,12 @@ def _knowledge_channel_state(w):
                 st = json.load(f)
             if isinstance(st, dict) and isinstance(st.get("tool_probe_results"), dict):
                 probe = st["tool_probe_results"]
-        except Exception:
+        except Exception as e:
+            # v3.23.1 W4：task_state 解析失败 ≠ 「尚未探测」——半截文件须留痕，
+            # 否则人会以为没跑过探测，而实际是状态文件损坏（后续写回也会失败）。
+            # 判定不变（probe 空走「建议探测」分支，不阻断）。
+            print(f"⚠ task_state.json 存在但解析失败（{e}）——"
+                  f"探测结果按未取得处理；该文件可能已损坏，建议检查：{sp}", file=sys.stderr)
             probe = {}
     if not probe:
         return True, ("外部工具配置就位；**尚未探测**通道"
@@ -3371,6 +3387,22 @@ def classify_source(src, tsc=None, online=None):
     if mode == "gb_number_format":
         return _verify_gb_number_format(ref, res, rules, tiers)
 
+    # ── v3.23.1 W3：未知 mode **显式告警到 stderr**（不改变判定）─────────
+    # 背景（第三轮盘点）：此分支行为本身是 **fail-closed 正确设计**——
+    #   res 默认 tier=TIER_UNVERIFIABLE，不可核验档不计入已验证 ⇒ 案例判否，不静默放行。
+    #   但 reason 只进了返回结构，**stderr 无声**：若将来有人在 yaml 里新增 mode 名
+    #   却拼错（如 online_e_search），所有该类来源会**全部静默落不可核验档**，
+    #   三源核验整批判否——人要到案例清单里逐条翻 reason 才能发现根因是拼错 mode。
+    # 修法：判定的 fail-closed 语义不动；补一条 stderr 告警，
+    #   让「配置声明了脚本不认识的 mode」在命令输出层**第一眼可见**。
+    #   已登记的合法 mode 集合 = 本函数上方各分支（online_esearch / isbn_online /
+    #   gb_online / isbn_checksum / gb_number_format）。
+    print(f"⚠ three_source_check：kind={kind} 声明的核验方式 mode={mode!r} 未实现——"
+          f"该来源按「不可核验」处理（fail-closed）。\n"
+          f"   → 合法 mode：online_esearch / isbn_online / gb_online / "
+          f"isbn_checksum / gb_number_format；请核对 "
+          f"config/domain_config.yaml#three_source_check.source_verification 的拼写。",
+          file=sys.stderr)
     res["reason"] = f"kind={kind} 的核验方式 mode={mode!r} 未实现——判「不可核验」"
     return res
 
@@ -6941,7 +6973,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.22.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.23.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

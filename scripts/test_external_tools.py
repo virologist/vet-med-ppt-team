@@ -50,8 +50,22 @@ def _run(args, timeout=200):
 class TestExternalTools(unittest.TestCase):
     """v3.19.0 外部工具链回归护栏。"""
 
+    #: v3.23.1 W5：类级基线快照（防上一轮测试运行的残留配置固化成本轮起点）。
+    _class_bak: str = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls._class_bak = EXT_CFG.read_text(encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        EXT_CFG.write_text(cls._class_bak, encoding="utf-8")
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        # 防跨轮污染固化：起点必须与干净基线一致
+        if EXT_CFG.read_text(encoding="utf-8") != self._class_bak:
+            EXT_CFG.write_text(self._class_bak, encoding="utf-8")
 
     # ── T1 结构完整 ─────────────────────────────────────────────
     def test_T1_config_structure(self):

@@ -544,12 +544,20 @@ def _chart_rules():
               "（enabled=false / 占比 0.15–0.60）处理", file=sys.stderr)
         return {"enabled": False, "area_ratio": {"min": 0.15, "max": 0.60}}
     ar = node.get("area_ratio") if isinstance(node.get("area_ratio"), dict) else {}
+    # v3.23.1 W1：新增两项判据（axis_label_min_pt / legend_required）——
+    #   均为建议级（未登记 severity ⇒ 落 unknown_out 明示不阻断）；
+    #   axis_label_min_pt 缺省 = 不判（轴未写 txPr 本就无从判定，缺省不误报）；
+    #   legend_required 缺省 = 不判（保守：老课件大量单系列图，默认开启会噪音爆炸）。
+    #   yaml#chart.unimplemented 只剩 table_layout 一项。
     return {
         "enabled": bool(node.get("enabled")),
         "area_ratio": {
             "min": float(ar.get("min", 0.15) or 0.15),
             "max": float(ar.get("max", 0.60) or 0.60),
         },
+        "axis_label_min_pt": (float(node["axis_label_min_pt"])
+                              if node.get("axis_label_min_pt") is not None else None),
+        "legend_required": bool(node.get("legend_required")),
     }
 
 
@@ -562,15 +570,24 @@ def check_chart_layout(slide, idx, rules, page_area):
       · 占比 < min ⇒ 「图表图区占比过小」（图挤角落，讲不下去）；
       · 占比 > max ⇒ 「图表图区占比过大」（图挤满版面，讲解空间被吞）。
 
-    ⚠ **只判面积比**。坐标轴标注字号 / 图例位置 / 表格布局**本版未实现**
-      （需解析 chart XML 与表格形状，判据边界未清）⇒ 如实登记为残留，
-      不假装已覆盖（config/visual-rules.yaml#chart.unimplemented 已列明）。
     ⚠ **问题类型不登记进 severity** ⇒ 落在 unknown_out（明示、**不阻断**），
       与既有 rubric 建议级同口径。
+
+    v3.23.1 W1（第三轮盘点）：`chart.unimplemented` 三项中的两项**落地**——
+      · axis_label_min_pt：图表坐标轴刻度标注字号 < 下限 ⇒ 告警
+        （判据：chartSpace XML 内 `<c:catAx>/<c:valAx>` 段下 `<a:defRPr sz="N">`，
+          N/100 = pt；多值取最小；**轴未写 txPr** = 继承默认字号、无从判定 ⇒ 不误报，
+          与「未取得尺寸置 null 而非 0」同一纪律）；
+      · legend_required：图表**多系列**（≥2 个 `<c:ser>`）却无 `<c:legend>` ⇒ 告警
+        （单系列不需要图例——图例就是系列名本身）；
+      · table_layout：仍不实现（表格布局判据边界未清，如实保留在 unimplemented）。
+    解析通道：`shape.chart._chartSpace.xml`（python-pptx 对象模型，实测前缀稳定为
+      `c:`/`a:`）；解析失败（老式图表/外部工作簿）⇒ 明示跳过、不误报。
     """
     out = []
     if not rules.get("enabled"):
         return out
+    axis_min = rules.get("axis_label_min_pt")
     try:
         total = 0
         n_chart = 0
@@ -587,6 +604,48 @@ def check_chart_layout(slide, idx, rules, page_area):
             total += area
             if is_chart:
                 n_chart += 1
+                # ── W1：轴标注字号 / 图例存在性（解析 chartSpace XML）────────
+                if axis_min is None and not rules.get("legend_required"):
+                    continue          # 两项判据都未配置 ⇒ 不做 XML 解析
+                try:
+                    cxml = sh.chart._chartSpace.xml or ""
+                except Exception as e:
+                    # 解析失败明示跳过（老式图表 / 外部工作簿链接），不误报
+                    out.append({"slide": idx, "type": "图表规范·无法解析",
+                                "detail": f"chart XML 读取失败（{type(e).__name__}），"
+                                          f"轴字号/图例检查跳过——请人工核对该图表",
+                                "snippet": getattr(sh, "name", "") or "chart"})
+                    continue
+                import re as _re
+                # 轴标注字号：catAx/valAx 段内 a:defRPr sz（百倍 pt），多值取最小
+                if axis_min is not None:
+                    szs = []
+                    for _ax in ("c:catAx", "c:valAx"):
+                        _m = _re.search(rf"<{_ax}>.*?</{_ax}>", cxml, _re.S)
+                        if not _m:
+                            continue
+                        _v = _re.findall(r'<a:defRPr[^>]*\bsz="(\d+)"', _m.group(0))
+                        if _v:
+                            szs.append(min(int(x) for x in _v) / 100.0)
+                    if szs and min(szs) < float(axis_min):
+                        out.append({"slide": idx, "type": "图表轴标注字号过小",
+                                    "detail": f"坐标轴刻度标注最小 {min(szs):g}pt "
+                                              f"< 红线 {float(axis_min):g}pt"
+                                              "（投影后看不清）",
+                                    "snippet": f"{len(szs)} 根轴"})
+                # 图例存在性：多系列（≥2 ser）却无 legend ⇒ 告警
+                #   ⚠ ser 计数须兼容 <c:ser> 与自闭合 <c:ser/> 两种形态
+                #   （真实图表的 ser 总是成对闭合标签；但判据不能依赖这个偶然——
+                #     round-trip 工具/手写 XML 会产生自闭合形态，第三轮盘点实测踩过）
+                if rules.get("legend_required"):
+                    # <c:ser 后必须跟 /、空白或 >（防误吞 c:serX 之类前缀同名标签）
+                    n_ser = len(_re.findall(r"<c:ser(?=[\s/>])[^>]*>", cxml))
+                    has_legend = _re.search(r"<c:legend[\s>/]", cxml) is not None
+                    if n_ser >= 2 and not has_legend:
+                        out.append({"slide": idx, "type": "图表缺图例",
+                                    "detail": f"{n_ser} 个系列却无图例——"
+                                              "读者无法区分各系列含义（单系列不需要图例）",
+                                    "snippet": "legend 缺失"})
         if total <= 0 or page_area <= 0:
             return out
         ratio = total / float(page_area)

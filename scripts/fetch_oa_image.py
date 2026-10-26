@@ -59,7 +59,14 @@ EXIT_MANIFEST = 6
 # 图像扩展名白名单（Europe PMC 补充文件里常见的位图/矢量格式）
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".bmp", ".svg", ".webp")
 
-# 许可不明时的占位标记——**不编造许可**，显式挂账
+# 许可不明时的占位标记——**不编造许可**，显式挂账。
+# ⚠ v3.23.1 口径澄清（第三轮盘点 W2）：本常量**只**用于日志文案（拒绝下载时的提示语），
+#   **不会写入 manifest**——manifest 回填的 reuse_status 取 references/asset-fields.yaml
+#   #asset_fields.reuse_status_default（「待核查」），两者语义一致但来源不同：
+#   本常量 = 拒绝下载时的日志标记；reuse_status = 素材台账的默认状态。
+#   「挂账」的机器可读载体是 manifest 的 license_note 字段（许可判定被拒 ⇒ 压根不下载，
+#   不产生台账条目；已有条目的许可补登走 extract_assets.py 的许可门禁）。
+#   故本值**不需要**接 yaml（它不参与判定，判定的键是 license_uncertain_markers）。
 LICENSE_TODO = "[待核实]"
 
 

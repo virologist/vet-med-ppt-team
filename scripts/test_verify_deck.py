@@ -389,5 +389,73 @@ class TestFallbackSync(unittest.TestCase):
         self.assertFalse(rules["checks"]["title_position_consistency"]["enabled"])
 
 
+class TestChartLayoutW1(unittest.TestCase):
+    """v3.23.1 W1：chart.unimplemented 三项中两项落地（轴标注字号 / 图例存在性）。
+
+    背景：v3.22.0 G2 只实现"图区面积比"；轴字号 / 图例 / 表格布局登记为残留。
+    本轮实证判据可确定性解析（chartSpace XML 内 catAx/valAx 段的 a:defRPr sz
+    与 c:legend/legendPos、c:ser 计数），落地两项；table_layout 仍不实现。
+    全部建议级（不登记 severity ⇒ 不阻断），缺省键 = 不判（向后兼容）。
+    """
+
+    BAD = ("<c:chartSpace><c:chart><c:plotArea>"
+           "<c:barChart><c:ser/><c:ser/></c:barChart>"
+           "<c:catAx><c:txPr><a:p><a:pPr><a:defRPr sz=\"900\"/></a:pPr></a:p></c:txPr></c:catAx>"
+           "<c:valAx></c:valAx></c:plotArea></c:chart></c:chartSpace>")
+    GOOD = ("<c:chartSpace><c:chart><c:plotArea>"
+            "<c:barChart><c:ser/><c:ser/></c:barChart>"
+            "<c:catAx><c:txPr><a:p><a:pPr><a:defRPr sz=\"1300\"/></a:pPr></a:p></c:txPr></c:catAx>"
+            "<c:valAx><c:txPr><a:p><a:pPr><a:defRPr sz=\"1400\"/></a:pPr></a:p></c:txPr></c:valAx>"
+            "</c:plotArea><c:legend><c:legendPos val=\"b\"/></c:legend></c:chart></c:chartSpace>")
+
+    @staticmethod
+    def _mk(cxml):
+        class C:
+            _chartSpace = type("CS", (), {"xml": cxml})
+        class SH:
+            has_chart = True
+            shape_type = "CHART"
+            width = 4000000
+            height = 3000000
+            name = "图表"
+            chart = C()
+        class S:
+            shapes = [SH()]
+        return S()
+
+    RULES = {"enabled": True, "area_ratio": {"min": 0.15, "max": 0.60},
+             "axis_label_min_pt": 12.0, "legend_required": True}
+
+    def test_axis_label_below_min_is_flagged(self):
+        out = vd.check_chart_layout(self._mk(self.BAD), 3, self.RULES, 10 ** 8)
+        types = [o["type"] for o in out]
+        self.assertIn("图表轴标注字号过小", types)
+
+    def test_multi_series_without_legend_is_flagged(self):
+        out = vd.check_chart_layout(self._mk(self.BAD), 3, self.RULES, 10 ** 8)
+        types = [o["type"] for o in out]
+        self.assertIn("图表缺图例", types)
+
+    def test_compliant_chart_not_flagged(self):
+        out = vd.check_chart_layout(self._mk(self.GOOD), 4, self.RULES, 10 ** 8)
+        types = [o["type"] for o in out]
+        self.assertNotIn("图表轴标注字号过小", types)
+        self.assertNotIn("图表缺图例", types)
+
+    def test_absent_keys_means_no_judgement(self):
+        """缺省键 = 不判（向后兼容：旧配置文件不含这两个键时行为不变）。"""
+        rules = {"enabled": True, "area_ratio": {"min": 0.15, "max": 0.60}}
+        out = vd.check_chart_layout(self._mk(self.BAD), 5, rules, 10 ** 8)
+        types = [o["type"] for o in out]
+        self.assertNotIn("图表轴标注字号过小", types)
+        self.assertNotIn("图表缺图例", types)
+
+    def test_self_closing_ser_counted(self):
+        """ser 计数须兼容自闭合 <c:ser/>（第三轮盘点实测踩过：<c:ser> 计数为 0 的漏检）。"""
+        import re
+        self.assertEqual(len(re.findall(r"<c:ser(?=[\s/>])[^>]*>", "<c:ser/><c:ser/>")), 2)
+        self.assertEqual(len(re.findall(r"<c:ser(?=[\s/>])[^>]*>", "<c:serX>")), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

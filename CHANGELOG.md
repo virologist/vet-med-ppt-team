@@ -6,6 +6,88 @@
 
 ---
 
+## [v3.23.1] - 2026-10-27（残留收口：chart 判据落地两项 + 静默异常留痕）
+
+> 依据：v3.23.0 发布后的**残留盘点**（用户指令：解决残留问题 + 继续未完成任务）。
+> 本版为小版本：只收口已登记残留，不动既有判据与护栏，**零破坏性变更**。
+
+### W1 · `chart.unimplemented` 三项中两项落地（残留自 v3.22.0 G2）
+
+`config/visual-rules.yaml#chart` 原登记 `unimplemented: [axis_label_min_pt,
+legend_required, table_layout]`。本轮实证判据可**确定性解析**（chartSpace XML 内
+`<c:catAx>/<c:valAx>` 段下 `<a:defRPr sz="N">`——N/100=pt；`<c:legendPos val>`；
+`<c:ser>` 计数），落地前两项：
+
+- `axis_label_min_pt`：轴刻度标注最小字号 < 下限 ⇒ 告警「图表轴标注字号过小」。
+  **轴未写 txPr = 继承默认字号、无从判定 ⇒ 不误报**（与「未取得尺寸置 null 而非 0」
+  同一纪律）。**缺省键 = 不判**（向后兼容，旧配置行为不变）。
+- `legend_required`：多系列（≥2 个 ser）却无 legend ⇒ 告警「图表缺图例」；
+  单系列不需要（图例即系列名）。**缺省键 = 不判**（老课件单系列图多，默认开启
+  会噪音爆炸）。
+- `table_layout` **仍不实现**（判据边界未清），`unimplemented` 缩为 `[table_layout]`。
+- 两者均**建议级**（不登记 severity ⇒ 落 unknown_out 明示不阻断），与 G2 同口径。
+- 解析通道：`shape.chart._chartSpace.xml`（python-pptx 对象模型，实测命名空间前缀
+  稳定为 `c:`/`a:`）；解析失败 ⇒ 明示「无法解析，请人工核对」，不误报。
+- 护栏：`test_verify_deck.py` 新增 `TestChartLayoutW1` 5 例
+  （反例触发 / 正例不触发 / 缺省键不判 / 自闭合 ser 兼容 / serX 前缀不误吞）。
+
+### W2 · `fetch_oa_image.py` 的 `LICENSE_TODO` 口径澄清（定性：非缺陷）
+
+`LICENSE_TODO = "[待核实]"` 疑似 TODO 挂账。定性结果：它是**许可红线的显式日志标记**
+（许可判定被拒 ⇒ 拒绝下载 + 日志挂账，**不写入 manifest**）；manifest 回填的
+`reuse_status` 取 `asset-fields.yaml#reuse_status_default`（「待核查」），语义一致、
+来源不同。真缺口是**口径无说明** ⇒ 已在常量处补注释（只用于日志 / 不参与判定 /
+判定的键是 `license_uncertain_markers`），防后人误当 TODO 删掉或误接线。
+
+### W3 · `classify_source` 未知 mode 分支补 stderr 告警（定性：fail-closed 正确）
+
+`mode` 未实现 ⇒ `TIER_UNVERIFIABLE`（不可核验档不计入已验证，案例判否）——
+**fail-closed 设计正确，不改判定**。唯一缺口：reason 只进返回结构，stderr 无声；
+若将来 yaml 新增 mode 名却拼错，整批来源会静默落不可核验档，人要逐条翻 reason 才能发现。
+修：补 stderr 告警（列出全部合法 mode + 指向配置段），判定语义不变。
+
+### W4 · 三处静默 `except` 补留痕（一处定性为可容忍）
+
+| 位置 | 原行为 | 处置 |
+|---|---|---|
+| `_write_collapse_artifact`（旧产物读失败） | 静默当 None ⇒ 已填 selection_rationale 被无告警抹掉 | **补 stderr 告警**（判定不变，幂等重建） |
+| `collapse list`（单文件解析失败） | 静默 continue ⇒ 已确认产物在 list 里"查无此人" | **以 `status: unparseable` 条目显式列出** |
+| `preflight`（task_state 读失败） | 静默回落空 probe ⇒ 与「真没探测过」不可区分 | **补 stderr 告警**（判定不变） |
+| `_resolve_task_id`（读失败回落 "adhoc"） | 无害降级 | **定性可容忍，不改** |
+
+### 本批实测揪出的真缺陷（独立验证发现，非自述）
+
+1. **【P1】`<c:ser/>` 自闭合形态漏检**：ser 计数正则初版 `<c:ser(?:\s[^>]*)?>` 抓不到
+   自闭合形态（`/` 非空白）⇒ 合成样例 ser 计数为 0。修：`<c:ser(?=[\s/>])[^>]*>`
+   （`c:ser` 后必须跟 `/`、空白或 `>`，同时防误吞 `c:serX` 前缀同名标签）。
+2. **【P2】测试自身两处写错**：`check_chart_layout` 引用漏 `vd.` 前缀（NameError）；
+   测试替身类的类属性继承让负例用回正例 XML。均按**测试改正、不改实现**。
+
+### W5 · 测试的**跨轮配置污染固化**（本轮实测踩中的真缺陷）
+
+`test_collapse_domain_render.py` 与 `test_external_tools.py` 都会直接改写包内
+`config/external-tools.yaml`（反例测试），各自用 `setUp` 备份 / `tearDown` 恢复。
+**隐患实测踩中**：`setUp` 读备份时若文件已被**上一轮失败运行污染**（本轮 v3.23.1 首跑
+T3 失败后 `knowledge_bases` 被清成空、进程结束前未恢复），备份存的就是**脏值**
+⇒ `tearDown`「恢复」回脏值 ⇒ 污染**跨轮固化** ⇒ 下一轮 `test_external_tools` 的
+T4/T7 拿到空库清单而**假失败**（`IndexError: list index out of range`）。
+
+修法（两文件同步）：
+- `setUpClass` **类级一次性备份**、`tearDownClass` 无条件恢复（替代逐测备份——
+  逐测备份把「起点脏」也当基线存下来）；
+- 每个 `setUp` **校验当前文件与类基线一致**，不一致 ⇒ 先重置再跑
+  （让失败归因到「上一轮污染」而不是本测试）。
+
+> 教训同 v3.20.0「隔离验证必须保证被测对象与被改配置同源」：
+> **改共享配置的测试，其恢复基准不能取自可能已脏的现场。**
+
+### 残留（如实登记）
+
+- `table_layout` 仍无执行器（`chart.unimplemented` 缩为单项）；
+- 块级消费免检区、判环语义判定、`tools_whitelist` 平台限制、Ima 凭据——均既有残留，未变。
+
+---
+
 ## [v3.23.0] - 2026-10-26（第三轮独立诊断的 6 项修复：F1–F6）
 
 > 依据：v3.22.0 基线上的**第三轮从零独立诊断**（13 维度，不沿用历史结论）。

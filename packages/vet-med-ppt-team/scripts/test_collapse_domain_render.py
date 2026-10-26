@@ -103,11 +103,28 @@ def _kb_section(text: str) -> str:
 class TestCollapseDomainRender(unittest.TestCase):
     """v3.19.1·S1 端到端渲染护栏。"""
 
-    def setUp(self):
-        self._bak = EXT_CFG.read_text(encoding="utf-8")
+    #: v3.23.1 W5：**类级一次性备份**（替代逐测 setUp/tearDown 备份）。
+    #: 原实现的隐患（本轮全量跑实测踩中）：setUp 读 _bak 时若文件**已被上一轮
+    #: 失败运行污染**（如 knowledge_bases 被清空后进程被杀），_bak 存的就是脏值
+    #: ⇒ tearDown「恢复」回脏值 ⇒ 污染**跨轮固化**，后续 test_external_tools
+    #: 的 T4/T7 拿到空库清单而假失败。
+    #: 修法：类开始时备份一次；类结束（tearDownClass）无条件恢复；
+    #: 且每个测试的 setUp **断言当前文件与类基线一致**（不一致 ⇒ 先重置再跑，
+    #: 让失败归因到「上一轮污染」而不是本测试）。
+    _class_bak: str = None
 
-    def tearDown(self):
-        EXT_CFG.write_text(self._bak, encoding="utf-8")
+    @classmethod
+    def setUpClass(cls):
+        cls._class_bak = EXT_CFG.read_text(encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        EXT_CFG.write_text(cls._class_bak, encoding="utf-8")
+
+    def setUp(self):
+        # 防跨轮污染固化：当前文件若与类基线不一致（上轮残留），先重置
+        if EXT_CFG.read_text(encoding="utf-8") != self._class_bak:
+            EXT_CFG.write_text(self._class_bak, encoding="utf-8")
 
     # ── T1 正例：7 库 + 词条 + 交付语言 ────────────────────────
     def test_T1_libraries_glossary_language_rendered(self):
@@ -115,7 +132,7 @@ class TestCollapseDomainRender(unittest.TestCase):
         prof = yaml.safe_load(PROFILES.read_text(encoding="utf-8"))
         dom = next(d for d in prof["domains"] if d["id"] == "animal-medicine")
         expect_glossary = len(dom.get("glossary") or [])
-        expect_libs = len([k for k in (yaml.safe_load(self._bak)["knowledge_bases"])
+        expect_libs = len([k for k in (yaml.safe_load(self._class_bak)["knowledge_bases"])
                            if k.get("owner_scope") == "animal-medicine"])
 
         text, art, _ws = _end_to_end("animal-medicine")
@@ -166,7 +183,7 @@ class TestCollapseDomainRender(unittest.TestCase):
 
         这是「有库才渲染库」这条判据的真实性证明（不是硬编码 7 条）。
         """
-        data = yaml.safe_load(self._bak)
+        data = yaml.safe_load(self._class_bak)
         data["knowledge_bases"] = []
         EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         text, _art, _ws = _end_to_end("animal-medicine")
@@ -262,7 +279,7 @@ class TestCollapseDomainRender(unittest.TestCase):
         ⇒ 修法：判据取域档案 knowledge_bases_ref（声明式）：
           声明「本域应有库」却一条没装上 ⇒ 报**装载异常**告警，不照登有库语义说明。
         """
-        data = yaml.safe_load(self._bak)
+        data = yaml.safe_load(self._class_bak)
         data["knowledge_bases"] = []
         EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         text, _art, _ws = _end_to_end("animal-medicine")
