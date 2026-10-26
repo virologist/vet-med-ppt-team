@@ -46,6 +46,7 @@ import argparse
 import json
 import os
 import sys
+import time          # v3.21.0：L1 通道重试的指数退避需要 sleep
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -125,6 +126,92 @@ def build_plan(cfg: dict, purpose: str = "", domain_id: str = "") -> dict:
     return plan
 
 
+# ─────────────────── L1 HTTP 重试（v3.21.0 · 维度 11/13）───────────────────
+# 背景（独立诊断实测）：scripts/fetch_authority.py 的 urlopen 是**单次**调用
+#   （无 retry / attempt）⇒ 网络抖动时该次抓取直接失败。
+#   同包其他通道有**跨通道**降级链（pubmed_mcp → pubmed_esearch），
+#   但**同一条通道内部**没有重试 ⇒ 冗余编排缺一环（单点故障）。
+# 参数唯一源 = config/external-tools.yaml#channels[pubmed_esearch].retry
+#   （禁硬编码；缺配置时回落内置值并**显式告警**——静默回落 = 不设防）。
+
+_RETRY_FALLBACK = {"max_attempts": 3, "backoff_base_sec": 1.0}
+
+
+def _retry_spec(cfg=None):
+    """取某通道的重试参数（**从 external-tools.yaml 读**，缺则回落并告警）。"""
+    path = None
+    try:
+        import yaml as _yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        p = os.path.join(root, "config", "external-tools.yaml")
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            for ch in (data.get("channels") or []):
+                if isinstance(ch, dict) and ch.get("id") == "pubmed_esearch":
+                    r = ch.get("retry")
+                    if isinstance(r, dict) and r:
+                        return (int(r.get("max_attempts", 3) or 3),
+                                float(r.get("backoff_base_sec", 1.0) or 1.0))
+    except Exception as e:
+        print(f"⚠ 读重试配置失败（{e}）→ 回落内置值 {_RETRY_FALLBACK}",
+              file=sys.stderr)
+    print(f"⚠ 未读到 pubmed_esearch.retry 配置 → 回落内置值 {_RETRY_FALLBACK}",
+          file=sys.stderr)
+    return (_RETRY_FALLBACK["max_attempts"], _RETRY_FALLBACK["backoff_base_sec"])
+
+
+def _http_get_with_retry(url, timeout=15, headers=None, cfg=None):
+    """带指数退避重试的 HTTP GET。返回 (响应字节, 尝试次数)；全失败抛最后一个异常。
+
+    重试策略（**只重试值得重试的**）：
+      · 可重试：urllib.error.URLError（含 socket.timeout / ConnectionError）、
+        HTTPError 且 code ∈ {429, 5xx}
+      · 不可重试：HTTPError 且 code 是其它 4xx（404/403 等——重试也不会成功）、
+        以及其它异常（解析错误等，重试无意义）
+    ⚠ 每次重试都往 **stderr** 留一行（降级必须可见），且不污染 stdout 的 JSON 输出。
+    """
+    import urllib.error
+    import urllib.request
+    max_attempts, backoff = _retry_spec(cfg)
+    last_exc = None
+    for attempt in range(1, max(1, int(max_attempts)) + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read(), attempt
+        except urllib.error.HTTPError as e:
+            last_exc = e
+            retryable = (e.code == 429) or (500 <= e.code < 600)
+            if not retryable or attempt >= max_attempts:
+                # 挂上**实际尝试次数**——错误报文要用它，不能用配置值
+                # （否则 404（只试 1 次）会报"重试 3 次后仍失败"，与事实不符）
+                try:
+                    e.attempts = attempt
+                except Exception:
+                    pass
+                raise
+            wait = backoff * (2 ** (attempt - 1))
+            print(f"⚠ 第 {attempt} 次尝试失败（HTTP {e.code}）→ {wait:.1f}s 后重试"
+                  f"（{attempt}/{max_attempts}）", file=sys.stderr)
+            time.sleep(wait)
+        except (urllib.error.URLError, OSError) as e:
+            last_exc = e
+            if attempt >= max_attempts:
+                try:
+                    e.attempts = attempt
+                except Exception:
+                    pass
+                raise
+            wait = backoff * (2 ** (attempt - 1))
+            print(f"⚠ 第 {attempt} 次尝试失败（{type(e).__name__}: {str(e)[:60]}）"
+                  f"→ {wait:.1f}s 后重试（{attempt}/{max_attempts}）", file=sys.stderr)
+            time.sleep(wait)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("重试耗尽且无异常记录——不应发生")
+
+
 def _pubmed_esearch(pmid: str, timeout: int = 15) -> dict:
     """L1：PubMed esearch 存在性核验（复用包内既有口径：只判存在性，无元数据）。"""
     import urllib.request
@@ -132,22 +219,34 @@ def _pubmed_esearch(pmid: str, timeout: int = 15) -> dict:
     base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     url = f"{base}?db=pubmed&retmode=json&term={pmid}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "vet-med-ppt-team/3.19.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            j = json.loads(r.read().decode("utf-8"))
+        # v3.21.0：改走带重试的取数（此前是单次 urlopen，网络抖动直接失败）
+        raw, attempts = _http_get_with_retry(
+            url, timeout=timeout,
+            headers={"User-Agent": "vet-med-ppt-team/3.21.0"})
+        j = json.loads(raw.decode("utf-8"))
         ids = (j.get("esearchresult") or {}).get("idlist") or []
         return {"channel": "pubmed_esearch", "pmid": pmid,
                 "exists": bool(ids), "matched_ids": ids,
+                "attempts": attempts,
                 "capability": ["PMID 存在性核验"],
                 "degraded": True,  # 相对 MCP 版能力降级
                 "degraded_capability": ["元数据", "全文", "相关文献", "按引文反查"]}
     except urllib.error.HTTPError as e:
+        # v3.21.0：错误信息带**实际尝试次数**（不是配置值）——
+        #   404 这类不可重试的错误只试 1 次，报"重试 3 次"与事实不符。
+        _att = getattr(e, "attempts", None)
+        _tail = f"（尝试 {_att} 次后失败）" if _att else ""
         return {"channel": "pubmed_esearch", "pmid": pmid, "exists": None,
-                "error": f"HTTP {e.code}", "degraded": True,
+                "error": f"HTTP {e.code}{_tail}", "attempts": _att,
+                "degraded": True,
                 "degraded_capability": ["元数据", "全文", "相关文献", "按引文反查"]}
     except Exception as e:
+        _att = getattr(e, "attempts", None)
+        _tail = f"（尝试 {_att} 次后失败）" if _att else ""
         return {"channel": "pubmed_esearch", "pmid": pmid, "exists": None,
-                "error": f"{type(e).__name__}: {str(e)[:80]}", "degraded": True,
+                "error": f"{type(e).__name__}: {str(e)[:80]}{_tail}",
+                "attempts": _att,
+                "degraded": True,
                 "degraded_capability": ["元数据", "全文", "相关文献", "按引文反查"]}
 
 

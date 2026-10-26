@@ -1,0 +1,284 @@
+# insight-carrier.yaml —— 洞察载体（insight carrier）schema 的**单一数据源**（v3.21.0）
+#
+# 定位：多专家围绕**同一份给定内容**（PPT 某页 / 某个知识模块）产出的洞察与设计，
+#       汇入**同一份载体**；载体是全程唯一事实源，轮报 / 冻结 / 验收全部从载体投影。
+#
+# 为什么要建这个文件（真实病灶，非假设）：
+#   闸 2「设计（苏学法 ∥ 严真奥，并行）」与闸 3「成稿（苏学法 ∥ 屠明熙，并行）」
+#   是三专家并行，但**产物落三处**：
+#     · 严真奥 → <RUN_DIR>/evidence/证据包.md
+#     · 苏学法 → <RUN_DIR>/<task_id>__pedagogy-architect.md
+#     · 屠明熙 → <RUN_DIR>/_search_requests/*.md
+#   ⇒ 同一页 / 同一模块的内容洞察、教学设计、视觉建议**分散无共同落点**：
+#     冲突无处显形 / 主理人合并靠 800 字摘要（必然丢信息）/
+#     追溯断裂（这条洞察谁提的、改没改、为何没改散在三处）。
+#
+# ⚠ **关键张力与解法**（写在 schema 里，因为它决定纪律怎么读）：
+#   现有纪律「并行 spawn 时任务边界必须互斥无交集」⟷ 用户要「多专家围绕同一份内容」。
+#   两者表面矛盾。解法 = **目标上互斥、载体上共享**：
+#   专家按 axis 分工（内容 / 教学 / 视觉），同一目标上多轴并存**不算重复劳动**
+#   （不是同一轴做两遍），但必须汇进**同一份载体**，否则冲突无处显形。
+#
+# 与 references/result-envelope.yaml 的关系（**两层不同，不合并**）：
+#   · 信封（result-envelope.yaml）= **回传层**：成员 → 主理人，一次产出一个信封；
+#   · 载体（本文件）= **产物层**：专家对**内容**的洞察，一次任务一个载体。
+#   两者字段语义不重叠：信封管「我交了什么」，载体管「我对内容说了什么」。
+#   ⚠ 不要把载体条目塞进信封的 deliverable_summary——那正是 v3.11.0 三套互斥
+#     schema 的成因（同一件事两处定义 ⇒ 漂移）。
+#
+# 消费方：scripts/insight_carrier.py（**唯一判定层**，纯函数、配置驱动）
+#
+# ── 纪律（与全包一致）─────────────────────────────────────────────────
+#   ① 禁硬编码：枚举、必填字段、规则阈值、ID 格式全在本文件；代码只执行。
+#   ② 只做**确定性判定**：结构 / 集合 / 计数 / 格式。
+#      语义判断（洞察好不好、两个建议是否互斥）**不判**——归人。
+#   ③ 缺键 / 空 / 非法 → **告警 + 显式回落**，回落写进 notes 由调用方透出
+#      （静默回落 = 看起来有护栏、实际不设防）。
+#
+# ── 口径来源指针（人读型，唯一源在那边；本文件只引用、不复制）──────────
+sources:
+  envelope: references/result-envelope.yaml           # 回传层（不同层，不合并）
+  round_review: references/round-review-sop.md        # 轮报六项（第 1、2 项由载体投影）
+  judge_mode: references/diagnosis-report-schema.yaml  # judge_mode 枚举口径
+  severity_axis: references/round-review-sop.md#3.1   # P0/P1/P2 分级轴语义
+  axes_roster: config/harness.yaml#insight_carrier.axes # 轴 ↔ 成员映射（编排信息，非 schema）
+
+schema_version: 1
+version: "3.21.0"
+
+# ── 枚举 ──────────────────────────────────────────────────────────────
+enums:
+  target_kind:
+    values: [page, module]
+    notes: >
+      page = 稳定页面 ID（如 s12）；module = **教学知识模块 / 章节**（教材章节级，
+      如「病毒表面抗原与宿主适应」）。module **不是**任意文本片段——载体键 =
+      target_id + target_kind 正是为了让「某一页」与「某一模块」不互相串味。
+  axis:
+    values: [content, pedagogy, visual]
+    notes: 三职能轴：内容证据 / 教学设计 / 视觉设计。轴 ↔ 成员映射属编排信息，在 harness.yaml。
+  severity:
+    values: [P0, P1, P2]
+    notes: P0 硬阻断 / P1 交付前清零 / P2 建议（轴语义见 sources.severity_axis，不在此复制）。
+  status:
+    values: [proposed, accepted, rejected, deferred]
+    notes: >
+      proposed = 待裁决；accepted / rejected = 已裁决（须有 decided_by / decided_at）；
+      deferred = 本轮不处理但保留在载体（等下一轮）。
+  judge_mode:
+    values: [机, 人, 机+人]
+    notes: >
+      与 diagnosis-report-schema.yaml#enums.judge_mode **同一套口径**（唯一源在那边），
+      禁另立枚举。载体条目本身不判语义——此枚举供轮报投影时标注「这条是人判还是机判」。
+
+# ── 必填 / 选填 ───────────────────────────────────────────────────────
+required: [insight_id, target_id, target_kind, axis, expert, proposal, rationale, severity, status]
+optional: [evidence, decided_by, decided_at, round, related_insights, notes, judge_mode]
+# ⚠ judge_mode 列在 optional：任务书给的选填集里没有它，但本 schema 声明了它的枚举
+#   （enums.judge_mode）——不留消费方就是本包第一个「声明未接线」的键。
+#   轮报第 1 项要求每条目带「判定方式（机/人）」，故列为选填；缺失时轮报显式标
+#   「缺失（待补）」，不静默补一个默认值。
+
+# ── 字段语义与判据 ─────────────────────────────────────────────────────
+fields:
+  insight_id:
+    type: string
+    required: true
+    rule: "稳定 ID，格式 <target_id>-<轴首字母>-<序号>，如 s12-C-01；全载体唯一（见 R2）"
+    id_format:
+      prefix_from: target_id          # 前缀取自同条目的 target_id
+      axis_letter_from: axis          # 中段字母取自同条目的 axis（经 axis_letter 映射）
+  target_id:
+    type: string
+    required: true
+    rule: "稳定页面 ID（如 s12）或教学模块/章节标识；与 target_kind 合成载体键"
+  target_kind:
+    type: enum
+    required: true
+    rule: "page | module；判据见 enums.target_kind"
+    enum_ref: target_kind
+  axis:
+    type: enum
+    required: true
+    rule: "content | pedagogy | visual；判据见 enums.axis"
+    enum_ref: axis
+  expert:
+    type: string
+    required: true
+    rule: "提出该洞察的成员 id；轴 ↔ 成员映射见 config/harness.yaml#insight_carrier.axes（本判定层不校验成员归属——那是编排层的值域校验）"
+  proposal:
+    type: string
+    required: true
+    rule: "这条洞察**要做什么**（建议本体），须可执行、可复核；禁空泛表述"
+  rationale:
+    type: string
+    required: true
+    rule: "为什么（依据 / 教学理由 / 视觉理由）；与 proposal 分列，禁把理由塞进建议"
+  severity:
+    type: enum
+    required: true
+    rule: "P0 | P1 | P2；判据见 enums.severity"
+    enum_ref: severity
+  status:
+    type: enum
+    required: true
+    rule: "proposed | accepted | rejected | deferred；判据见 enums.status"
+    enum_ref: status
+  evidence:
+    type: array
+    required: false
+    rule: "证据定位条目（DOI / PMID / URL / 文件路径 + 核验方式）；**axis=content 时必填**（见 R3）"
+  decided_by:
+    type: string
+    required: false
+    rule: "裁决者（人名 / 角色）；**status != proposed 时必填**（见 R4）"
+  decided_at:
+    type: string
+    required: false
+    rule: "裁决时间（ISO8601）；**status != proposed 时必填**（见 R4）"
+  round:
+    type: integer
+    required: false
+    rule: "产出该洞察的轮次；用于轮报按轮投影"
+  related_insights:
+    type: array
+    required: false
+    rule: "关联洞察 id 列表（跨 target 引用，例如视觉轴要改的正是内容轴提的那条）"
+  notes:
+    type: string
+    required: false
+    rule: "补充说明（不参与判定，供人读）"
+  judge_mode:
+    type: enum
+    required: false
+    rule: "本条的判定方式（机 / 人 / 机+人）；仅供轮报第 1 项投影标注用"
+    enum_ref: judge_mode
+
+# ── ID 格式用的轴 → 字母映射 ──────────────────────────────────────────
+# ⚠ 放这里而不是代码里：insight_id 的中段字母必须与 axis 一一对应，
+#   改映射不许改代码。键名即 axis 枚举值，避免出现「第二套轴名」。
+axis_letter:
+  content: C
+  pedagogy: P
+  visual: V
+
+# ── 规则清单（可判定部分；语义判定不在此列）────────────────────────────
+# 每条规则的 severity 决定它是 error 还是 warning：
+#   error   = 结构非法，条目不得进入载体
+#   warning = 结构可疑，允许进入但必须显式露出
+# scope 决定规则在哪一层执行：entry（逐条目）/ part（逐分片）/ carrier（逐载体）。
+rules:
+  - id: R1
+    desc: "同一 target 上有 ≥2 个不同 axis 的 proposed 条目 ⇒ 标 needs_adjudication"
+    severity: warning
+    scope: carrier
+    kind: multi_axis_pending
+    params:
+      min_axes: 2
+      statuses: [proposed]
+    note: >
+      **脚本只检出「多轴并存」这一结构事实，不判两条建议是否互斥**——互斥是语义判断，
+      归人（主理人）。脚本能判的只有「同一目标上有几个轴在说话」，判不了「它们打架了」。
+
+  - id: R2
+    desc: "insight_id 在**全载体**唯一"
+    severity: error
+    scope: carrier
+    kind: unique_insight_id
+    params: {}
+    note: 重复 id ⇒ merge 记 error 且**不静默覆盖**（保留先到的那条，重复者单列）。
+
+  - id: R3
+    desc: "axis=content 时 evidence 必填"
+    severity: error
+    scope: entry
+    kind: required_when
+    params:
+      when_field: axis
+      when_value: content
+      require: [evidence]
+    note: 内容轴的洞察必须带证据定位；教学轴 / 视觉轴可省（教学理由在 rationale 里）。
+
+  - id: R4
+    desc: "status != proposed 时 decided_by / decided_at 必填"
+    severity: error
+    scope: entry
+    kind: required_when
+    params:
+      when_field: status
+      when_value_not: proposed
+      require: [decided_by, decided_at]
+    note: 裁决留痕。status=proposed 时两者可省（还没裁决）；已裁决的必须能追到「谁、什么时候」。
+
+  - id: R5
+    desc: "target_kind=module 时 target_id 必须是**模块/章节级标识**（非空、非纯数字页号）"
+    severity: error
+    scope: entry
+    kind: module_id_shape
+    params:
+      when_field: target_kind
+      when_value: module
+      id_field: target_id
+      min_length: 2
+      forbid_numeric_only: true
+      numeric_pattern: '^[0-9]+$'
+    note: >
+      「纯数字」会被误当成页号（s12 的数字尾巴），从而把「模块」降级成「某页」——
+      载体键就串味了。禁纯数字是**结构判据**；「这个 id 是不是真模块」仍是语义判断，归人。
+
+  - id: R6
+    desc: "insight_id 格式 = <target_id>-<轴首字母>-<序号>"
+    severity: error
+    scope: entry
+    kind: insight_id_format
+    params:
+      id_field: insight_id
+      min_seq_digits: 2
+      seq_pattern: '^[0-9]+$'
+    note: 格式不合 ⇒ id 不可用于追溯（「谁提的」查不到），故判 error。
+
+# ── 载体顶层结构（合并产物的形状）────────────────────────────────────
+carrier:
+  top_keys: [schema_version, version, task_id, targets, needs_adjudication, conflicts, errors, warnings, stats]
+  target_keys: [target_id, target_kind, insights]
+  conflict_keys: [target_id, axes, insight_ids, reason]
+  # 冲突项（needs_adjudication）与冲突详情（conflicts）分开：
+  # 前者给流程用（要不要阻断），后者给轮报用（为什么）。
+  needs_adjudication_keys: [target_id, axes, insight_ids]
+  # 合并时的统计口径（用于轮报第 6 项的原始计数，反自评失真）
+  stats_keys: [parts, entries, targets, insights, needs_adjudication, errors, warnings]
+
+# ── 分片（member part）结构 ───────────────────────────────────────────
+# 专家写自己的分片（parts/），主理人合并成载体（carrier.json）。
+# 分片是为了避免并发写同一文件丢更新——这是本包 _StateLock 的由来。
+part:
+  required: [task_id, member, axis, round, entries]
+  optional: [notes]
+  axis_must_match_entry: true
+  note: >
+    part.axis 与其 entries[].axis 必须一致——分片是「某人某轴的产出」，
+    轴对不上说明分片被串了，是落盘事故而非语义分歧。
+
+# ── 轮报投影（round-review-sop.md#5 第 1、2 项）────────────────────────
+# ⚠ 只投影**第 1 项（处理范围及问题）与第 2 项（修改前后差异）**；
+#   第 3–6 项的可读正文 / 来源边界 / 配图建议 / 验收结果不来自载体，
+#   由成稿链路另行产出——载体不生成它们，也不假装生成。
+report:
+  sop_ref: references/round-review-sop.md#5
+  project_items: [scope_and_issues, before_after_diff]
+  scope_fields: [insight_id, target_id, target_kind, axis, expert, severity, status, proposal, judge_mode]
+  # 载体**不持有**的轮报字段 → 显式标「缺失（待补）」，不编造。
+  unavailable_scope_fields:
+    - name: excerpt
+      marker: "缺失（待补）"
+      note: "原文摘录来自原稿正文，不在载体中（载体只存建议）"
+  diff_fields: [insight_id, target_id, proposal, rationale, status, before, after]
+  # 「修改前后差异」的两份快照在 carrier.snapshots（target_id → {before, after}）里；
+  # 快照本体是文件/章节的外部事实，载体只做投影——缺哪份就显式标「缺失（待补）」。
+  snapshot_bucket: snapshots
+  diff_snapshot_keys: [before, after]
+  missing_snapshot_marker: "缺失（待补）"
+  diff_note: >
+    载体条目本身是「建议」，不是「已改动的正文」。第 2 项只能投影到「建议层面的前后对照」
+    （改前是什么状态 → 改后要变成什么），**不得**由载体生成正文全文——
+    那是成稿链路的产物。

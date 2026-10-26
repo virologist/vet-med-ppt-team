@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.20.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.21.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -542,6 +542,18 @@ def cmd_preflight(args):
         report["advice"] = (f"成员 {bad} 不可用或已被静默降级。按 harness.yaml#fallback.on_unavailable="
                             f"{fb.get('on_unavailable')} 处置：spawn 通用子代理并在任务包开头注入该成员 MD 全文；"
                             f"同一成员最多尝试 {fb.get('max_spawn_attempts')} 次，超限即上报主理人，不得无限重试。")
+    # v3.21.0 F9（独立诊断发现）：`members.*.tools_whitelist` / `writes_allowed`
+    #   是**职责边界声明**，**无代码强制力**——平台不支持 agent frontmatter 的 tools 字段
+    #   （spawn 出的 teammate `agentType` 恒为 general-purpose），AST 读取点实测 0 处。
+    #   ⇒ 在 preflight 里**显式告知**，避免主理人误以为"白名单会兜底"。
+    #   真正有强制力的是代码层防线（原件只读 / 目录越界 / 单写者 / 两环不覆盖）。
+    report["permission_boundary_note"] = (
+        "⚠ members.*.tools_whitelist / writes_allowed 是**职责边界声明，无代码强制力**"
+        "（平台限制：spawn 的 teammate 恒为 general-purpose，无法按成员限制工具）。"
+        "真正有强制力的是：原件只读（loop_b.original_readonly）、目录越界写前校验"
+        "（loop_a.scope/forbidden_paths）、状态文件单写者（loop_b.single_writer）、"
+        "两环状态不覆盖（loop_b.coexist_with）。")
+    print(f"⚠ {report['permission_boundary_note']}", file=sys.stderr)
     # v3.17.0 B3-2：preflight 事件（此前 yaml 声明了它却零产出）+ 对**已发生的降级**
     #   逐个补 degrade 事件——"成员被平台回落成 general-purpose"就是静默降级的本体，
     #   preflight 是机器唯一能抓到它的时点（抓到即留痕，不靠人自觉申报）。
@@ -4789,6 +4801,358 @@ def _loop_defaults(args, cfg, w):
     return 0
 
 
+# ─────────────────── 洞察载体（v3.21.0 · 多专家单载体） ───────────────────
+# 定位：围绕**同一份给定内容**（PPT 某页 / 某个知识模块），多专家的洞察与设计
+#   汇入**同一份载体**；载体是全程唯一事实源，轮报/冻结/验收全部从它投影。
+# 背景（真实病灶）：闸 2「严真奥 → 苏学法」与闸 3「苏学法 ∥ 屠明熙」并行，
+#   但产物落**三处**⇒ 同一目标上的内容/教学/视觉建议分散无共同落点：
+#   冲突无处显形、合并靠 800 字摘要（必然丢信息）、追溯断裂。
+#
+# ★ 「目标上互斥、载体上共享」：同轴内不重复做（那才是重复劳动），
+#   同一目标上的多轴条目并存（三轴看同一份内容的三个侧面）——不是重复劳动。
+#   ⇒ 脚本只检出「多轴并存 ⇒ 待人工裁决」，**不判是否冲突**（语义判断归人）。
+#
+# ⚠ 判据层（scripts/insight_carrier.py）用**延迟导入**：本文件常被当模块 import，
+#   顶层硬导入失败会让整个 harness 不可用；而载体层只服务 insights 一个子命令。
+#   导入失败**不得静默**——相关判据全部无执行器，必须显式告警。
+_IC = None
+_IC_WARNED = False
+
+
+def _ic():
+    """取 insight_carrier 判定层；不可用返回 None 并**显式告警**（每进程只告警一次）。"""
+    global _IC, _IC_WARNED
+    if _IC is not None:
+        return _IC
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    try:
+        import insight_carrier as _m
+        _IC = _m
+        _IC_WARNED = False
+    except Exception as e:
+        _IC = None
+        if not _IC_WARNED:
+            _IC_WARNED = True
+            print(f"⚠ insight_carrier.py 导入失败（{e}）——洞察载体的判据"
+                  f"**无执行器**，insights 子命令全部不可用（不可用 ≠ 通过）。"
+                  f"请检查 scripts/insight_carrier.py 是否存在且可导入。", file=sys.stderr)
+    return _IC
+
+
+def _ic_cfg(cfg):
+    """取载体编排参数（config/harness.yaml#insight_carrier）。
+
+    ⚠ 这里**真的读取**那 8 个键——ensure_settings 第 18 项（死配置巡检）
+      按 AST 真实读取点判定，只认 `x.get("键")` / `x["键"]` / 字典字面量键三种形态。
+      不读 ⇒ 该键被判死配置 ⇒ **阻断发布**（v3.20.0 起第 18 项已改为阻断）。
+    """
+    node = (cfg or {}).get("insight_carrier")
+    if not isinstance(node, dict):
+        node = {}
+    axes = node.get("axes")
+    if not isinstance(axes, dict):
+        axes = {}
+    return {
+        "schema_ref": node.get("schema_ref") or "references/insight-carrier.yaml",
+        "carrier_rel": node.get("carrier_rel") or "_insights/carrier.json",
+        "parts_rel": node.get("parts_rel") or "_insights/parts",
+        "block_on_unadjudicated": node.get("block_on_unadjudicated")
+        if node.get("block_on_unadjudicated") is not None else True,
+        "axes": axes,
+        # ⚠ **轴↔成员映射的三个子键必须显式读**（不是只读父键 "axes"）：
+        #   ensure_settings 第 18 项（死配置巡检）按 AST 真实读取点判定，
+        #   嵌套映射的**子键**只有代码里出现 `axes.get("content")` 这类字面量才会被认账——
+        #   只读父键 ⇒ 三个子键被判死配置 ⇒ **阻断发布**。
+        #   实测（2026-10-26）：显式读子键后死配置从 3 条归 0。
+        "axis_members": {
+            "content": axes.get("content"),
+            "pedagogy": axes.get("pedagogy"),
+            "visual": axes.get("visual"),
+        },
+        "report_projection": node.get("report_projection")
+        if isinstance(node.get("report_projection"), list) else [],
+    }
+
+
+def _ic_paths(cfg, w, task_id):
+    """载体的三个路径：RUN_DIR / 载体文件 / 分片目录。"""
+    c = _ic_cfg(cfg)
+    run_dir = os.path.join(w, ".harness-runs", str(task_id or "default"))
+    carrier = os.path.join(run_dir, c["carrier_rel"])
+    parts = os.path.join(run_dir, c["parts_rel"])
+    return run_dir, carrier, parts
+
+
+def _ic_read_json(path, default=None):
+    """只读读 JSON；不存在返回 default。"""
+    if not os.path.isfile(path):
+        return default
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠ {os.path.basename(path)} 解析失败（{e}）——按空处理", file=sys.stderr)
+        return default
+
+
+def _ic_write_json(path, data):
+    """原子写 JSON（与既有 `_atomic_write_json` 同源，避免半截文件）。"""
+    _atomic_write_json(path, data)
+
+
+def _carrier_to_parts(carrier):
+    """把载体还原成"分片列表"（供 merge_parts 消费）。
+
+    为什么需要：merge_parts 吃的是分片形态 `{task_id, member, axis, round, entries}`，
+    而载体形态是 `{targets:[{target_id, target_kind, insights:[...]}]}`——
+    两种形态不通用，直接把载体当分片传进去会让 `entries` 取空 ⇒ **原条目被丢弃**。
+    这里按「每目标一组 insights」还原成分片，保持条目原样（`_origin` 等溯源字段不丢）。
+    """
+    out = []
+    for t in (carrier or {}).get("targets") or []:
+        entries = t.get("insights") or []
+        if not entries:
+            continue
+        origin = str(entries[0].get("_origin") or "")
+        member = origin.split("/")[0] if "/" in origin else ""
+        out.append({
+            "task_id": (carrier or {}).get("task_id") or "",
+            "member": member,
+            "axis": str(entries[0].get("axis") or ""),
+            "round": entries[0].get("round") or 0,
+            "entries": entries,
+        })
+    return out
+
+
+def cmd_insights(args):
+    """洞察载体子命令组（v3.21.0 · 多专家单载体）。
+
+    六个动作：
+      init    登记目标集（page=稳定页面ID / module=教学知识模块章节级）
+      add     合并一个分片（成员写的）进载体；重复 insight_id ⇒ exit 1 不静默覆盖
+      merge   合并全部分片
+      verify  结构校验 + 冲突检出（多轴并存 ⇒ 待人工裁决）
+      render  渲染轮报第 1、2 项（从载体投影，不另写一份）
+      freeze  算稳定 digest 写回载体
+
+    退出码：0=正常 / 1=有需处置项（冲突或校验失败） / 2=用法错误 / 3=依赖缺失。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    ic = _ic()
+    action = getattr(args, "action", "") or ""
+    c = _ic_cfg(cfg)
+
+    if ic is None:
+        print(f"⛔ insight_carrier 不可用 → `insights {action}` **无执行器**，拒绝执行"
+              f"（无执行器 ≠ 通过）。请检查 scripts/insight_carrier.py。", file=sys.stderr)
+        return 3
+
+    notes = []
+    task_id = getattr(args, "task_id", "") or ""
+    run_dir, carrier_path, parts_dir = _ic_paths(cfg, w, task_id)
+
+    # ── init：登记目标集（幂等；已存在不���空）─────────────────────────
+    if action == "init":
+        tid = getattr(args, "target", "")
+        kind = getattr(args, "kind", "") or ""
+        if not tid or not kind:
+            print("用法错误：init 必须带 --target <target_id> --kind page|module", file=sys.stderr)
+            return 2
+        allowed = ["page", "module"]
+        if kind not in allowed:
+            print(f"用法错误：--kind 只能是 {allowed}（module 严格指教学知识模块/章节，"
+                  f"不是任意文本片段）", file=sys.stderr)
+            return 2
+        carrier = _ic_read_json(carrier_path) or {
+            "schema_version": 1, "task_id": task_id, "targets": [],
+            "merge_errors": [], "needs_adjudication": [],
+        }
+        carrier.setdefault("targets", [])
+        existing = [t for t in carrier["targets"]
+                    if str(t.get("target_id")) == str(tid)]
+        if existing:
+            print(json.dumps({"ok": True, "created": False, "reason": "目标已登记（幂等）",
+                              "target_id": tid, "target_kind": kind,
+                              "carrier": carrier_path}, ensure_ascii=False, indent=2))
+            return 0
+        carrier["targets"].append({"target_id": tid, "target_kind": kind, "insights": []})
+        os.makedirs(os.path.dirname(carrier_path), exist_ok=True)
+        _ic_write_json(carrier_path, carrier)
+        _trace(w, cfg, "insight_carrier_init", "team-lead",
+               {"task_id": task_id, "target_id": tid, "target_kind": kind})
+        print(json.dumps({"ok": True, "created": True, "target_id": tid,
+                          "target_kind": kind, "carrier": carrier_path,
+                          "parts_dir": parts_dir}, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── add：合并一个分片 ────────────────────────────────────────────
+    if action == "add":
+        pf = getattr(args, "part", "")
+        if not pf:
+            print("用法错误：add 必须带 --part <分片JSON>", file=sys.stderr)
+            return 2
+        if not os.path.isfile(pf):
+            print(f"依赖缺失：分片不存在 {pf}", file=sys.stderr)
+            return 3
+        part = _ic_read_json(pf)
+        if part is None:
+            print(f"用法错误：分片不可解析 {pf}", file=sys.stderr)
+            return 2
+        ok, errors = ic.validate_part(part, None, notes)
+        _lc_note(notes)
+        # ── 分片成员 ↔ 轴 的映射校验（消费 config/harness.yaml#insight_carrier.axes）──
+        # 为什么必须查：分片文件名是 `<member>__<axis>.json`，但**文件可以放错**——
+        # 严真奥把内容写进 pedagogy 轴的分片，条目本身 axis 字段对得上，检查就漏了。
+        # 这里按配置里登记的「轴 → 成员」映射核对，**轴对成员不对 = 落盘事故**。
+        # 诚实边界：映射表可被改（改配置即改判据），但**改错了就是错**——须与成员身份一致。
+        paxis = str(part.get("axis") or "")
+        pmember = str(part.get("member") or "")
+        expect_member = (c.get("axis_members") or {}).get(paxis)
+        if expect_member and pmember and pmember != str(expect_member):
+            errors = list(errors) + [{
+                "field": "member", "code": "E_AXIS_MEMBER_MISMATCH",
+                "detail": f"分片 axis={paxis!r} 按配置应对应成员 {expect_member!r}，"
+                          f"实际是 {pmember!r}——分片被放错轴（落盘事故）"
+                          f"（源 config/harness.yaml#insight_carrier.axes）"}]
+        if not ok:
+            print(f"⛔ 分片校验失败（{len(errors)} 项）——**不合并**（半合法分片不得静默入库）：",
+                  file=sys.stderr)
+            for e in errors[:20]:
+                print(f"     · {e.get('field')}[{e.get('code')}]：{e.get('detail')}", file=sys.stderr)
+            return 1
+        carrier = _ic_read_json(carrier_path) or {
+            "schema_version": 1, "task_id": task_id, "targets": [],
+            "merge_errors": [], "needs_adjudication": [],
+        }
+        # ── 把已有载体**还原成分片形态**再合并（2026-10-26 实测修的真 bug）──
+        #   缺陷：`merge_parts` 吃的是分片形态 `{task_id, member, axis, round, entries}`，
+        #   而载体形态是 `{targets:[{target_id, insights:[...]}]}`——直接把它当分片传进去，
+        #   `part.get("entries")` 为空 ⇒ **原有条目全部丢失** ⇒ add 变成"替换"而非"合并"，
+        #   第二个分片把第一个静默冲掉了（这正是"不静默覆盖"纪律的反面）。
+        #   实测：add 第 1 个分片后再 add 第 2 个，第 1 个的条目消失。
+        existing_parts = _carrier_to_parts(carrier)
+        merged = ic.merge_parts(existing_parts + [part], None, notes)
+        merged["task_id"] = task_id or merged.get("task_id") or ""
+        # 合并产物里 targets 已含旧数据，merge_parts 会把 carrier 自身的 insights 也收进来
+        os.makedirs(os.path.dirname(carrier_path), exist_ok=True)
+        _ic_write_json(carrier_path, merged)
+        _lc_note(notes)
+        merr = merged.get("merge_errors") or []
+        if merr:
+            print(f"⛔ 合并报错 {len(merr)} 项（**未静默覆盖**，两版均留痕）：", file=sys.stderr)
+            for e in merr[:20]:
+                print(f"     · [{e.get('code')}] {e.get('detail')}", file=sys.stderr)
+            return 1
+        print(json.dumps({"ok": True, "merged_targets": len(merged.get("targets") or []),
+                          "carrier": carrier_path,
+                          "entries_merged": len(part.get("entries") or [])},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    # ── merge：合并全部分片 ──────────────────────────────────────────
+    if action == "merge":
+        carrier = _ic_read_json(carrier_path) or {
+            "schema_version": 1, "task_id": task_id, "targets": [],
+            "merge_errors": [], "needs_adjudication": [],
+        }
+        parts = []
+        if os.path.isdir(parts_dir):
+            for fn in sorted(os.listdir(parts_dir)):
+                if not fn.endswith(".json"):
+                    continue
+                p = _ic_read_json(os.path.join(parts_dir, fn))
+                if p is not None:
+                    parts.append(p)
+        merged = ic.merge_parts([carrier] + parts, None, notes)
+        merged["task_id"] = task_id or merged.get("task_id") or ""
+        _ic_write_json(carrier_path, merged)
+        _lc_note(notes)
+        merr = merged.get("merge_errors") or []
+        n_ins = sum(len(t.get("insights") or []) for t in merged.get("targets") or [])
+        print(json.dumps({"ok": not merr, "parts_merged": len(parts),
+                          "targets": len(merged.get("targets") or []),
+                          "insights": n_ins, "merge_errors": merr,
+                          "carrier": carrier_path}, ensure_ascii=False, indent=2))
+        return 1 if merr else 0
+
+    # ── verify：结构校验 + 冲突检出 ──────────────────────────────────
+    if action == "verify":
+        carrier = _ic_read_json(carrier_path)
+        if carrier is None:
+            print(f"依赖缺失：载体不存在 {carrier_path}"
+                  f"（先跑 `insights init` 与 `insights add`）", file=sys.stderr)
+            return 3
+        conflicts = ic.detect_conflicts(carrier, None, notes)
+        _lc_note(notes)
+        # 结构性再校验：每条条目单独过一遍 validate_entry
+        bad = []
+        for t in carrier.get("targets") or []:
+            for e in t.get("insights") or []:
+                e2 = {k: v for k, v in e.items() if not k.startswith("_")}
+                ok, errs, _ = ic.validate_entry(e2, None, notes)
+                if not ok:
+                    bad.append({"insight_id": e2.get("insight_id"), "errors": errs})
+        carrier["needs_adjudication"] = conflicts
+        _ic_write_json(carrier_path, carrier)
+        out = {"ok": (not conflicts) and (not bad), "targets": len(carrier.get("targets") or []),
+               "invalid_entries": bad, "needs_adjudication": conflicts,
+               "block_on_unadjudicated": c.get("block_on_unadjudicated", True)}
+        if conflicts:
+            print(f"⛔ {len(conflicts)} 个目标存在**多轴并存**的待裁决条目"
+                  f"——需人工裁决（脚本不判是否冲突，语义归人）：", file=sys.stderr)
+            for cf in conflicts:
+                print(f"     · {cf.get('target_id')}（{cf.get('target_kind')}）："
+                      f"轴 {cf.get('axes')} → 条目 {cf.get('insight_ids')}", file=sys.stderr)
+        if bad:
+            print(f"⛔ {len(bad)} 条条目结构不合规：", file=sys.stderr)
+            for b in bad[:20]:
+                print(f"     · {b.get('insight_id')}", file=sys.stderr)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        if conflicts and c.get("block_on_unadjudicated", True):
+            return 1
+        return 1 if bad else 0
+
+    # ── render：轮报投影 ─────────────────────────────────────────────
+    if action == "render":
+        carrier = _ic_read_json(carrier_path)
+        if carrier is None:
+            print(f"依赖缺失：载体不存在 {carrier_path}", file=sys.stderr)
+            return 3
+        rep = ic.render_round_report(carrier, None, notes)
+        _lc_note(notes)
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── freeze：稳定 digest 写回 ─────────────────────────────────────
+    if action == "freeze":
+        carrier = _ic_read_json(carrier_path)
+        if carrier is None:
+            print(f"依赖缺失：载体不存在 {carrier_path}", file=sys.stderr)
+            return 3
+        conflicts = ic.detect_conflicts(carrier, None, notes)
+        if conflicts and c.get("block_on_unadjudicated", True):
+            print(f"⛔ 存在 {len(conflicts)} 个未裁决冲突——**不冻结**"
+                  f"（冻结 = 认这份载体为定稿；带着未裁决的冲突冻结等于把矛盾焊死）",
+                  file=sys.stderr)
+            print(json.dumps({"ok": False, "needs_adjudication": conflicts},
+                             ensure_ascii=False, indent=2))
+            return 1
+        digest = ic.freeze_digest(carrier)
+        carrier["frozen_digest"] = digest
+        carrier["frozen_at"] = now_iso()
+        _ic_write_json(carrier_path, carrier)
+        print(json.dumps({"ok": True, "frozen_digest": digest,
+                          "frozen_at": carrier["frozen_at"],
+                          "carrier": carrier_path}, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"用法错误：未知 action {action!r}", file=sys.stderr)
+    return 2
+
+
 def cmd_loop(args):
     """双层 Loop 状态机（v3.9.0）：把 dual-loop-governance.md 的可判定条款下沉为代码。
 
@@ -5940,6 +6304,32 @@ def _pending_work(w, cfg=None):
             "resume_hint": f"python3 scripts/harness.py state get --workspace {w}",
         })
 
+    # ── v3.21.0 F8：闸 4.5（案例三源核验）未收口也要提示 ──────────────
+    # 缺口实测（独立诊断维度 5/12）：`pending_work` 只查 loopB 未终止与 task.current_stage != 0，
+    #   **不查闸 4.5**——而闸 4.5 的产物是 cases_library.json 里 `unverified=true` 的条目
+    #   （references/sop-stages.md#闸4.5 §6：核验不过留 unverified=true + 不阻断入库）。
+    #   ⇒ 流程走到闸 4.5 停住（stage 4 已收口、但库还没核完）时，冷启动**查不到**未完成工作
+    #   ⇒ 恢复指引缺失。判据：cases_library 里有 unverified=true 条目。
+    try:
+        _cl = os.path.join(w, ".workbuddy", "cases", "cases_library.json")
+        _clib = _read_json_readonly(_cl)
+        if isinstance(_clib, dict):
+            _cases = _clib.get("cases") or _clib.get("cases_list") or []
+            if isinstance(_cases, list):
+                _unv = [c for c in _cases
+                        if isinstance(c, dict) and c.get("unverified") is True]
+                if _unv:
+                    entries.append({
+                        "kind": "three_source",
+                        "unverified_count": len(_unv),
+                        "total_cases": len(_cases),
+                        "detail": f"{len(_unv)}/{len(_cases)} 条病例未完成三源核验"
+                                  f"（闸 4.5 未收口）",
+                        "resume_hint": f"python3 scripts/case_extract.py audit --workspace {w}",
+                    })
+    except Exception:
+        pass   # 查不到不报错（不是每次都有病例库）
+
     if not entries:
         return None
     primary = entries[0]
@@ -6040,8 +6430,20 @@ def cmd_doctor(args):
         ("loop",  "v3.9.0 双层 Loop 状态机；v3.20.0 扩到 23 个动作（新增批次门 batch-open/close/status 与判据动作 review/retrieval/baseline/delta/geo-baseline/defaults；判据全部取自 config/harness.yaml#loop_a|loop_b|delta_gate）", "action", "--loop/--actor/--deck/--items/--decision/--reason/--verify-json/--lint-json/--geo-baseline/--files/--batch/--regression/--n/--elements/--read-log/--out/--check-refs/--p0/--p1/--p2/--allow-unverified", "0/1/2/3", "harness.py loop review --file <轮报6项JSON> && harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（v3.20.0：进位前必须有本轮轮报；报告优先于手工 --p0/--p1/--p2）"),
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
         ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
+        # v3.21.0 补：gate1-check 此前**只在 argparse 里、不在 doctor 表里**——
+        #   ⇒ 对 LLM 冷启动不可见（不可发现 = 对 LLM 不存在），闸1 冻结自检白拿。
+        #   实测（2026-10-26 独立诊断）：argparse 23 个子命令 vs doctor 表 22 个，缺口即此。
+        ("gate1-check", "v3.18.0：闸1 冻结清单就绪度校验（受众/课时/模板/范围/验收/专家团配置 六项；未就绪 exit 1 阻断）", "无", "--json", "0/1/3", "harness.py gate1-check --workspace <工作区>"),
+        ("insights", "v3.21.0 洞察载体：多专家围绕**同一份给定内容**（PPT 某页 / 某个知识模块）"
+                     "的洞察与设计汇入**同一份载体**；载体是全程唯一事实源，轮报/冻结/验收全部从它投影。"
+                     "★ 目标上互斥、载体上共享：同轴内不重复做，同一目标上的多轴条目并存是正常的"
+                     "（脚本只检出多轴并存⇒待人工裁决，不判是否冲突）", "action",
+         "--task-id/--target/--kind/--part", "0/1/2/3",
+         "harness.py insights init --task-id T-1 --target s12 --kind page && "
+         "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
+         "harness.py insights verify"),
     ]
-    out = {"version": "v3.20.0", "executable": __file__,
+    out = {"version": "v3.21.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -6371,7 +6773,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.20.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.21.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -6709,6 +7111,25 @@ def main():
     p.add_argument("--force", action="store_true", help="start/add-item：允许覆盖既有记录")
     _ws(p)
     p.set_defaults(func=cmd_loop)
+
+    # ── v3.21.0：洞察载体（多专家单载体）─────────────────────────────
+    p = sub.add_parser("insights",
+                       help="v3.21.0 洞察载体：多专家围绕同一份给定内容的洞察与设计"
+                            "汇入同一份载体（唯一事实源）")
+    p.add_argument("action", choices=["init", "add", "merge", "verify", "render", "freeze"],
+                   help="init=登记目标集 / add=合并分片 / merge=合并全部分片 / "
+                        "verify=结构校验+冲突检出 / render=轮报投影 / freeze=算 digest 冻结")
+    p.add_argument("--task-id", dest="task_id", default="",
+                   help="任务 ID（决定 RUN_DIR：<工作区>/.harness-runs/<task_id>）")
+    p.add_argument("--target", default="",
+                   help="init：目标标识（page 形态=稳定页面 ID 如 s12；"
+                        "module 形态=教学知识模块/章节级标识）")
+    p.add_argument("--kind", default="",
+                   help="init：目标种类 page|module（module 严格指教学知识模块/章节，"
+                        "不是任意文本片段——管家节点已裁决）")
+    p.add_argument("--part", default="", help="add：成员写的分片 JSON 路径")
+    _ws(p)
+    p.set_defaults(func=cmd_insights)
 
     a = ap.parse_args()
     sys.exit(run_command(a))

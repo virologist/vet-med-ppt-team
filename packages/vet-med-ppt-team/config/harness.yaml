@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.20.0"
+version: "3.21.0"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -37,6 +37,18 @@ stages:
 # （2026-09-30 commit cd6fc41 实测确认，属平台铁律）。
 # 因此最小权限靠「人设装配（assemble_spawn_prompt.py）+ 任务包约束」实现，
 # 本表是主理人编排时的意图声明，供 preflight 与人工核对。
+#
+# ⚠ v3.21.0 独立诊断**明确正名**（此前措辞容易被误读为"有强制力"）：
+#   `tools_whitelist` / `writes_allowed` 是**职责边界声明**，**无代码强制力**——
+#   AST 读取点实测 0 处（ensure_settings 第 18 项无法认账，因其判据是"代码真读"）；
+#   根因是**平台结构性限制**：spawn 出的 teammate `agentType` 恒为 general-purpose，
+#   无法按成员限制工具集（见 references/spawn-protocol.md §二 的平台事实段）。
+#   ⇒ 真正有强制力的是**代码层防线**（这些才是不靠自觉的）：
+#     · loop_b.original_readonly —— 原件只读（verify 复算 sha256）
+#     · loop_a.scope / forbidden_paths —— 目录越界写前校验（check-path）
+#     · loop_b.single_writer —— 状态文件单写者
+#     · loop_b.coexist_with —— 两环状态不覆盖
+#   ⇒ preflight 会显式打印"白名单无强制力"，避免主理人误以为靠它兜底。
 members:
   dvm-content-expert:
     duty: "证据核验与分级（唯一内容权威）"
@@ -354,6 +366,38 @@ loop_b:
     template_fingerprint: "5fa78154"
     keep_original_layout: true    # 已有原稿版式的沿用原稿，不强制迁到默认模板
     geo_baseline_required: true   # 成品 lint 必配 --geo-baseline，否则 V7 无法判定
+
+# ── 洞察载体（v3.21.0 · 多专家单载体 · 全链汇入）────────────────────
+# 定位：围绕**同一份给定内容**（PPT 某页 / 某个知识模块），多专家的洞察与设计
+#   汇入**同一份载体**；载体是全程唯一事实源，轮报/冻结/验收全部从载体投影。
+# 背景（真实病灶，非假设）：闸 2「苏学法 ∥ 严真奥」、闸 3「苏学法 ∥ 屠明熙」并行，
+#   但产物落**三处**（evidence/证据包.md、<task_id>__pedagogy-architect.md、
+#   _search_requests/*.md）⇒ 同一页的内容/教学/视觉建议**分散无共同落点**：
+#   冲突无处显形、主理人合并靠 800 字摘要（必然丢信息）、追溯断裂（谁提的、改没改散在三处）。
+#
+# ⚠ **关键张力与解法**（写在配置里，因为它决定纪律怎么读）：
+#   现有 spawn-protocol 纪律 = 「并行 spawn 任务边界必须互斥无交集」；
+#   管家节点要的是「多专家围绕同一份内容给洞察和设计」——两者表面矛盾。
+#   解法 = **目标上互斥、载体上共享**：专家按 axis 分工，同一 target 上多轴并存
+#   **不算重复劳动**（不是同一轴做两遍），但必须汇进同一份载体，否则冲突无处显形。
+#   ⇒ 对应实现：专家写**自己的分片**（parts/），脚本合并成唯一事实源（carrier.json），
+#     下游只认 carrier.json。分片是为了避免并发写同一文件丢更新（本包 _StateLock 的由来）。
+#
+# ⚠ **字段定义不在本文件**——schema 唯一源 = references/insight-carrier.yaml。
+#   本段只放**本包级编排参数**（路径约定、轴↔成员映射、阻断策略）。
+#   在这里复制字段定义 = 第二份 schema = 本包反复治理的双源漂移病灶。
+insight_carrier:
+  schema_ref: "references/insight-carrier.yaml"   # schema 唯一源
+  carrier_rel: "_insights/carrier.json"            # 载体路径（相对 RUN_DIR）
+  parts_rel: "_insights/parts"                     # 分片目录（相对 RUN_DIR）
+  block_on_unadjudicated: true                     # 有未裁决冲突 ⇒ 下游阻断（冲突必须由人裁决）
+  # 轴 ↔ 成员映射（编排信息，属本包；schema 只定义 axis 枚举，不定义谁写哪轴）
+  axes:
+    content: "dvm-content-expert"      # 严真奥：证据核验与分级（内容轴）
+    pedagogy: "pedagogy-architect"     # 苏学法：教学蓝图与页表教学列（教学轴）
+    visual: "visual-slide-designer"    # 屠明熙：高价值页人工设计 + 抽样复核（视觉轴）
+  # 轮报六项中由载体投影的两项（round-review-sop.md#5 第 1、2 项）
+  report_projection: ["scope_and_issues", "before_after_diff"]
 
 # ── 门禁退出码语义（主理人据此分流，不再一律"打回"）────────────
 gate_exit_codes:

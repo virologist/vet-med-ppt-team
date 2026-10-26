@@ -412,6 +412,41 @@ maxTurns: 50
 凡**超标准**的内容（机制细节、演化/选择压、文献争议），
 **必须在页面或备注显式标注「学术扩展·非课程标准要求」**，避免与考核口径混淆。
 
+### 洞察载体写入契约（v3.21.0 · 多专家单载体 · **本轴的洞察必须汇入载体**）
+
+> 契约源：`references/spawn-protocol.md#2.2`（写入契约）+ `references/insight-carrier.yaml`（schema 唯一源）
+> 编排参数源：`config/harness.yaml#insight_carrier`（路径约定 + 轴↔成员映射）
+
+**为什么要有（真实病灶）**：闸 2「严真奥 → 苏学法」与闸 3「苏学法 ∥ 屠明熙」并行，
+但产物落**三处** ⇒ 同一目标（PPT 某页 / 某个知识模块）上的**内容 / 教学 / 视觉**建议
+**分散无共同落点**：冲突无处显形、合并靠 800 字摘要（必然丢信息）、追溯断裂（谁提的、改没改散在三处）。
+载体把三轴的洞察汇入**同一份载体**，载体是全程唯一事实源（轮报 / 冻结 / 验收都从它投影）。
+
+**你写自己的分片**（不要直接改合并后的载体；闸 3 是真并行，同写一个文件会丢更新）：
+- 分片绝对路径：`<RUN_DIR>/_insights/parts/dvm-content-expert__content.json`
+- 分片结构：
+```json
+{{"task_id":"...","member":"dvm-content-expert","axis":"content","round":1,
+ "entries":[{{"insight_id":"s12-C-01","target_id":"s12","target_kind":"page|module",
+   "axis":"content","expert":"dvm-content-expert",
+   "proposal":"……具体改什么（必填，须可执行到动作级；禁写'整体优化'这类无定位表述）",
+   "rationale":"……依据（必填）","severity":"P0|P1|P2","status":"proposed",
+   "evidence":"PMID:31234567 / 动物防疫法 2021 修订版 第二十条"}}]}}
+```
+- 必填字段：`insight_id` / `target_id` / `target_kind` / `axis` / `expert` / `proposal` /
+  `rationale` / `severity` / `status`；`evidence`（证据定位）**内容轴必填**。
+- `target_id`：PPT 场景 = 稳定页面 ID（如 `s12`）；模块场景 = 教学知识模块/章节级标识。
+- `insight_id` 格式：`<target_id>-<轴首字母>-<两位序号>`（如 `s12-C-01`）。
+
+**纪律（两条，违反即判失败）**：
+1. **只写自己轴**——同一目标上其他轴的条目由别人写；你**不得**改别人的分片，也不得直接改载体。
+   （同轴内不重复做 = 防重复劳动；同一目标上多轴并存 = 正常，不是重复劳动。）
+2. **专业产物照旧落盘**（你的证据包 / 蓝图 / 检索单）——载体是**洞察的汇入通道**，**不是**取代你的产物。
+   两者关系：产物 = "我这轴做了什么"，载体 = "我提了哪些条目"。
+
+**主理人合并**（不是你做）：`harness.py insights add --part <你的分片>`。
+合并时若你的 `insight_id` 与已有条目重复 ⇒ **报错且不静默覆盖**（两版都留痕，等裁决）。
+
 ## 接口契约（Interface Contract · 2026-09-30 补齐 · v3.12.0 改为单一数据源引用）
 
 > 🔴 **result_envelope 硬约束**：产出必须以**必填六字段**

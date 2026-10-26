@@ -74,6 +74,8 @@ ROLE_BEGIN = "==================== 角色定义（专家包成员 MD 全文） =
 ROLE_END = "==================== 角色定义结束 ===================="
 DOMAIN_BEGIN = "==================== 域上下文（v3.17.0 坍缩产物注入） ===================="
 DOMAIN_END = "==================== 域上下文结束 ===================="
+CARRIER_BEGIN = "==================== 洞察载体（v3.21.0 多专家单载体） ===================="
+CARRIER_END = "==================== 洞察载体结束 ===================="
 
 
 def log(msg: str) -> None:
@@ -566,6 +568,51 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                      + ("（PPT 默认中文）" if _lang == "zh-CN" else "（英语场景）"))
         lines.append(f"- 语言规格唯一源：`{_lp_ref}`"
                      "（英语场景判据、术语标注形态、英文场景中文保留项均在其中，**不在本文件复制**）")
+        # ── v3.21.0 F4：把「英语场景判据」与「英文场景中文保留项」**真的注入** ──
+        # 独立诊断实测（AST 读取点）：`english_allowed_when` / `english_minimum`
+        #   此前 **0 处读取** —— 配置里有判据、装配器却没注入 ⇒ 成员看不到 ⇒
+        #   "PPT 默认中文 / 关键词汇补英文 / 极少数场景做英语 PPT（留学生班）"
+        #   这三条**只有配置声明、没有执行面**。
+        # 这里从**唯一源** config/language-profile.yaml 读并渲染（不复制定义），
+        # 判据的**执行**仍属会话层（成员按条款判断受众语言）——
+        # 代码能做的是"确保成员看得见判据"，判据本身是语义判断。
+        _lp_path = os.path.join(PKG, _lp_ref) if not os.path.isabs(_lp_ref) else _lp_ref
+        try:
+            import yaml as _yaml
+            with open(_lp_path, encoding="utf-8") as _f:
+                _lprof = _yaml.safe_load(_f) or {}
+        except Exception as _e:
+            _lprof = {}
+            lines.append(f"- ⚠ 语言规格读取失败（{_e}）——英语场景判据**未注入**，"
+                         "本轮按 zh-CN 默认中文执行（缺失即降级，不得静默当英语场景）")
+        # ⚠ **判据单独成段**（v3.21.0 实测修的冲突）：
+        #   【六之二、交付语言与术语表】段里以 `  - ` 缩进开头的行 = **术语词条**
+        #   （scripts/test_collapse_domain_render.py#_glossary_items 按此数条目数，
+        #   断言"实渲条数 == 域档案条数"）。若把判据也写成 `  - ` 放进该段，
+        #   计数会多出几条 ⇒ **既有护栏失败**（实测 32 ≠ 29）。
+        #   ⇒ 判据另起【六之三】段：既不污染词条段的口径，判据也照样注入。
+        _eaw = _lprof.get("english_allowed_when")
+        _emin = _lprof.get("english_minimum")
+        if (isinstance(_eaw, list) and _eaw) or isinstance(_emin, dict):
+            lines.append("【六之三、交付语言判据（英语场景）】")
+        if isinstance(_eaw, list) and _eaw:
+            lines.append("何时可做英语 PPT（仅此两种情形，其余一律中文）：")
+            for _c in _eaw:
+                if isinstance(_c, dict):
+                    _fld = _c.get("field") or ""
+                    _eq = _c.get("equals")
+                    _tt = _c.get("truthy")
+                    _cond = (f"{_fld} = {_eq}" if _eq is not None
+                             else (f"{_fld} 为真" if _tt else str(_fld)))
+                    lines.append(f"· 当 {_cond} → 允许英语 PPT"
+                                 + (f"（{_c.get('note')}）" if _c.get("note") else ""))
+        if isinstance(_emin, dict):
+            _keep = _emin.get("keep_chinese_for")
+            if isinstance(_keep, list) and _keep:
+                lines.append("英语场景仍须保留中文锚点（不得只出英文）："
+                             + "、".join(str(x) for x in _keep))
+            if _emin.get("note"):
+                lines.append(f"· 理由：{_emin['note']}")
         if _gloss:
             # ── 渲染**全部**词条：一条不可省（成员靠它标注术语）──────────
             # 缺陷（v3.19.1·S1 审计实测）：此前只渲染 dict 形态（zh/en/abbr），
@@ -750,6 +797,80 @@ def enrich_frontmatter_block(prompt: str, fm_map: dict, core_fm: dict,
         return prompt
     block_end = close + 4                        # 指向闭合 "---" 之后的换行符
     return prompt[:start] + _render_fm_block(fm_map, core_fm, member_id) + prompt[block_end:]
+
+
+def _carrier_axis_for_member(member_id: str):
+    """从 config/harness.yaml#insight_carrier.axes 反查本成员对应的轴。
+
+    为什么反查而不是写死：轴↔成员映射是**编排参数**（唯一源 = harness.yaml），
+    装配器硬编码成员名 = 第二份真相 ⇒ 改配置不改行为（本包反复治理的同型缺陷）。
+    读不到 ⇒ 返回 None，并在注入段里显式说明"未登记本成员的轴"（不静默不注入）。
+    """
+    p = os.path.join(PKG, "config", "harness.yaml")
+    try:
+        import yaml
+        with open(p, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        log(f"⚠️ 读 harness.yaml 失败（{e}）——无法反查成员轴")
+        return None
+    axes = ((cfg.get("insight_carrier") or {}).get("axes") or {})
+    for axis, mem in axes.items():
+        if str(mem) == str(member_id):
+            return str(axis)
+    return None
+
+
+def _render_carrier_context(member_id: str, run_dir: str) -> str:
+    """渲染「洞察载体」注入段（v3.21.0）。
+
+    为什么必须注入（而不是只写进成员 MD）：**人设不注入，规范就不会被遵守**
+    ——这是域人格注入的既有教训（v3.17.0：装配产物里域人格关键词命中数为 0）。
+    载体写入契约若只存在于 MD 里，成员看不到就等于没有。
+    """
+    lines = [CARRIER_BEGIN]
+    axis = _carrier_axis_for_member(member_id)
+    if not axis:
+        lines.append("ℹ️ 未在 `config/harness.yaml#insight_carrier.axes` 登记本成员的轴——"
+                     "本次**不注入**载体写入契约（该成员不参与载体条目，或映射待登记）。")
+        lines.append(CARRIER_END)
+        return "\n".join(lines)
+    run = run_dir or "<RUN_DIR>"
+    lines.append(f"【本成员轴】{axis}（成员 {member_id}）")
+    lines.append(f"【载体文件】{os.path.join(run, '_insights', 'carrier.json')}（**主理人合并后写，你不要直接改**）")
+    lines.append(f"【你的分片】{os.path.join(run, '_insights', 'parts', f'{member_id}__{axis}.json')}")
+    lines.append("【为什么要写】同一目标上的内容/教学/视觉建议原本散落三处 ⇒ 冲突无处显形、"
+                 "合并丢信息、追溯断裂。载体是全程唯一事实源（轮报/冻结/验收都从它投影）。")
+    lines.append("【分片结构】")
+    lines.append('{"task_id":"...","member":"%s","axis":"%s","round":1,' % (member_id, axis))
+    lines.append(' "entries":[{"insight_id":"<target>-<轴首字母>-<两位序号>","target_id":"<s12 或模块id>",')
+    lines.append('   "target_kind":"page|module","axis":"%s","expert":"%s",' % (axis, member_id))
+    lines.append('   "proposal":"……具体改什么（必填，可执行到动作级；禁"整体优化"这类无定位表述）",')
+    lines.append('   "rationale":"……依据（必填）","severity":"P0|P1|P2","status":"proposed"%s}]}'
+                 % (',"evidence":"PMID/DOI 或 文件:行号"' if axis == "content" else ""))
+    lines.append("【必填字段】insight_id / target_id / target_kind / axis / expert / proposal / "
+                 "rationale / severity / status"
+                 + ("；**evidence 内容轴必填**（内容轴洞察必须可溯源）" if axis == "content" else ""))
+    lines.append("【两条纪律】① **只写自己轴**：同一目标上其他轴的条目由别人写，"
+                 "你不得改别人的分片，也不得直接改载体；同轴内不重复做（防重复劳动），"
+                 "同一目标上多轴并存是正常的（合起来才是完整洞察）。")
+    lines.append("② **专业产物照旧落盘**（你的证据包/蓝图/检索单）：载体是**洞察的汇入通道**，"
+                 "不取代你的产物——产物=「我这轴做了什么」，载体=「我提了哪些条目」。")
+    lines.append("【合并由主理人做】`harness.py insights add --part <你的分片>`；"
+                 "若 insight_id 与已有条目重复 ⇒ 报错且**不静默覆盖**（两版都留痕等裁决）。")
+    lines.append(CARRIER_END)
+    return "\n".join(lines)
+
+
+def insert_carrier_section(prompt: str, carrier_text: str) -> str:
+    """把「洞察载体」段插入到「域上下文结束」标记之后。"""
+    pos = prompt.find(DOMAIN_END)
+    if pos < 0:
+        log("⚠️ 未在装配产物中定位到「域上下文结束」标记——载体段追加到末尾")
+        return prompt.rstrip("\n") + "\n\n" + carrier_text.rstrip("\n") + "\n"
+    at = pos + len(DOMAIN_END)
+    return (prompt[:at] + "\n\n" + carrier_text.strip("\n") + "\n\n"
+            + prompt[at + 1:].lstrip("\n"))
 
 
 def insert_domain_section(prompt: str, domain_text: str) -> str:
@@ -952,6 +1073,8 @@ def main() -> int:
                            task_text, args.phase, args.task_id, run_dir, member_ids)
     prompt = enrich_frontmatter_block(prompt, fm_map, core_fm, args.member)
     prompt = insert_domain_section(prompt, domain_text)
+    # v3.21.0：洞察载体写入契约注入（载体段紧随域上下文段，人设不注入规范就不会被遵守）
+    prompt = insert_carrier_section(prompt, _render_carrier_context(args.member, run_dir))
 
     if args.out:
         Path(args.out).expanduser().write_text(prompt, encoding="utf-8")

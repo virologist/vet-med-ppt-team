@@ -68,6 +68,11 @@ _FALLBACK = {
     "body_min_pt": 12.0,
     "note_min_pt": 9.0,
     "title_min_pt": 28.0,
+    # v3.21.0（维度 6/8 实测）：页脚/页码档——页脚 8pt 是合规设计，
+    #   原先无此档 ⇒ 被按 body_min_pt 判「字号过小」且 severity 映射为 P0 硬阻断
+    #   ⇒ 合规课件凭空造 P0。**不放宽密度检查的页脚判据**（那会放松既有判据）。
+    "footer_min_pt": 8.0,
+    "footer_max_chars": 40,
     "max_colors_per_slide": 5,
     "max_chars_per_slide": 400,
     "max_body_chars_per_slide": 150,      # v3.16.0：主框密度（v3.5.0 起配了一直没人读，本版 wiring）
@@ -476,6 +481,25 @@ def _is_footer_frame(text, rect, slide_height):
     top = rect[1]
     if slide_height and top is not None and top >= 0.92 * slide_height:
         return len(text) <= 20
+    return False
+
+
+def _is_footer_frame_for_font(text, rect, slide_height, max_chars):
+    """**字号检查专用**的页脚判定（v3.21.0）。
+
+    为什么要有独立的一份（不直接复用 `_is_footer_frame`）：
+      · `_is_footer_frame` 的 20 字上限是**密度检查**的判据——放宽它 = 放松既有判据
+        （本包铁律：既有限度不得放弱）⇒ 一个字都不改；
+      · 字号检查需要覆盖"课程名·专业名 + 页码"这类**长页脚**（实测 24 字），
+        20 字放不下 ⇒ 用**可配的** footer_max_chars（默认 40）。
+      · 位置条件与密度检查一致（top ≥ 0.92×页高）：只看长度会把正文里的短引导语误当页脚。
+    位置与长度**双条件**，缺一不可判为页脚。
+    """
+    if rect is None or not text:
+        return False
+    top = rect[1]
+    if slide_height and top is not None and top >= 0.92 * slide_height:
+        return len(text) <= max_chars
     return False
 
 
@@ -912,9 +936,18 @@ def verify(path, hours=3, strict=False, caliber=None):
                     # v3.19.0：标题占位符的 run 用 title_min_pt 阈值（此前标题字号
                     #   按 body_min_pt=12 判——28pt 的红线只写在屠明熙 MD 里，机器不设防）
                     is_title = bool(a.get("is_title_ph"))
+                    # v3.21.0：**页脚/页码档**——页脚是装饰性信息（课程名·章节 + 页码），
+                    #   典型 8pt；原先无此档 ⇒ 被按 body_min_pt 判「字号过小」，
+                    #   而 severity 映射里它是 P0 硬阻断 ⇒ 合规课件凭空造 P0（实测可复现）。
+                    is_footer = _is_footer_frame_for_font(
+                        a.get("text"), a.get("rect"), sh,
+                        int(THRESHOLD.get("footer_max_chars", 40) or 40))
                     if is_title:
                         limit = THRESHOLD["title_min_pt"]
                         kind = "标题"
+                    elif is_footer:
+                        limit = THRESHOLD.get("footer_min_pt", 8.0)
+                        kind = "页脚/页码"
                     elif is_note:
                         limit = THRESHOLD["note_min_pt"]
                         kind = "图注/来源"
@@ -958,7 +991,15 @@ def verify(path, hours=3, strict=False, caliber=None):
             min_s = min(_sizes)
             txt = a["text"]
             is_note = _is_note_candidate(txt)
-            limit = THRESHOLD["note_min_pt"] if is_note else THRESHOLD["body_min_pt"]
+            # v3.21.0：同 run 级路径——形状级兜底也须认页脚档（两条路径口径必须一致，
+            #   否则"能取到 run 走 run 级、取不到走形状级"会出现口径漂移）
+            is_footer = _is_footer_frame_for_font(
+                txt, a.get("rect"), sh,
+                int(THRESHOLD.get("footer_max_chars", 40) or 40))
+            if is_footer:
+                limit = THRESHOLD.get("footer_min_pt", 8.0)
+            else:
+                limit = THRESHOLD["note_min_pt"] if is_note else THRESHOLD["body_min_pt"]
             if min_s < limit:
                 if is_note:
                     stats["small_note"] += 1
