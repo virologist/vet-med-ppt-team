@@ -29,13 +29,24 @@ try:
 except ImportError:
     PPTX_OK = False
 
-# Batch 1 备份样本
-SAMPLE_DECKS_DIR = Path("/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/.harness-runs/M4-M7_重诊断/sample_extract")
-SAMPLE_DECKS = sorted(SAMPLE_DECKS_DIR.glob("*.pptx")) if SAMPLE_DECKS_DIR.exists() else []
+# v3.24.0（FEAT-003c 取证后）：样本定位**下沉**到 `sample_fixtures.py`。
+# 病灶：原实现在本文件硬编码**单一**路径
+#   `养禽与禽病防治/.harness-runs/M4-M7_重诊断/sample_extract/*.pptx`
+#   —— 该目录**已不存在**（实测 2026-10-27），且 `/tmp/cross_domain` 不持久
+#   ⇒ T1/T11 长期 skip，**在本机从未真跑过**（其正确性无本地证据）。
+# 改法：真实样本（多候选目录自动发现）优先；不可得 ⇒ 用**确定性合成 fixture**
+#   顶上，断言仍真跑。**降级类型显式登记，不静默**（见 `_resolve_decks()`）。
+from sample_fixtures import (  # noqa: E402
+    build_synthetic_deck,
+    resolve_cross_domain_sample,
+    resolve_real_samples,
+)
 
-# v4 跨学科样本：下载到 /tmp/cross_domain/（Q1 默认 B 方案）
-CROSS_DOMAIN_DIR = Path("/tmp/cross_domain")
-CROSS_DOMAIN_DECK = CROSS_DOMAIN_DIR / "cdc_zoonotic_diseases.pptx"  # 公共领域 CDC 课件
+# Batch 1 备份样本（v3.24.0：改为可解析定位，见 sample_fixtures）
+_REAL_DECKS, _REAL_DESC = resolve_real_samples(minimum=1)
+
+# v4 跨学科样本（Q1 默认 B 方案；v3.24.0：改为可解析定位）
+_CROSS_DECK, _CROSS_DESC = resolve_cross_domain_sample()
 
 # 工具：构造损坏样本
 def make_corrupted_pkg_duplicate(path: Path):
@@ -144,11 +155,32 @@ class TestOoxmlLint(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _resolve_decks(self):
+        """样本降级链（v3.24.0）：真实样本 → 确定性合成 fixture。
+
+        返回 (decks, kind, desc)：
+          kind = "real"      —— 用的是包外真实课件（证据强度最高）
+          kind = "synthetic" —— 真实样本不可得，用合成 fixture 顶上（仍真跑）
+        """
+        if _REAL_DECKS:
+            return _REAL_DECKS, "real", _REAL_DESC
+        synth = []
+        for i in range(4):
+            synth.append(build_synthetic_deck(self.tmpdir / f"synth_T1_{i}.pptx"))
+        return synth, "synthetic", "包外真实样本不可得 → 合成 fixture（4 份）"
+
     # ---------- T1 ----------
-    @unittest.skipUnless(SAMPLE_DECKS, "Batch 1 样本不存在")
     def test_T1_normal_decks_pass(self):
-        """4 份 Batch 1 备份样本：0 ERROR（baseline-issue 可 WARN）。"""
-        for deck in SAMPLE_DECKS:
+        """真实样本优先；不可得时用确定性合成 fixture 顶上（**不再 skip**）。
+
+        v3.24.0（FEAT-003c）：原实现 `@skipUnless(SAMPLE_DECKS, ...)` ⇒ 路径失效即
+        静默 skip，该用例**在本机从未执行过**。现改为显式降级链：
+        真实样本 → 合成 fixture ⇒ **断言始终真跑**。
+        降级类型（real / synthetic）打印出来，禁"悄悄用弱样本假装测过真样本"。
+        """
+        decks, kind, desc = self._resolve_decks()
+        print(f"\n[T1] 样本来源：{kind} — {desc}")
+        for deck in decks:
             with self.subTest(deck=deck.name):
                 runner = LintRunner(str(deck))
                 rc = runner.run()
@@ -256,10 +288,21 @@ class TestOoxmlLint(unittest.TestCase):
         self.assertEqual(rc, 3, f"应 exit 3（文件不存在），实际 {rc}")
 
     # ---------- T11 ----------
-    @unittest.skipUnless(CROSS_DOMAIN_DECK.exists(), "v4 跨学科样本未下载")
     def test_T11_cross_domain_sample(self):
-        """v4 通用化：跨学科样本走同一规则集能跑通。"""
-        runner = LintRunner(str(CROSS_DOMAIN_DECK))
+        """v4 通用化：跨学科样本走同一规则集能跑通。
+
+        v3.24.0（FEAT-003c）：原实现 `@skipUnless(CROSS_DOMAIN_DECK.exists())`
+        —— `/tmp/cross_domain` **不持久** ⇒ 该用例从未在本机执行过。
+        改法：跨学科样本可得 ⇒ 用真样本；不可得 ⇒ 用**合成 fixture** 顶上，
+        断言仍真跑（降级类型显式打印）。
+        """
+        if _CROSS_DECK is not None:
+            deck, kind, desc = _CROSS_DECK, "real", _CROSS_DESC
+        else:
+            deck = build_synthetic_deck(self.tmpdir / "synth_cross_domain.pptx")
+            kind, desc = "synthetic", f"{_CROSS_DESC} → 合成 fixture"
+        print(f"\n[T11] 跨学科样本来源：{kind} — {desc}")
+        runner = LintRunner(str(deck))
         rc = runner.run()
         # 不强求 exit 0（可能真有 ERROR，但说明跨学科场景可触发），
         # 关键是 lint 跑得通

@@ -47,6 +47,7 @@ v2.0.0 起：单页/单形状解析异常不再崩溃退出（XML 兜底继续�
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 
@@ -103,6 +104,7 @@ _FALLBACK = {
         "title_position_consistency": {"enabled": False, "tolerance_in": 0.25},
         "image_area_ratio": {"enabled": False, "min": 0.20, "max": 0.50,
                              "max_consecutive_textonly": 3},
+        "key_data_source": {"enabled": False, "scope": "paragraph_then_page"},
     },
 }
 
@@ -965,6 +967,103 @@ def _rubric_image_area(rows, cfg):
     return out
 
 
+# ── C5 关键数据注明来源（v3.24.0 · 建议级）───────────────────────────────
+# 立项依据：`.learnings/FEATURE_REQUESTS.md` 的 [缺口] V3/C5 条目——
+#   `references/course-profile-defaults.md` §4.1 的 C5 长期标「暂无机器实现」，
+#   而 §4.5 已如实登记该缺口（假承诺已摘掉）。本版补上 **C5** 的机器实现。
+#
+# ⚠ **为什么不用"正则扫全页数字"**：那样会把「25日龄」「3天」「2023年」等
+#   非来源数字大量误报（FEAT 登记时的顾虑）。故判据**三层收敛**：
+#   ① 指标语境（关键指标词命中）② 段落含数值 ③ 来源标记邻近
+#   实测（4 份真实动医课件）：全页 1071 个数字 → 命中指标语境的仅 **7 个段落**。
+#
+# ⚠ **来源标记为什么不用裸 `\d{4}`**：实测「禽流感鉴别诊疗要点.pptx」
+#   宽判（裸 4 位数字）命中 2/14、紧判（年份须带"年"字）命中 0/14
+#   ⇒ 裸 `\d{4}` 会把段落里的**指标数字本身**误当年份（正是要防的假阳性）。
+#
+# ⚠ **本判据只验「有没有带来源标记」，不验「来源是否为真」**——后者是语义判断，
+#   机器不可判定，**仍由人核**（与 §4.1 C5 行「+ [人] 核来源」口径一致）。
+_C5_METRIC_WORDS = (
+    "发病率", "死亡率", "保护率", "致死率", "感染率", "阳性率",
+    "滴度", "中和抗体", "发病率", "死亡率",
+)
+# 来源标记：**字面串**部分（子串匹配）
+#   ⚠ 年份**不能**写成字面串（`"20xx年"` 永远匹配不到「2024年」）——
+#     故年份走独立的正则 `_C5_YEAR_RE`（见下）。此处只放字面标记。
+_C5_SOURCE_PATTERNS = (
+    "来源", "出处", "参考文献", "文献", "doi", "DOI", "PMID",
+    "et al.",
+    "标准", "GB", "指南", "教材",
+    "WHO", "OIE", "FAO", "农业农村部", "国家卫健委",
+)
+# 年份：**必须**带"年"字（裸 4 位数字不算，见上文的假阳性取证）
+_C5_YEAR_RE = re.compile(r"(?:19|20)\d{2}\s*年")
+# 数值识别：整数 / 小数 / 百分数（**不**含年份形态的特殊处理，见来源标记注释）
+_C5_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?%?")
+
+
+def _c5_has_source(text: str) -> bool:
+    """该文本是否含来源标记（字面标记 或 带"年"字的年份）。"""
+    if any(p in text for p in _C5_SOURCE_PATTERNS):
+        return True
+    return bool(_C5_YEAR_RE.search(text))
+
+
+def _rubric_key_data_source(para_rows, cfg):
+    """C5 关键数据注明来源：**段落级**判据 + **页级**回退。
+
+    Args:
+        para_rows: [(slide_idx, paragraph_text), ...]（按页、按段落展开）
+        cfg : {"enabled": bool, "scope": "paragraph_then_page"}
+
+    返回 rubric 条目列表；每条含 check_id / slide / detail。
+    """
+    out = []
+    if not cfg.get("enabled"):
+        return out
+
+    # 按页聚合（供页级回退用）
+    page_texts: dict = {}
+    for idx, text in para_rows:
+        page_texts.setdefault(idx, []).append(text)
+
+    # 页级：来源标记池（整页文本拼接）
+    page_has_source: dict = {}
+    for idx, texts in page_texts.items():
+        joined = "\n".join(texts)
+        page_has_source[idx] = _c5_has_source(joined)
+
+    seen_pages = set()
+    for idx, text in para_rows:
+        # ① 指标语境
+        if not any(w in text for w in _C5_METRIC_WORDS):
+            continue
+        # ② 段落含**量值**（含 % 或小数的数值）。
+        #   ⚠ 纯整数不单独算数：株型编号（H5N1 / H7N9 / 亚型 2）会被误当"数据"，
+        #     而它们恰恰**不需要**来源 ⇒ 计入会制造假阳性。
+        nums = _C5_NUMBER_RE.findall(text)
+        measures = [n for n in nums if "%" in n or "." in n]
+        if not measures:
+            continue
+        # ③ 来源邻近：同段落 → 同页回退
+        para_has_src = _c5_has_source(text)
+        if para_has_src or page_has_source.get(idx):
+            continue
+        # 每页只出一条（避免一页多个未标源段落刷屏）
+        if idx in seen_pages:
+            continue
+        seen_pages.add(idx)
+        shown = "、".join(measures[:3]) + " 等"
+        out.append({
+            "check_id": "key_data_source",
+            "slide": idx,
+            "detail": (f"关键数据（{shown}）邻近无来源标记"
+                       f"——须补「来源：…（年份）」或 DOI/PMID/标准号；"
+                       f"「来源是否为真」仍需人工核"),
+        })
+    return out
+
+
 def _count_by_level(red, unknown_out=None):
     """把 red 计数按 severity 映射拆成 (p0, p1)；未登记类型名写入 unknown_out（不清零、不落 P0）。
 
@@ -1042,6 +1141,7 @@ def verify(path, hours=3, strict=False, caliber=None):
     has_quiz = False         # 题页
     title_geom = []          # v3.16.0 V1 rubric 取数：[(页号, (left, top, width)), ...]
     img_rows = []            # v3.16.0 V5 rubric 取数：[(页号, 面积占比, 是否含图), ...]
+    para_rows = []           # v3.24.0 C5 rubric 取数：[(页号, 段落文本), ...]
     for idx, slide in visible:
         adapters, fb_err = _slide_shape_adapters(slide, stats)
 
@@ -1066,6 +1166,15 @@ def verify(path, hours=3, strict=False, caliber=None):
             if a.get("is_pic") and r and all(v is not None for v in r):
                 pic_area += (r[2] or 0) * (r[3] or 0)
         img_rows.append((idx, (pic_area / (sw * sh)) if (sw and sh) else 0.0, pic_area > 0))
+        # v3.24.0 C5 rubric 取数：**段落级**文本（adapter 的 text 是整框文本，
+        #   含换行 ⇒ 按行拆成段落，判"数字与来源是否同段邻近"）。
+        for a in adapters:
+            if not a.get("has_tf") or not a.get("text"):
+                continue
+            for line in a["text"].splitlines():
+                line = line.strip()
+                if line:
+                    para_rows.append((idx, line))
 
         # ---------- 1. 字号（v3.5.1：run 级判定；空 run 跳过，图注按 run 文本取阈值）----------
         for a in text_adapters:
@@ -1361,6 +1470,9 @@ def verify(path, hours=3, strict=False, caliber=None):
         rubric += _rubric_title_position(title_geom, checks_cfg["title_position_consistency"])
     if (checks_cfg.get("image_area_ratio") or {}).get("enabled"):
         rubric += _rubric_image_area(img_rows, checks_cfg["image_area_ratio"])
+    # v3.24.0：C5 关键数据注明来源（建议级，默认关闭；开关见 visual-rules.yaml#checks）
+    if (checks_cfg.get("key_data_source") or {}).get("enabled"):
+        rubric += _rubric_key_data_source(para_rows, checks_cfg["key_data_source"])
 
     # v3.16.0：课时标准缺失/空表进 P3 明示队列——不阻断，但不可能被读成"达标"
     p3 = (stats["unknown_font"] + stats["parse_errors"] + stats["bleed_decor"]

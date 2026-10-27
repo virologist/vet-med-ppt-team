@@ -457,5 +457,96 @@ class TestChartLayoutW1(unittest.TestCase):
         self.assertEqual(len(re.findall(r"<c:ser(?=[\s/>])[^>]*>", "<c:serX>")), 0)
 
 
+class TestKeyDataSourceC5(unittest.TestCase):
+    """v3.24.0：C5「关键数据注明来源」判据护栏。
+
+    背景：`.learnings/FEATURE_REQUESTS.md` 的 [缺口] C5 条目——长期「暂无机器实现」。
+    本版落地，判据三层收敛（指标语境 → 量值 → 来源邻近）。
+    ⚠ **护栏重点在假阳性**：本包铁律「假阳性必须为零，否则门禁会被绕过」。
+    实测基线（4 份真实动医课件）：
+      · 全页 1071 个数字 → 仅 7 个段落命中指标语境（收敛比约 1/150）
+      · 裸 4 位数字会把指标数字本身误当年份（宽判 2/14 vs 紧判 0/14）⇒ 已收紧
+    """
+
+    CFG = {"enabled": True, "scope": "paragraph_then_page"}
+
+    def _run(self, rows):
+        return vd._rubric_key_data_source(rows, self.CFG)
+
+    def test_disabled_produces_nothing(self):
+        """关闭时不产出任何条目（默认关闭 ⇒ 旧行为不变）。"""
+        rows = [(1, "死亡率可达90%～100%")]
+        out = vd._rubric_key_data_source(rows, {"enabled": False})
+        self.assertEqual(out, [])
+
+    def test_metric_without_source_is_flagged(self):
+        """关键指标 + 量值 + 无来源 ⇒ 判红。"""
+        rows = [(31, "发病后急剧死亡，死亡率可达90%～100%。")]
+        out = self._run(rows)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["check_id"], "key_data_source")
+        self.assertEqual(out[0]["slide"], 31)
+
+    def test_non_metric_numbers_not_flagged(self):
+        """非指标语境的数字（25日龄 / 3天 / 2023年）⇒ **不判**（防假阳性）。"""
+        rows = [
+            (1, "25日龄白羽肉鸡"),
+            (2, "病程3天"),
+            (3, "2023年新版指南"),
+            (4, "共12页"),
+        ]
+        self.assertEqual(self._run(rows), [])
+
+    def test_strain_id_not_treated_as_measure(self):
+        """株型编号（H5N1 / H7N9）**不算量值** ⇒ 不判（它们不需要来源）。"""
+        rows = [(5, "由H5N1亚型引起，H7N9亦可感染")]
+        self.assertEqual(self._run(rows), [])
+
+    def test_source_marker_in_paragraph_suppresses(self):
+        """同段落有来源标记 ⇒ 不判。"""
+        rows = [(7, "死亡率可达90%（来源：农业农村部，2023年）")]
+        self.assertEqual(self._run(rows), [])
+
+    def test_source_marker_on_page_suppresses(self):
+        """同页另一形状有来源标记 ⇒ 不判（页级回退作用域）。"""
+        rows = [
+            (9, "死亡率可达90%"),
+            (9, "来源：WHO, 2022年"),
+        ]
+        self.assertEqual(self._run(rows), [])
+
+    def test_bare_four_digit_number_is_not_a_year(self):
+        """裸 4 位数字**不**算年份（实测假阳性源：宽判 2/14 → 紧判 0/14）。
+
+        取证口径：宽判（裸 `\\d{4}`）会把段落里的指标数字本身误当年份 ⇒ 假阳性。
+        本例段落含真实量值（90%），但「2024」裸数字**不构成来源标记**
+        ⇒ 仍应判红（证明年份未被误认）。
+        """
+        rows = [(11, "日龄越小发病率、死亡率越高，死亡率可达90%，2024")]
+        out = self._run(rows)
+        self.assertEqual(len(out), 1)
+        # 反向对照：把「2024」换成「2024年」⇒ 应被认作来源标记 ⇒ 不判红
+        rows_ok = [(11, "日龄越小发病率、死亡率越高，死亡率可达90%，2024年")]
+        self.assertEqual(self._run(rows_ok), [])
+
+    def test_one_entry_per_page(self):
+        """同页多个未标源段落 ⇒ 只出一条（防刷屏）。"""
+        rows = [
+            (20, "死亡率可达90%"),
+            (20, "保护率仅50%"),
+            (20, "感染率30%"),
+        ]
+        out = self._run(rows)
+        self.assertEqual(len(out), 1)
+
+    def test_measure_display_excludes_strain_numbers(self):
+        """展示的量值不应混入株型编号（H5N1 里的 5）。"""
+        rows = [(31, "H5N1引起，发病后死亡率可达90%～100%。")]
+        out = self._run(rows)
+        self.assertEqual(len(out), 1)
+        self.assertIn("90%", out[0]["detail"])
+        self.assertNotIn("（5、", out[0]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

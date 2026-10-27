@@ -6,6 +6,136 @@
 
 ---
 
+## [v3.24.0] - 2026-10-27（登记缺口收口：3 处 skip 转真跑 + C5 判据落地 + V3 实测否决）
+
+> 依据：v3.23.1 之后的**残留盘点**（`.learnings/FEATURE_REQUESTS.md` 全量过账）。
+> 本版处理**登记在案但一直未做**的三类项：FEAT-003a/b/c 三条 + [缺口] V3/C5 条目。
+> 全部为**增量**：不删既有判据、不放松既有护栏、不改既有数值。
+
+### A1 · FEAT-003c：3 处 skip **全部消除**（386 passed/3 skipped → 400 passed/0 skipped）
+
+**根因取证**（先证伪「断言错」，再定位「路径失效」）：
+
+| 用例 | 原依赖 | 实测状态 |
+|---|---|---|
+| `test_ooxml_lint.py::T1` | `…/.harness-runs/M4-M7_重诊断/sample_extract/*.pptx` | 该目录**已不存在** |
+| `test_extract_assets.py::T6` | 4 条精确路径 | **第 1 条文件名已变**（`2.1高致病性禽流感防控.pptx` → `高致病性禽流感防控.pptx`） |
+| `test_ooxml_lint.py::T11` | `/tmp/cross_domain/` | `/tmp` **不持久** ⇒ 从未真跑 |
+
+⇒ 失效的是**路径**，不是断言：实测 4 份真实动医课件 `ooxml_lint` 全部 **rc=0**（0 ERROR），满足 T1 断言。
+
+**处置**：新增 `scripts/sample_fixtures.py` —— 样本定位**下沉**为可解析层：
+- 多候选目录自动发现（`VETMED_SAMPLE_DIR` 环境变量 → 挂账抽取目录 → 源课件目录 `M4A1_禽流感`）；
+- 环境变量覆盖（`VETMED_SAMPLE_DIR` / `VETMED_CROSS_DOMAIN_DIR`）；
+- **确定性合成 fixture 兜底**（`build_synthetic_deck` / `build_synthetic_suite`）；
+- **强制合成自检开关** `VETMED_FORCE_SYNTHETIC=1`（用于验证降级分支本身可跑通）。
+
+**降级链纪律**：真实样本优先 → 不可得则合成 fixture ⇒ **断言始终真跑，不再 skip**；
+降级类型（`real` / `synthetic`）**显式打印**，禁"悄悄用弱样本假装测过真样本"。
+
+**两端均已实测**：
+- 真实分支：`[T1] 样本来源：real — 源课件目录(M4A1_禽流感)(4份)`；
+- 合成分支：`[T1] 样本来源：synthetic — …合成 fixture（4 份）`，31 passed。
+
+**样本获取方式已登记**（本条诉求的另一半）：见 `.learnings/FEATURE_REQUESTS.md` 的
+「样本获取方式已登记」段 —— 换机时设 `VETMED_SAMPLE_DIR` 即可；
+跨学科样本**刻意不自动下载**（网络依赖会让测试结果不确定）。
+
+### A2 · FEAT-003a：漂移哨兵失败时**直打行号**
+
+`scripts/extract_assets.py` 新增 `describe_asset_field_drift()`：逐键对比
+`references/asset-fields.yaml` 与 `_BUILTIN_ASSET_FIELD_CONFIG`，
+每条差异给出 **`yaml 第 N 行` vs `代码 第 M 行`**（`_yaml_key_lines` / `_builtin_key_lines` 定位）。
+`test_extract_assets.py::T14` 改为消费该函数。
+
+反例实测（注入 `emu_per_px: 9525→9526`）：
+```
+· asset_fields.emu_per_px [value_mismatch] yaml 第 25 行（值=9526） vs 代码 第 109 行（值=9525）
+```
+行号经人工核对**精确命中**目标键（原实现只说"两处不一致"，要人工翻两份文件）。
+
+### A3 · FEAT-003b：1.5 课时缺档说明**双向互指** + 防单边删除护栏
+
+`references/course-profile-defaults.md#2` ⇄ `config/visual-rules.yaml#hours_page_range_single_ppt`
+两处各加「同源声明」并互点对方路径（原两处讲的是同一件事但互不指向 ⇒ 表述分裂）。
+
+护栏：`scripts/test_arch_drift.py::TestHoursCaliberCrossRef`（2 例）。
+判据只认**明确锚点**（对方路径 + `FEAT-003b` 标记串），**不判散文措辞**
+（遵 FEAT-20261022-001 教训：纯文本判据假阳性不可控）。
+反例已验证：单边删除 yaml 侧互指 ⇒ `test_T11b` 判红。
+
+### A4 · [缺口] C5「关键数据注明来源」判据**落地**（建议级，默认关闭）
+
+判据落在 `scripts/verify_deck.py::_rubric_key_data_source()`，
+配置键 `visual-rules.yaml#checks.key_data_source`。
+
+**口径按登记建议落地**：「机器只验数字是否紧邻来源标记，来源是否为真仍留给人」——
+三层收敛：**① 指标语境 → ② 量值 → ③ 来源邻近**。
+
+**假阳性实测取证**（4 份真实动医课件）：
+- 全页 **1071** 个数字 → 仅 **7 个段落**命中指标语境（收敛比约 1/150）
+  ⇒ 「25日龄」「3天」「2023年」这类非来源数字**不会**被扫进来
+  （这正是原登记的顾虑，已实证规避）；
+- 来源标记**不用裸 `\d{4}`**：实测「禽流感鉴别诊疗要点.pptx」宽判命中 2/14、紧判 0/14
+  ⇒ 裸 4 位数字会把段落里的**指标数字本身**误当年份。年份**必须**带"年"字；
+- **量值须含 `%` 或小数**：株型编号（H5N1 / H7N9）是纯整数，不算量值
+  （它们恰恰**不需要**来源，计入会制造假阳性）。
+
+护栏：`scripts/test_verify_deck.py::TestKeyDataSourceC5`（**9 例**）——
+正例触发 / 非指标数字不判 / 株型编号不判 / 同段来源抑制 / 页级回退抑制 /
+裸 4 位数字不算年份（带反向对照）/ 每页只一条 / 展示不混株型编号。
+
+**开发期揪出的真缺陷**（独立验证发现，非自述）：
+`_C5_SOURCE_PATTERNS` 最初把年份写成**字面串** `"20xx年"` —— 永远匹配不到「2024年」
+⇒ 来源标记静默失效。改为独立的 `_C5_YEAR_RE` 正则 `(?:19|20)\d{2}\s*年`。
+该缺陷由「裸 4 位数字不算年份」的**反向对照用例**暴露。
+
+**为何仍是建议级、默认关闭**：「来源是否为真」是**语义判断**，机器不可判定，
+**永远**由人核 ⇒ 本判据不转正为门禁，只提示"这里没有来源标记"。
+
+### A5 · [缺口] V3「配色符合模板」**实测否决**（不实现，如实登记）
+
+原设想「取色均落在模板 `clrScheme` 12 色内」经 4 份真实动医课件实测**不可行**：
+
+| 课件 | slide 内 `srgbClr` 取色落在**自身** clrScheme 外的比例 |
+|---|---|
+| `高致病性禽流感防控.pptx` | **85.7%** |
+| `7. 禽流感.pptx` | **51.0%** |
+| `禽流感鉴别诊疗要点.pptx` | **100%** |
+
+且这些课件的 clrScheme 与默认模板**完全不同**（橙系 `#F87A00` vs 蓝灰系 `#4472C4`）
+⇒ "落在模板色内"这个参照系本身不成立。
+
+⇒ 按原设想实现会产生**海量假阳性**（违反本包铁律「假阳性必须为零，否则门禁会被绕过」）。
+**保持缺口登记 + 写明否决理由**，不做一个明知会刷屏的判据。
+可用的替代是 `visual-rules.yaml#theme.max_new_colors_per_slide`（v3.19.0 已明确登记为人读型）。
+**若将来重启 V3**，判据方向应改为「**新增**元素相对**模板基线**是否引入新色」（差集），
+而非要求全量取色落在 clrScheme 内 —— 需另立独立取证。
+
+### A6 · 版本号 12 处同步升至 3.24.0
+
+`config/harness.yaml` · `config/domain_config.yaml` · `config/language-profile.yaml` ·
+`config/external-tools.yaml` · `references/result-envelope.yaml` ·
+`.codebuddy-plugin/plugin.json` · `.claude-plugin/plugin.json` ·
+`.codebuddy-plugin/marketplace.json` · `.claude-plugin/marketplace.json` ·
+`scripts/harness.py`（文件头 / doctor 常量 / argparse 描述）。
+
+### 验证
+
+- `pytest scripts/`：**400 passed / 0 skipped / 0 failed**（基线 386/3 skipped ⇒ 净增 14 例）
+- `ensure_settings.py`：**24/24 全通过，rc=0**（含第 19 项 `_FALLBACK` 漂移巡检，
+  新增 `checks.key_data_source` 已被递归比对自动纳入）
+- 3 处 skip 的**两端分支**（real / synthetic）均实测通过
+
+### 残留（如实登记）
+
+- V3 配色判据（实测否决，见 A5）；
+- 块级消费免检区、判环语义判定、`tools_whitelist` 平台限制、Ima 凭据 —— 均既有残留，未变；
+- 跨学科样本仍需外部提供（`/tmp` 不持久 ⇒ 未自动下载）；
+- 本轮诊断仍由主理人一人承担（前三轮 4 名诊断员连续 429），**盲区风险未消除**。
+
+---
+
 ## [v3.23.1] - 2026-10-27（残留收口：chart 判据落地两项 + 静默异常留痕）
 
 > 依据：v3.23.0 发布后的**残留盘点**（用户指令：解决残留问题 + 继续未完成任务）。

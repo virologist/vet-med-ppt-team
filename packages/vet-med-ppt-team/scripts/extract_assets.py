@@ -170,6 +170,99 @@ _AF = _CFG["asset_fields"]      # asset_fields 段
 _LG = _CFG["license_gate"]      # license_gate 段
 
 
+# ── 漂移诊断：给「yaml 与内置回退值不一致」一个可定位的报错（v3.24.0 · FEAT-003a）──
+# 病灶：`test_extract_assets.py::T14` 原本用 `assertEqual(dict, dict)` 比对两份配置，
+#   失败信息只说"两处不一致"，**不给位置** ⇒ 排查时要人工翻 yaml 与代码找差异键。
+# 改法：提供 `describe_asset_field_drift()`，输出**逐键**对照，每条带
+#   「yaml 第 N 行」vs「scripts/extract_assets.py 第 M 行」，失败即用。
+def _yaml_key_lines(yaml_path: Path) -> dict:
+    """扫 yaml 文本，记录每个叶子键首次出现的行号（1-based）。
+
+    ⚠ 只做**行定位**，不做语义解析（语义由 yaml.safe_load 负责）——
+    行号仅用于加速人工定位，不参与判定。
+    """
+    lines: dict = {}
+    try:
+        text = yaml_path.read_text(encoding="utf-8")
+    except OSError:
+        return lines
+    for idx, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key = stripped.split(":", 1)[0].strip()
+        if key and key not in ("-",) and not key.startswith("-"):
+            lines.setdefault(key, idx)
+    return lines
+
+
+def _builtin_key_lines() -> dict:
+    """扫内置回退值字典字面量，记录每个键的行号（1-based）。"""
+    lines: dict = {}
+    try:
+        text = Path(__file__).resolve().read_text(encoding="utf-8")
+    except OSError:
+        return lines
+    start = 0
+    for i, raw in enumerate(text.splitlines()):
+        if raw.startswith("_BUILTIN_ASSET_FIELD_CONFIG"):
+            start = i
+            break
+    for i, raw in enumerate(text.splitlines()[start:], start=start + 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or '"' not in stripped:
+            continue
+        key = stripped.split('"', 2)[1] if stripped.startswith('"') else ""
+        if key and key not in lines:
+            lines[key] = i
+    return lines
+
+
+def describe_asset_field_drift() -> list:
+    """返回漂移明细列表；空列表 ⇒ 两份配置一致。
+
+    每条形如：
+      {'path': 'asset_fields.emu_per_px',
+       'yaml_line': 27, 'code_line': 108,
+       'yaml_value': 9525, 'code_value': 9526,
+       'kind': 'value_mismatch' | 'only_in_yaml' | 'only_in_code'}
+    """
+    yaml_path = _ASSET_FIELDS_PATH
+    loaded = _load_asset_field_config()
+    builtin = copy.deepcopy(_BUILTIN_ASSET_FIELD_CONFIG)
+    y_lines = _yaml_key_lines(yaml_path)
+    c_lines = _builtin_key_lines()
+
+    diffs: list = []
+    for section in sorted(set(loaded) | set(builtin)):
+        ys = loaded.get(section) or {}
+        cs = builtin.get(section) or {}
+        if not isinstance(ys, dict) or not isinstance(cs, dict):
+            if ys != cs:
+                diffs.append({
+                    "path": section, "kind": "section_mismatch",
+                    "yaml_line": y_lines.get(section), "code_line": c_lines.get(section),
+                    "yaml_value": ys, "code_value": cs,
+                })
+            continue
+        for key in sorted(set(ys) | set(cs)):
+            yv, cv = ys.get(key), cs.get(key)
+            if yv == cv:
+                continue
+            if key in ys and key not in cs:
+                kind = "only_in_yaml"
+            elif key in cs and key not in ys:
+                kind = "only_in_code"
+            else:
+                kind = "value_mismatch"
+            diffs.append({
+                "path": f"{section}.{key}", "kind": kind,
+                "yaml_line": y_lines.get(key), "code_line": c_lines.get(key),
+                "yaml_value": yv, "code_value": cv,
+            })
+    return diffs
+
+
 def _append_note(base: str, extra: str, sep: str = "｜") -> str:
     """notes 拼接；任一侧为空时不插分隔符（保持既有 notes 文本不变形）。"""
     base = base or ""

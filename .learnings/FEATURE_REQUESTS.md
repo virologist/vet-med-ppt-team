@@ -125,9 +125,43 @@ medium
 - Related Features: course-profile-defaults.md §4.1 C5 / §4.2 V3（§4.5 已如实登记为"无机器实现"）
 
 ### Resolution
-- **Status**: open（v3.16.0 本批次不实现）
+- **Status**: partial（v3.16.0 摘假承诺 → **v3.24.0 C5 已落地，V3 实测否决**）
 - v3.16.0 已在 `references/course-profile-defaults.md#4.5` 新增「`[机]` 标记的真实执行者」表，
   把 V3/C5 显式标为"暂无机器实现"，先把假承诺摘掉，实现待后续排期。
+
+#### v3.24.0 处置（两项分别结论）
+
+**C5 —— 已落地**（建议级，默认关闭）：
+- 判据落在 `scripts/verify_deck.py` 的 `_rubric_key_data_source()`，
+  配置键 `visual-rules.yaml#checks.key_data_source`。
+- 口径按上方 Suggested Implementation 的建议落地：「机器只验数字是否紧邻来源标记，
+  来源是否为真仍留给人」——三层收敛：**指标语境 → 量值 → 来源邻近**。
+- ⚠ **假阳性实测取证（4 份真实动医课件）**：
+  - 全页 1071 个数字 → 仅 **7 个段落**命中指标语境（收敛比约 1/150）⇒ 「25日龄」「3天」
+    这类非来源数字**不会**被扫进来（正是 Suggested Implementation 的顾虑，已实证规避）。
+  - 来源标记**不用裸 `\d{4}`**：实测「禽流感鉴别诊疗要点.pptx」宽判命中 2/14、紧判 0/14
+    ⇒ 裸 4 位数字会把段落里的**指标数字本身**误当年份。年份**必须**带"年"字。
+  - **量值须含 `%` 或小数**：株型编号（H5N1 / H7N9）纯整数不算量值
+    （它们恰恰**不需要**来源，计入会制造假阳性）。
+- 护栏：`scripts/test_verify_deck.py::TestKeyDataSourceC5`（9 例），
+  含正例触发 / 非指标数字不判 / 株型编号不判 / 同段来源抑制 / 页级回退抑制 /
+  裸 4 位数字不算年份 / 每页只一条 / 展示不混株型编号。
+- **状态**：机器侧完成；「来源是否为真」**永远**由人核（语义判断，机器不可判定）⇒ 永不转正为门禁。
+
+**V3 —— 实测否决，不实现**：
+- 原设想「取色均落在模板 `clrScheme` 12 色内」经实测**不可行**：
+  4 份真实动医课件的 slide 内 `srgbClr` 取色，落在**自身** clrScheme 外的比例达 **51%–100%**
+  （`高致病性禽流感防控.pptx` 85.7%、`7. 禽流感.pptx` 51.0%、`禽流感鉴别诊疗要点.pptx` 100%）。
+- 且这些课件的 clrScheme 与默认模板**完全不同**（橙系 `#F87A00` vs 蓝灰系 `#4472C4`）
+  ⇒ "落在模板色内"这个参照系本身不成立。
+- ⇒ 按原设想实现会产生**海量假阳性**（违反本包铁律「假阳性必须为零」）。
+  **保持缺口登记，如实说明否决理由**——不做一个明知会刷屏的判据。
+- 可用的替代：`visual-rules.yaml#theme.max_new_colors_per_slide`（人读型登记，
+  消费方 = 屠明熙抽取登记 + 主理人复核），已在 v3.19.0 明确登记为人读型，非死配置。
+- **若将来重启 V3**，应改判据方向：**不是**"取色是否在调色板内"，
+  而是"**新增**元素相对**模板基线**是否引入了新色"——
+  即以模板自身用色为基线做**差集**（`max_new_colors_per_slide=0` 的本意），
+  而非要求全量取色落在 clrScheme 内。此方向需另立独立取证。
 
 ---
 
@@ -157,4 +191,51 @@ medium
 ### Metadata
 - Frequency: first_time
 - Related Features: scripts/extract_assets.py / references/course-profile-defaults.md / 测试用例集
-- Status: open（v3.16.0 不阻塞；建议 v3.17.0 处理）
+- Status: resolved（v3.24.0 三项全部处置）
+
+---
+
+## FEAT-20261023-003 的 v3.24.0 处置（三项逐条）
+
+### FEAT-003a · 双份配置的漂移哨兵失败时应直打行号 —— ✅ 已落地
+- 新增 `scripts/extract_assets.py::describe_asset_field_drift()`：逐键对比
+  `references/asset-fields.yaml` 与 `_BUILTIN_ASSET_FIELD_CONFIG`，
+  每条差异给出 **`yaml 第 N 行` vs `代码 第 M 行`**。
+- `scripts/test_extract_assets.py::T14` 改为消费该函数 ⇒ 失败信息可直接定位。
+- 实测反例（注入 `emu_per_px: 9525→9526`）：
+  `· asset_fields.emu_per_px [value_mismatch] yaml 第 25 行（值=9526） vs 代码 第 109 行（值=9525）`
+  ——行号经人工核对**精确命中**目标键。
+- 附注：实现中顺带修掉一个真实缺陷——年份/字面标记混用导致「2024年」不被识别
+  （C5 判据开发期发现，见 CHANGELOG v3.24.0）。
+
+### FEAT-003b · 1.5 课时说明与 single-ppt 缺档提示交叉引用 —— ✅ 已落地
+- 双向互指：`references/course-profile-defaults.md#2` ⇄ `config/visual-rules.yaml#hours_page_range_single_ppt`，
+  两处各加一段「同源声明」并互点对方路径。
+- 防单边删除的护栏：`scripts/test_arch_drift.py::TestHoursCaliberCrossRef`（2 例）。
+  判据只认**明确锚点**（路径 + `FEAT-003b` 标记串），**不判散文措辞**
+  （遵 FEAT-20261022-001 的教训：纯文本判据假阳性不可控）。
+- 反例已验证：单边删除 yaml 侧互指 ⇒ `test_T11b` 判红。
+
+### FEAT-003c · 3 处 skip 依赖包外样本课件 —— ✅ 已落地（skip 全部消除）
+- **根因取证**（v3.24.0）：
+  - `test_ooxml_lint.py::T1` 的路径 `…/.harness-runs/M4-M7_重诊断/sample_extract/` **已不存在**；
+  - `test_extract_assets.py::T6` 的 4 条精确路径中，**第一条文件名已变**
+    （`2.1高致病性禽流感防控.pptx` → 实际为 `高致病性禽流感防控.pptx`）；
+  - `test_ooxml_lint.py::T11` 的 `/tmp/cross_domain/` **不持久** ⇒ 从未真跑。
+  - ⇒ 失效的是**路径**，不是断言：实测 4 份真实动医课件 `ooxml_lint` 全部 **rc=0**（0 ERROR），
+    满足 T1 断言。
+- **处置**：新增 `scripts/sample_fixtures.py` —— 样本定位**下沉**为可解析层：
+  多候选目录自动发现（环境变量 → 挂账抽取目录 → 源课件目录）+ 环境变量覆盖
+  （`VETMED_SAMPLE_DIR` / `VETMED_CROSS_DOMAIN_DIR`）+ **确定性合成 fixture 兜底**。
+- **降级链**：真实样本优先；不可得 ⇒ 合成 fixture ⇒ **断言始终真跑**，不再 skip。
+  降级类型（`real` / `synthetic`）**显式打印**，禁"悄悄用弱样本假装测过真样本"。
+- **两端均已验证**：
+  - 真实分支：`[T1] 样本来源：real — 源课件目录(M4A1_禽流感)(4份)`；
+  - 合成分支（`VETMED_FORCE_SYNTHETIC=1` 自检开关）：
+    `[T1] 样本来源：synthetic — …合成 fixture（4 份）`，31 passed。
+- **样本获取方式已登记**（本条诉求原文的另一半）：
+  - 动医真实样本 → `/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/M4A1_禽流感/`
+    （4 份，只读）；换机时设 `VETMED_SAMPLE_DIR` 指向等价目录即可。
+  - 跨学科样本 → 下载 CDC 公共领域课件置于 `VETMED_CROSS_DOMAIN_DIR` 指定目录；
+    **刻意不自动下载**（网络依赖会让测试结果不确定）。
+- 结果：**386 passed / 3 skipped → 390 passed / 0 skipped**（T1/T6/T11 的 8 个 subtest 首次真跑）。

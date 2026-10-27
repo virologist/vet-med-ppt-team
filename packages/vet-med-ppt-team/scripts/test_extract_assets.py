@@ -47,14 +47,20 @@ try:
 except ImportError:
     PPTX_OK = False
 
-# 4 份挂账课件路径（只读，**禁修改**）
+# v3.24.0（FEAT-003c 取证后）：样本定位**下沉**到 `sample_fixtures.py`。
+# 病灶：原实现在本文件硬编码 4 条精确路径（`2.1高致病性禽流感防控.pptx` 等），
+#   实测（2026-10-27）**第一条就不存在**（用户整理后文件名变为「高致病性禽流感防控.pptx」）
+#   ⇒ T6 长期 skip，**在本机从未真跑过**。
+# 改法：多候选目录自动发现 + 环境变量覆盖；不可得 ⇒ 合成 fixture 顶上（不再 skip）。
+# ⚠ 样本目录属用户工作区，本模块**只读不写**。
+from sample_fixtures import (  # noqa: E402
+    build_synthetic_suite,
+    resolve_real_samples,
+)
+
+# 4 份挂账课件（只读，**禁修改**）
 WORKSPACE_DECKS = Path("/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治")
-SAMPLE_DECKS = [
-    WORKSPACE_DECKS / "M4A1_禽流感" / "2.1高致病性禽流感防控.pptx",
-    WORKSPACE_DECKS / "M4A1_禽流感" / "7. 禽流感.pptx",
-    WORKSPACE_DECKS / "M4A1_禽流感" / "禽流感病毒全链攻防术.pptx",
-    WORKSPACE_DECKS / "M4A1_禽流感" / "禽流感鉴别诊疗要点.pptx",
-]
+SAMPLE_DECKS, _SAMPLE_DESC = resolve_real_samples(minimum=1)
 
 
 def _make_minimal_pptx(path: Path):
@@ -265,9 +271,19 @@ class TestExtractAssets(unittest.TestCase):
         self.assertIn("image", types)
 
     # ---------- T6 ----------
-    @unittest.skipUnless(all(p.exists() for p in SAMPLE_DECKS), "4 份样本课件不全在")
     def test_T6_real_decks_dry_run(self):
-        for deck in SAMPLE_DECKS:
+        """真实样本优先；不可得时用确定性合成 fixture 顶上（**不再 skip**）。
+
+        v3.24.0（FEAT-003c）：原实现 `@skipUnless(all(p.exists() ...))`
+        —— 4 条路径中有 1 条文件名已变 ⇒ 长期 skip ⇒ 该用例**从未真跑**。
+        """
+        if SAMPLE_DECKS:
+            decks, kind, desc = SAMPLE_DECKS, "real", _SAMPLE_DESC
+        else:
+            decks = build_synthetic_suite(self.tmpdir / "synth_suite", count=4)
+            kind, desc = "synthetic", "包外真实样本不可得 → 合成 fixture（4 份）"
+        print(f"\n[T6] 样本来源：{kind} — {desc}")
+        for deck in decks:
             with self.subTest(deck=deck.name):
                 out = self.tmpdir / (deck.stem + "_assets_dryrun")
                 ext = AssetExtractor(str(deck), str(out), dry_run=True)
@@ -487,6 +503,20 @@ class TestExtractAssets(unittest.TestCase):
                         "机器可读配置必须是独立 yaml 文件")
         loaded = ea._load_asset_field_config()
         # ② yaml 值 == 代码内置回退值（改一处不改另一处即判漂移）
+        # v3.24.0（FEAT-003a）：原用 assertEqual(dict, dict)，失败信息**不给位置**，
+        #   排查要人工翻两份文件找差异键。改用逐键漂移诊断 ⇒ 直接给出
+        #   「yaml 第 N 行 vs extract_assets.py 第 M 行」。
+        drift = ea.describe_asset_field_drift()
+        if drift:
+            lines = ["配置漂移明细（references/asset-fields.yaml vs scripts/extract_assets.py）："]
+            for d in drift:
+                lines.append(
+                    f"  · {d['path']} [{d['kind']}] "
+                    f"yaml 第 {d['yaml_line']} 行（值={d['yaml_value']!r}）"
+                    f" vs 代码 第 {d['code_line']} 行（值={d['code_value']!r}）"
+                )
+            lines.append("改一处必须同步另一处（改 yaml ⇒ 同步 _BUILTIN_ASSET_FIELD_CONFIG）。")
+            self.fail("\n".join(lines))
         self.assertEqual(loaded, ea._BUILTIN_ASSET_FIELD_CONFIG,
                          "references/asset-fields.yaml 与内置回退值不一致（改一处必须同步另一处）")
         # ③ 人读文档列出全部字段名并指向该 yaml；且不含第二份可解析副本

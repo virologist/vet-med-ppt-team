@@ -63,6 +63,9 @@ PROFILES_YAML = PKG / "config" / "domain-profiles.yaml"   # v3.18.0：域档案�
 ASSEMBLER = PKG / "scripts" / "assemble_domain_prompt.py"  # v3.18.0：装配器（面板注入点）
 HARNESS_PY = PKG / "scripts" / "harness.py"                # v3.18.0：编排内核（选人逻辑）
 SOP_MD = PKG / "references" / "sop-stages.md"              # v3.18.0：主流程 SOP（坍缩步）
+# v3.24.0（FEAT-003b）：1.5 课时缺档说明的**双向互指**两处（人读 md ↔ 机器 yaml）
+COURSE_PROFILE_MD = PKG / "references" / "course-profile-defaults.md"
+VISUAL_RULES_YAML = PKG / "config" / "visual-rules.yaml"
 
 BEGIN = "<!-- STAGE_MIRROR_BEGIN -->"
 END = "<!-- STAGE_MIRROR_END -->"
@@ -749,6 +752,47 @@ class TestExpertPanelWiring(unittest.TestCase):
                         f"references/seven-dimension-rubric.md:{i} 仍声明「{phrase}」"
                         f"——应改为引用 caption_base_elements + caption_extra_elements")
         self.assertFalse(problems, "；".join(problems))
+
+
+class TestHoursCaliberCrossRef(unittest.TestCase):
+    """T11 1.5 课时缺档说明的**双向互指**守卫（v3.24.0 · FEAT-003b）。
+
+    病灶：`references/course-profile-defaults.md#2` 与
+    `config/visual-rules.yaml#hours_page_range_single_ppt` 上方注释块
+    **讲的是同一件事**（口径 B 无 1.5 档 ⇒ 缺档 ≠ 通过），但原先**互不指向**——
+    任一处改动都不会被察觉 ⇒ 表述分裂（FEAT-003b 登记的诉求）。
+
+    守卫思路：两处必须**各自含对方路径**，且同带一个**共同标记**
+    （`FEAT-003b`）⇒ 单边删除任一侧的互指声明即判红。
+
+    ⚠ 为何不做「散文正则比对」：本包已有教训（FEAT-20261022-001）——
+    纯文本判据假阳性不可控。此处只判**明确锚点**（文件路径 + 标记串），
+    不判散文措辞，故改动正文措辞不会误报。
+    """
+
+    MARK = "FEAT-003b"
+
+    def setUp(self):
+        missing = [str(p) for p in (COURSE_PROFILE_MD, VISUAL_RULES_YAML)
+                   if not p.is_file()]
+        if missing:
+            self.skipTest(f"缺少比对输入：{', '.join(missing)}（局部树，跳过）")
+
+    def test_T11a_md_points_to_yaml(self):
+        """人读 md 必须指向 yaml 侧的口径说明书。"""
+        txt = _read(COURSE_PROFILE_MD)
+        self.assertIn("config/visual-rules.yaml#hours_page_range_single_ppt", txt,
+                      "course-profile-defaults.md 必须指向 visual-rules.yaml 的 single_ppt 口径")
+        self.assertIn(self.MARK, txt,
+                      f"course-profile-defaults.md 缺互指标记「{self.MARK}」")
+
+    def test_T11b_yaml_points_to_md(self):
+        """机器 yaml 必须回指人读 md（单向互指 ⇒ 改一侧另一侧可知）。"""
+        txt = _read(VISUAL_RULES_YAML)
+        self.assertIn("references/course-profile-defaults.md", txt,
+                      "visual-rules.yaml 必须回指 course-profile-defaults.md")
+        self.assertIn(self.MARK, txt,
+                      f"visual-rules.yaml 缺互指标记「{self.MARK}」")
 
 
 if __name__ == "__main__":
