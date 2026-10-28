@@ -10,7 +10,7 @@
       "name": "vet-med-ppt-team",
       "description": "五人Team型专家团（主理人+4成员），六阶段门控流水线，证据核验与教学对齐的动物医学教学PPT方案生成",
       "description_en": "Five-member veterinary teaching-PPT team with a stage-gated pipeline producing evidence-verified, pedagogy-aligned slide solutions.",
-      "version": "3.25.0",
+      "version": "3.26.0",
       "source": "./packages/vet-med-ppt-team",
       "author": {
         "name": "TZUVet",

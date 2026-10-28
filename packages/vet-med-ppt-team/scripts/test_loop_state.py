@@ -18,18 +18,24 @@ test_fix_md_image_refs.py 与 ensure_settings 覆盖）。
 退出码：0=全通过 1=有用例失败
 """
 
+import contextlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = os.path.join(HERE, "harness.py")
 PKG = os.path.dirname(HERE)
 
 PASS, FAIL = [], []
+#: v3.26.0 新增：**结构化**断言结果 [(名称, 是否通过, 失败详情), …]。
+#: 与 PASS/FAIL 并存且同步追加；不改变 PASS/FAIL 的语义与顺序。
+RESULTS = []
 
 
 def run(args, cwd=None):
@@ -48,6 +54,8 @@ def jout(s):
 
 def check(name, cond, extra=""):
     (PASS if cond else FAIL).append(name)
+    # v3.26.0：同步记录结构化结果，供 pytest 侧逐条断言（不改变上面的语义）。
+    RESULTS.append((name, bool(cond), extra if not cond else ""))
     print(f"  {'✅' if cond else '❌'} {name}" + (f"  {extra}" if extra and not cond else ""))
 
 
@@ -716,6 +724,98 @@ def main():
         return 1
     print("✅ 全部通过")
     return 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# v3.26.0 · pytest 桥接层
+# ══════════════════════════════════════════════════════════════════
+#
+# 为什么加这一层（缺口来源）：本文件此前**唯一直跑式**测试文件——`main()` 里用
+# `check()` 逐条判定，全文**没有一个 `def test_*`** ⇒ pytest 收集到 0 个用例
+# （`rc=5 no tests ran`）⇒ ① pytest 全量回归**覆盖不到本文件**的 74 项断言；
+# ② 体检第 7 项虽跑它（直跑），但**不进 pytest 统计**，覆盖缺口无法量化。
+#
+# 为什么**不**把 74 条场景拆成 74 个独立 `def test_*`：
+#   本文件 74 条断言**共享状态且强顺序依赖**（start → add-item → freeze →
+#   verify → make-gate → continue …），拆开会让后半段因前半段的状态缺失而
+#   假红 ⇒ 违反本包铁律「假阳性必须为零」。拆分的代价远大于收益。
+#
+# 因此采用**桥接法**：跑一次真实场景（`main()` 的全部副作用照旧），
+# 把每条断言的结果结构化记录下来（`RESULTS`），再由 pytest **逐条**断言。
+#   · 直跑语义**完全不变**（`main()` 一字未改，`PASS`/`FAIL`/`退出码`照旧）
+#   · pytest 侧获得**逐条**失败定位（不再是"整个文件一个红叉"）
+#   · 场景只跑一次 ⇒ 耗时与改造前**同量级**（不引入 74× 的重复执行）
+#
+# ⚠ 副作用说明：`main()` 会往**包内** `scripts/.workbuddy/` 写 trace 文件。
+#   该路径由 `.gitignore` 覆盖（`.workbuddy/`），且 v3.25.0 已确认**未跟踪**
+#   ⇒ 不污染提交面。
+
+
+class TestLoopStatePytestBridge(unittest.TestCase):
+    """把直跑式的 74 条断言**逐条**暴露给 pytest（v3.26.0）。
+
+    用例设计：
+      · `test_all_checks_passed` —— 总闸：任一条断言失败 ⇒ 本用例失败
+        （保证 pytest 收集到用例且不是恒绿）
+      · `test_every_check_individually` —— 逐条断言：失败时**指名道姓**是哪条
+    """
+
+    #: 期望的断言条数（74 条，**成功路径**下的值）。写死是**刻意的**：
+    #: 若将来有人删掉断言，本文件会判红 ⇒ 防止「悄悄少测几条」。
+    #: ⚠ 74 只在「场景全部成功」时成立：L181 的 `check(f"add-item {iid}", False)`
+    #:   位于 `if rc9 != 0:` 内（成功路径跑 0 次），add-item 真失败时会跑 5 次
+    #:   ⇒ 条数变 78 ⇒ 本断言会以「条数不符」报出（属**多测**，非漏判）。
+    EXPECTED_CHECKS = 74
+
+    @classmethod
+    def setUpClass(cls):
+        """跑一次完整场景，捕获逐条结果。"""
+        cls._saved = (list(PASS), list(FAIL), list(RESULTS))
+        PASS.clear()
+        FAIL.clear()
+        RESULTS.clear()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                cls.rc = main()
+        finally:
+            cls.output = buf.getvalue()
+            cls.results = list(RESULTS)
+            cls.pass_count = len(PASS)
+            cls.fail_count = len(FAIL)
+            #: v3.26.0 修订：把**场景内**的失败条目**快照**下来。
+            #: ⚠ 缘由：`setUpClass` 的 finally 会把模块级 `FAIL` **还原**成运行前的空表
+            #:   ⇒ 若断言消息里直接插值 `{FAIL}`，判红时读到的会是**空列表**（误导排查）。
+            cls.failed_names = [name for name, ok, _ in cls.results if not ok]
+            # 还原模块级全局（避免污染同进程内的其它用例 / 直跑入口）
+            PASS[:] = cls._saved[0]
+            FAIL[:] = cls._saved[1]
+            RESULTS[:] = cls._saved[2]
+
+    def test_scenario_exit_code_is_zero(self):
+        """场景本身必须返回 0（否则后续逐条断言无意义）。"""
+        self.assertEqual(self.rc, 0,
+                         f"main() 返回 {self.rc}；失败条目：{self.failed_names}\n"
+                         f"场景输出尾部：\n{self.output[-2000:]}")
+
+    def test_check_count_matches_expected(self):
+        """断言条数必须 == 74（防止有人删断言导致覆盖静默缩水）。"""
+        self.assertEqual(len(self.results), self.EXPECTED_CHECKS,
+                         f"断言条数 = {len(self.results)}，期望 {self.EXPECTED_CHECKS}；"
+                         f"（若确需增减，请同步改 EXPECTED_CHECKS 并说明理由）")
+
+    def test_all_checks_passed(self):
+        """总闸：74 条断言**全部**通过。"""
+        failed = [name for name, ok, _ in self.results if not ok]
+        self.assertEqual(failed, [],
+                         f"{len(failed)} 条断言失败：{failed}")
+
+    def test_every_check_individually(self):
+        """逐条断言：失败时指名道姓是哪一条（pytest 的核心价值增量）。"""
+        broken = [(name, detail) for name, ok, detail in self.results if not ok]
+        self.assertEqual(broken, [],
+                         "以下断言未通过：\n" + "\n".join(
+                             f"  · {n}  →  {d}" for n, d in broken))
 
 
 if __name__ == "__main__":

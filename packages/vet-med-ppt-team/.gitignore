@@ -52,3 +52,13 @@ __pycache__/
 
 # 运行时标记：register_expert.py 写入的预览会话 ID（不入库）
 .pending-preview-session
+
+# v3.26.0：隔离副本残留（test_pkg_isolation.make_isolated_pkg 的临时目录）
+#   缘由（独立交叉复核发现）：反例用例用 `make_isolated_pkg(prefix="vetmed-iso-*")`
+#   在**包内**构造副本；构造失败时（异常路径）副本可能残留在包内。
+#   ⚠ 此前**无任何忽略规则** ⇒ 残留时 `git add .` 会把整棵嵌套副本树提交进版本库
+#     （实测 `git check-ignore` 返回「未被忽略」）。
+#   ⇒ 本规则把这类目录挡在版本库外；正常路径由 `cleanup_isolated_pkg` 清理。
+vetmed-iso-*/
+# 同理：包内可能出现的临时副本根（mkdtemp 前缀变体）
+vetmed-iso*

@@ -803,7 +803,7 @@ class TestGateExitMirror(unittest.TestCase):
       G2 **码集合相等**（双向）—— 这正是「删键零检测」缺口
       G3 每码语义非空（yaml 侧与镜像侧都非空）
       G4 每码语义**逐字相等**（镜像行 == yaml 值，strip 后比较）
-      G5 代码 `_FALLBACK["gate_exit_codes"]` 码集合 == yaml 码集合 —— **默认关闭**（见 ADR-7）
+      G5 代码 `_FALLBACK["gate_exit_codes"]` 码集合 == yaml 码集合 —— **v3.26.0 起无条件启用**
 
     ⚠ 为何 G4 可以逐字相等（而 STAGE_MIRROR 的 name 列不能）：
       yaml 侧 `gate_exit_codes` 的值是**标量**、无版本后缀、无括号补充说明 ⇒
@@ -811,10 +811,11 @@ class TestGateExitMirror(unittest.TestCase):
       压缩掉了 ⇒ 那里只能比集合不比逐字（见 §3.4.1 的关键决策）。
     """
 
-    # G5 开关：ADR-7「待裁决」项（yaml 0–4 vs 代码 fallback 0–5 的第二份真相）。
-    #   裁决为 (b)（删 fallback 第 5 码）⇒ 可置 True；
-    #   裁决为 (a)/(c) ⇒ 保持 False（否则开启即基线红）。
-    ENABLE_FALLBACK_PARITY = False
+    # G5 开关（ADR-7）：已于 **v3.25.0 批 3** 裁决为 (b)（删 fallback 的多余码）
+    #   ⇒ `harness.py` 的 `_FALLBACK["gate_exit_codes"]` 已收敛为 0–4，与 yaml **相等**。
+    #   v3.26.0 复核实测：两侧差集双向为空 ⇒ 「一开启即基线红」的前提**已消失**
+    #   ⇒ 守卫从「默认关闭」改为**无条件启用**（开关常量保留仅为可追溯性）。
+    ENABLE_FALLBACK_PARITY = True
 
     def setUp(self):
         missing = [str(p) for p in (HARNESS_ENGINE_MD, HARNESS_YAML)
@@ -876,12 +877,17 @@ class TestGateExitMirror(unittest.TestCase):
                              f"不一致（镜像：{mirror[code]!r}）")
 
     @unittest.skipUnless(ENABLE_FALLBACK_PARITY,
-                         "G5 默认关闭：ADR-7 待裁决（yaml 0–4 vs 代码 fallback 0–5）")
+                         "G5 恒开（v3.26.0）：ADR-7 已裁决(b)且 fallback 已收敛为 0–4")
     def test_G5_fallback_code_set_matches_yaml(self):
-        """G5（默认关闭）：代码 `_FALLBACK["gate_exit_codes"]` 码集合 == yaml 码集合。
+        """G5（v3.26.0 起**无条件启用**）：代码 `_FALLBACK["gate_exit_codes"]` 码集合
+        == yaml 码集合。
 
-        ⚠ 开启前必须先裁决 ADR-7 并**同批**删除 fallback 的多余码 ——
-          「守卫与被守卫数据必须同批落地」，否则一开启即基线红。
+        历史（ADR-7）：本断言曾默认关闭，因为当时 yaml 是 0–4 而代码 fallback 仍是 0–5
+        ⇒「一开启即基线红」（假红，不是真缺陷）。**v3.25.0 批 3 已删 fallback 第 5 码**，
+        v3.26.0 复核实测两侧相等 ⇒ 前提消失 ⇒ 改为无条件启用。
+
+        ⚠ 保持「守卫与被守卫数据同批落地」纪律：若有人再往 fallback 加码而不同步 yaml，
+          本断言即刻判红（第二份真相重新出现）。
         """
         import importlib.util
         spec = importlib.util.spec_from_file_location(
@@ -1192,6 +1198,30 @@ class TestGuardAntiExamples(unittest.TestCase):
             self.assertIn(old, t, "反例前提不成立：未找到散文锚点")
             p.write_text(t.replace(old, new), encoding="utf-8")
         self._pass_case("反例 E（只改散文）", mutate)
+
+    def test_anti_K_fallback_extra_code_must_fail(self):
+        """反例 K（v3.26.0 新增 · G5 专属）：代码 `_FALLBACK` 多出第 5 码
+        ⇒ **必须判红**。
+
+        为何要这条：G5 从「默认关闭」改为「无条件启用」后，必须证明它**真的能红**，
+        否则就是一条恒真的假绿断言（本包历史已踩多次：v3.18.0 字符串判据假绿、
+        FEAT-20261022-001「删键零检测」）。
+
+        造漂移的方式：改**代码里的 fallback**（不是 yaml）—— 这正是 G5 要抓的
+        「第二份真相」形态：yaml 是唯一源，代码副本多了一个码。
+
+        ⚠ 副本里的 `harness.py` 被真源码加载，故必须改副本内的那份，
+          生产 `scripts/harness.py` **零改动**（由 `test_pkg_isolation` 保证）。
+        """
+        def mutate(pkg):
+            p = pkg / "scripts" / "harness.py"
+            t = p.read_text(encoding="utf-8")
+            old = '"gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断",\n                        "4": "运行错误"},'
+            self.assertIn(old, t, "反例前提不成立：未找到 fallback 退出码字面量")
+            new = ('"gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断",\n'
+                   '                        "4": "运行错误", "5": "多出来的码"},')
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._fail_case("反例 K（fallback 多码）", mutate, "第二份真相未收敛")
 
     # ── 反例（team-lead 指针，§3.6.1）────────────────────────
     def test_anti_J_team_lead_pointer_removed(self):

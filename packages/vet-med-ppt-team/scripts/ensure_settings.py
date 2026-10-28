@@ -2736,7 +2736,7 @@ def main():
         print("# 免检区（块级消费段）登记表骨架 —— 由 "
               "`python3 scripts/ensure_settings.py --dump-block-segments` 生成")
         print("# ⚠ key_count 与 keys_sha256 **不要手写**；消费方/处置规则需人工判断后填。")
-        print("version: \"3.25.0\"")
+        print("version: \"3.26.0\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")
