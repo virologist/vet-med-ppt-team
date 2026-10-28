@@ -30,6 +30,9 @@ test_arch_drift.py — 文档↔yaml 架构防漂移守卫（v3.16.0 · W5 批�
   T8 交叉复检映射 == 各 agent MD「你不做…」边界的**取反**（v3.17.0 新增）
   T9 受守卫文档的阶段镜像块 == yaml#stages（覆盖面从 1 个文件扩到一组，v3.17.0 新增）
   T10 受守卫文档正文不得出现旧口径词表（历史沿革区除外，v3.17.0 新增）
+  G1–G5 门禁退出码镜像块 == yaml#gate_exit_codes（码集合双向 + 语义逐字，v3.25.0 新增）
+  T4a「人读视图」表的 3 列 == yaml#stages（闸号 / 是否并行 / 门禁，v3.25.0 新增）
+  T4b team-lead.md 的退出码唯一源指针存在性（v3.25.0 新增）
 
 为何不会假阳性（设计取舍，改动前请先读）：
   ① 只解析 sentinel 之间的结构化行与两张显式表格，**不扫散文**——散文里的阶段描述怎么改都不触发；
@@ -66,9 +69,14 @@ SOP_MD = PKG / "references" / "sop-stages.md"              # v3.18.0：主流程
 # v3.24.0（FEAT-003b）：1.5 课时缺档说明的**双向互指**两处（人读 md ↔ 机器 yaml）
 COURSE_PROFILE_MD = PKG / "references" / "course-profile-defaults.md"
 VISUAL_RULES_YAML = PKG / "config" / "visual-rules.yaml"
+# v3.25.0（项 4/项 5/§3.6.1）：新增三处比对面
+HARNESS_ENGINE_MD = PKG / "references" / "harness-engine.md"   # 门禁退出码镜像块
+TEAM_LEAD_MD = PKG / "agents" / "vet-med-ppt-team-team-lead.md"  # 退出码唯一源指针
 
 BEGIN = "<!-- STAGE_MIRROR_BEGIN -->"
 END = "<!-- STAGE_MIRROR_END -->"
+GATE_EXIT_BEGIN = "<!-- GATE_EXIT_MIRROR_BEGIN -->"
+GATE_EXIT_END = "<!-- GATE_EXIT_MIRROR_END -->"
 HISTORY_HEADING = "## 历史沿革"
 LEGACY_BEGIN = "<!-- LEGACY_HISTORY_BEGIN -->"     # v3.17.0：历史区哨兵
 LEGACY_END = "<!-- LEGACY_HISTORY_END -->"
@@ -129,6 +137,33 @@ def _ast_get_keys(path: Path) -> set:
 def _squash(text: str) -> str:
     """去掉所有空白（比对文档写法时容忍空格差异）。"""
     return re.sub(r"\s+", "", text)
+
+
+# ── 哨兵块通用解析（v3.25.0：GATE_EXIT_MIRROR 与人读视图表共用）──────
+def _sentinel_rows(lines, begin, end, rel):
+    """取 sentinel 之间的非空行；返回 [(原始行号, 行文本)]。缺 sentinel → AssertionError。
+
+    与 `_mirror_rows` 同型，但 sentinel 名可配对（GATE_EXIT_MIRROR 独立命名）。
+    """
+    start = next((i for i, l in enumerate(lines) if l.strip() == begin), None)
+    end_i = next((i for i, l in enumerate(lines) if l.strip() == end), None)
+    if start is None or end_i is None or end_i <= start:
+        raise AssertionError(f"{rel} 缺哨兵块（须含 {begin} / {end} 两行 sentinel）")
+    return [(i, lines[i]) for i in range(start + 1, end_i) if lines[i].strip()]
+
+
+def _parse_exit_row(text):
+    """`exit 0 | 通过` → (0, "通过")。
+
+    只接受 `exit <int> | <语义>` 两段式；语义里允许出现 `|`（用 maxsplit=1 保护）。
+    """
+    parts = text.split("|", 1)
+    if len(parts) != 2:
+        raise ValueError(f"退出码镜像行须为 `exit <n> | <语义>` 两段式，实得：{text!r}")
+    m = re.match(r"^exit\s+(\d+)$", parts[0].strip(), re.I)
+    if not m:
+        raise ValueError(f"第 1 段须形如 'exit <n>'：{parts[0]!r}")
+    return int(m.group(1)), parts[1].strip()
 
 
 # ── 镜像块解析（模块级，供 T1 与 T9 共用）────────────────────────
@@ -752,6 +787,423 @@ class TestExpertPanelWiring(unittest.TestCase):
                         f"references/seven-dimension-rubric.md:{i} 仍声明「{phrase}」"
                         f"——应改为引用 caption_base_elements + caption_extra_elements")
         self.assertFalse(problems, "；".join(problems))
+
+
+class TestGateExitMirror(unittest.TestCase):
+    """G1–G5（v3.25.0 · 项 5）：`references/harness-engine.md` 的 `GATE_EXIT_MIRROR` 块
+    与 `config/harness.yaml#gate_exit_codes` 的**逐字**对账。
+
+    缺陷背景（研究简报 §2.3.2②a 实测）：删掉 `config/harness.yaml#gate_exit_codes` 的
+    `4:` 行 ⇒ 体检 rc=0、全量 pytest 0 failed，而 3 处 MD 仍在教成员
+    「exit 4 = 运行错误」⇒ 退出码语义**静默退化**，无人察觉。
+    本守卫把退化从「运行时静默」提前到「体检期判红」。
+
+    断言：
+      G1 镜像块存在且可解析（每行 `exit <int> | <语义>`，码不重复）
+      G2 **码集合相等**（双向）—— 这正是「删键零检测」缺口
+      G3 每码语义非空（yaml 侧与镜像侧都非空）
+      G4 每码语义**逐字相等**（镜像行 == yaml 值，strip 后比较）
+      G5 代码 `_FALLBACK["gate_exit_codes"]` 码集合 == yaml 码集合 —— **默认关闭**（见 ADR-7）
+
+    ⚠ 为何 G4 可以逐字相等（而 STAGE_MIRROR 的 name 列不能）：
+      yaml 侧 `gate_exit_codes` 的值是**标量**、无版本后缀、无括号补充说明 ⇒
+      逐字相等无歧义。STAGE_MIRROR 的 `stages.4.name` 带了「（v3.3.0）」而人读表
+      压缩掉了 ⇒ 那里只能比集合不比逐字（见 §3.4.1 的关键决策）。
+    """
+
+    # G5 开关：ADR-7「待裁决」项（yaml 0–4 vs 代码 fallback 0–5 的第二份真相）。
+    #   裁决为 (b)（删 fallback 第 5 码）⇒ 可置 True；
+    #   裁决为 (a)/(c) ⇒ 保持 False（否则开启即基线红）。
+    ENABLE_FALLBACK_PARITY = False
+
+    def setUp(self):
+        missing = [str(p) for p in (HARNESS_ENGINE_MD, HARNESS_YAML)
+                   if not p.is_file()]
+        if missing:
+            self.skipTest(f"缺少比对输入：{', '.join(missing)}（局部树，跳过）")
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover
+            self.skipTest("未安装 PyYAML，跳过退出码对账")
+        with open(HARNESS_YAML, encoding="utf-8") as f:
+            self.cfg = yaml.safe_load(f) or {}
+        self.yaml_codes = self.cfg.get("gate_exit_codes") or {}
+        self.lines = _read(HARNESS_ENGINE_MD).splitlines()
+
+    def _mirror(self):
+        try:
+            rows = _sentinel_rows(self.lines, GATE_EXIT_BEGIN, GATE_EXIT_END,
+                                  "references/harness-engine.md")
+        except AssertionError as e:
+            self.fail(str(e))
+        parsed = {}
+        for lineno, text in rows:
+            try:
+                code, sem = _parse_exit_row(text)
+            except ValueError as e:
+                self.fail(f"references/harness-engine.md:{lineno + 1} → {e}")
+            if code in parsed:
+                self.fail(f"references/harness-engine.md:{lineno + 1} 退出码 {code} 重复")
+            parsed[code] = sem
+        self.assertTrue(parsed, "退出码镜像块为空")
+        return parsed
+
+    def test_G1_mirror_block_parseable(self):
+        """G1：镜像块存在、每行可解析、码不重复。"""
+        self._mirror()
+
+    def test_G2_code_set_equal_both_directions(self):
+        """G2：码集合相等（**双向**）——删任一码或加任一码都判红。"""
+        mirror = self._mirror()
+        self.assertEqual(set(mirror), set(self.yaml_codes),
+                         "退出码镜像块的码集合与 config/harness.yaml#gate_exit_codes 不一致"
+                         "（yaml 侧是唯一源，改 yaml 必须同步 references/harness-engine.md "
+                         "的 GATE_EXIT_MIRROR 块）")
+
+    def test_G3_semantics_non_empty(self):
+        """G3：每个码的语义在两侧都非空。"""
+        mirror = self._mirror()
+        empty = [c for c, s in mirror.items() if not str(s).strip()]
+        empty += [c for c, s in self.yaml_codes.items() if not str(s).strip()]
+        self.assertFalse(empty, f"以下退出码的语义为空：{sorted(empty)}")
+
+    def test_G4_semantics_verbatim_equal(self):
+        """G4：每码语义**逐字相等**（yaml 值是标量 ⇒ 无归一化歧义）。"""
+        mirror = self._mirror()
+        for code in sorted(set(mirror) & set(self.yaml_codes)):
+            self.assertEqual(mirror[code], str(self.yaml_codes[code]).strip(),
+                             f"exit {code} 的语义与 config/harness.yaml#gate_exit_codes "
+                             f"不一致（镜像：{mirror[code]!r}）")
+
+    @unittest.skipUnless(ENABLE_FALLBACK_PARITY,
+                         "G5 默认关闭：ADR-7 待裁决（yaml 0–4 vs 代码 fallback 0–5）")
+    def test_G5_fallback_code_set_matches_yaml(self):
+        """G5（默认关闭）：代码 `_FALLBACK["gate_exit_codes"]` 码集合 == yaml 码集合。
+
+        ⚠ 开启前必须先裁决 ADR-7 并**同批**删除 fallback 的多余码 ——
+          「守卫与被守卫数据必须同批落地」，否则一开启即基线红。
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_harness_for_gate_exit", PKG / "scripts" / "harness.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # ⚠ 键必须归一化为 str：yaml 的 `0:` 解析为 **int**，而代码副本是 **str**
+        #   （`ensure_settings.py` 第 25 项同源判据已做此归一）⇒ 不归一则
+        #   `set(int) != set(str)` ⇒ G5 一开启即**假红**（不是真缺陷）。
+        fb = {str(k) for k in
+              ((getattr(mod, "_FALLBACK", {}) or {}).get("gate_exit_codes") or {})}
+        yk = {str(k) for k in self.yaml_codes}
+        self.assertEqual(fb, yk,
+                         "代码 fallback 的退出码集合与 yaml 不一致（第二份真相未收敛）")
+
+
+class TestHumanReadStageTable(_Base):
+    """项 4（v3.25.0）：`docs/architecture.md`「人读视图」表纳入守卫。
+
+    缺陷背景：`docs/architecture.md` 的「人读视图」表长期停在 stage 1 = `**并行**`，
+    而 `config/harness.yaml#stages[1].parallel` 自 v3.17.0 起已改为 `no`
+    （伪并行修正）⇒ 文档在**直接教人做错的事**，且无机器拦截。
+
+    只比 **3 列**（闸号 / 是否并行 / 门禁），理由见 §3.4.1：
+      · 「名称」列**不比** —— yaml 的 `stages.4.name` 带「（v3.3.0）」而人读表压缩掉了，
+        逐字比较必假阳性（铁律：假阳性必须为零）；
+      · 「干活的人」列**不比** —— 显示名组合，无结构化对照源；
+      · 「为什么要这么排」列**不比** —— 散文（遵 FEAT-20261022-001 教训）。
+    """
+
+    HEADER_CELLS = ("闸", "名称", "干活的人", "是否并行", "门禁", "为什么要这么排")
+
+    def _table(self):
+        """取「### 人读视图」标题之后的第一个 markdown 表 → (表头, 数据行列表)。"""
+        start = next((i for i, l in enumerate(self.lines)
+                      if l.strip().startswith("### 人读视图")), None)
+        if start is None:
+            self.fail("docs/architecture.md 缺「### 人读视图」章节")
+        # 找表头行：第一个以 | 开头且含「闸」的行
+        head_i = None
+        for i in range(start + 1, len(self.lines)):
+            line = self.lines[i]
+            if line.strip().startswith("|") and "闸" in line:
+                head_i = i
+                break
+            if line.startswith("## "):   # 越过本章节
+                break
+        if head_i is None:
+            self.fail("docs/architecture.md 的「人读视图」章节下未找到表格")
+        header = [c.strip() for c in self.lines[head_i].strip().strip("|").split("|")]
+        rows = []
+        for line in self.lines[head_i + 1:]:
+            s = line.strip()
+            if not s.startswith("|"):
+                break
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue          # 分隔行
+            rows.append((line, cells))
+        return header, rows
+
+    @staticmethod
+    def _parallel_flag(cell: str) -> str:
+        """「是否并行」列 → yes/no。只接受 3 个枚举值，其他 ⇒ 抛错（不猜语义）。"""
+        v = cell.strip().replace("**", "").strip()
+        if v in ("并行", "yes", "是"):
+            return "yes"
+        if v in ("串行", "no", "否"):
+            return "no"
+        if v in ("—", "-", "—", ""):
+            return "no"
+        raise ValueError(f"「是否并行」列取值 {cell!r} 不在枚举内（并行/串行/—）")
+
+    def test_T4a_human_read_table_3cols_match_yaml(self):
+        """表头 6 列固定 → 逐行比 3 列（闸号 / 是否并行 / 门禁）。"""
+        header, rows = self._table()
+        self.assertEqual(tuple(header), self.HEADER_CELLS,
+                         "「人读视图」表头结构已变（须为 6 列固定表头）")
+
+        yaml_ids = set(int(k) for k in self.stages)
+        seen = []
+        for text, cells in rows:
+            if len(cells) < 5:
+                self.fail(f"「人读视图」数据行列数不足 5：{text.strip()[:60]}")
+            try:
+                sid = int(cells[0].strip())
+            except ValueError:
+                self.fail(f"「人读视图」第 1 列须为闸号整数：{cells[0]!r}")
+            try:
+                par = self._parallel_flag(cells[3])
+            except ValueError as e:
+                self.fail(str(e))
+            gate = _squash(cells[4].strip().strip("`"))
+            seen.append(sid)
+
+            y = self.stages.get(sid)
+            self.assertIsNotNone(y, f"「人读视图」出现 yaml 中不存在的闸号 {sid}")
+            self.assertEqual(par, _want_parallel(y),
+                             f"「人读视图」闸 {sid} 的「是否并行」与 "
+                             f"config/harness.yaml#stages[{sid}].parallel 不一致")
+            self.assertEqual(gate, _squash(str(y.get("gate", "")).strip()),
+                             f"「人读视图」闸 {sid} 的「门禁」与 "
+                             f"config/harness.yaml#stages[{sid}].gate 不一致")
+
+        self.assertEqual(len(seen), len(set(seen)),
+                         "「人读视图」表闸号有重复")
+        self.assertEqual(set(seen), yaml_ids,
+                         "「人读视图」表的闸号集合与 config/harness.yaml#stages 不一致"
+                         "（漏行 / 多行）")
+
+
+class TestTeamLeadExitCodePointer(unittest.TestCase):
+    """§3.6.1（v3.25.0）：`team-lead.md` 的退出码唯一源指针**存在性**守卫。
+
+    病灶：`agents/vet-med-ppt-team-team-lead.md:79` 写「退出码语义唯一源
+    `references/harness-engine.md#6`」——把**人读镜像**当成唯一源。
+    真源是 `config/harness.yaml#gate_exit_codes`。
+
+    判据是**字面锚点**（不是散文语义判定）⇒ 与 T11a/b 同型，零假阳性：
+    只判一个字符串在不在文件里，正文怎么改措辞都不误报。
+    """
+
+    def setUp(self):
+        if not TEAM_LEAD_MD.is_file():
+            self.skipTest(f"缺少 {TEAM_LEAD_MD}（局部树，跳过）")
+
+    def test_T4b_team_lead_points_to_yaml_source(self):
+        txt = _read(TEAM_LEAD_MD)
+        self.assertIn("config/harness.yaml#gate_exit_codes", txt,
+                      "team-lead.md 必须把退出码语义的唯一源指向 "
+                      "config/harness.yaml#gate_exit_codes"
+                      "（references/harness-engine.md#6 是人读镜像块，不是唯一源）")
+
+
+class TestGuardAntiExamples(unittest.TestCase):
+    """批 3 守卫的**反例验证**（v3.25.0 · §3.4.4 / §3.5.3）。
+
+    为何必须固化反例：一条「全绿」的守卫无法自证有效——它可能因
+    探测器失效、路径写错、判据恒真而**假绿**（本包历史已踩多次：
+    FEAT-20261022-001 的「删键零检测」、v3.18.0 的字符串判据假绿）。
+
+    做法：在**隔离副本**里制造漂移，守卫必须判红；再确认「只改散文」
+    这类合法改动**不**判红（防误伤）。副本由 `test_pkg_isolation` 提供，
+    生产 config / 文档**零改动**。
+
+    ⚠ 两条工程纪律（v3.25.0 实测踩到，勿删）：
+      ① **每个用例用全新副本**——共用一个副本会让 mutation **累积**，
+        后一个用例的判红原因可能是前一个留下的脏数据 ⇒ 断言失真。
+      ② **子进程只跑守卫类，不跑反例类**——若子进程跑整个文件，
+        反例会再次自举（子进程里的反例又起子进程…）⇒ 指数膨胀 + 死循环。
+        故子进程用 unittest 的**类名选择**参数精确指定。
+    """
+
+    #: 子进程里要跑的守卫类（**不含**本反例类，防自举）
+    GUARD_CLASSES = ("TestGateExitMirror", "TestHumanReadStageTable",
+                     "TestTeamLeadExitCodePointer")
+
+    def setUp(self):
+        sys.path.insert(0, str(HERE))
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
+        self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
+        self._cleanup = cleanup_isolated_pkg
+        self.addCleanup(self._cleanup, self._iso)
+
+    def _run_guard(self, pkg_root: Path):
+        """在副本里**只**跑守卫类，返回 (rc, 输出)。"""
+        import subprocess
+        script = pkg_root / "scripts" / "test_arch_drift.py"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(pkg_root / "scripts")
+        proc = subprocess.run(
+            [sys.executable, str(script)] + list(self.GUARD_CLASSES),
+            capture_output=True, text=True, env=env, cwd=str(pkg_root),
+            timeout=120)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def _fail_case(self, name, mutate, expect_in_output):
+        """在**全新副本**里施加 mutation ⇒ 必须判红且输出含期望关键字。"""
+        iso = self._iso
+        mutate(iso)
+        rc, out = self._run_guard(iso)
+        self.assertNotEqual(rc, 0, f"{name}：期望判红，实际 rc=0（守卫假绿）")
+        self.assertIn(expect_in_output, out,
+                      f"{name}：判红了但输出未含期望关键字 {expect_in_output!r}")
+
+    def _pass_case(self, name, mutate):
+        """在**全新副本**里施加合法改动 ⇒ 必须**不**判红（防误伤）。"""
+        iso = self._iso
+        mutate(iso)
+        rc, out = self._run_guard(iso)
+        self.assertEqual(rc, 0,
+                         f"{name}：合法改动被判红 ⇒ 守卫越界（假阳性）：\n" + out[-2000:])
+
+    # ── 反例 A/B/C（人读视图表，§3.4.4）──────────────────────
+    def test_anti_A_parallel_flag_regression(self):
+        """反例 A：把 stage 1 的「是否并行」改回 `**并行**` ⇒ 必须判红。
+
+        这是**已发生过的真实漂移**（yaml 自 v3.17.0 起 parallel: no，
+        人读表一直写 `**并行**`）。
+        """
+        def mutate(pkg):
+            p = pkg / "docs" / "architecture.md"
+            t = p.read_text(encoding="utf-8")
+            old = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 ∥ 严真奥 | **串行** |"
+            new = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 ∥ 严真奥 | **并行** |"
+            self.assertIn(old, t, "反例前提不成立：人读表 stage 1 行未按预期排版")
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._fail_case("反例 A（并行标记漂移）", mutate, "是否并行")
+
+    def test_anti_B_gate_column_wrong(self):
+        """反例 B：把 stage 2 的门禁改成 `user_confirm` ⇒ 必须判红。"""
+        def mutate(pkg):
+            p = pkg / "docs" / "architecture.md"
+            t = p.read_text(encoding="utf-8")
+            old = "| 2 | 闸3 成稿（页表∥版式） | 苏学法 ∥ 屠明熙 | **并行** | `script_check` |"
+            new = "| 2 | 闸3 成稿（页表∥版式） | 苏学法 ∥ 屠明熙 | **并行** | `user_confirm` |"
+            self.assertIn(old, t, "反例前提不成立：人读表 stage 2 行未按预期排版")
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._fail_case("反例 B（门禁列错）", mutate, "门禁")
+
+    def test_anti_C_missing_row(self):
+        """反例 C：删掉 stage 4 行 ⇒ 必须判红（行数 ≠ yaml 键数）。"""
+        def mutate(pkg):
+            p = pkg / "docs" / "architecture.md"
+            lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+            out = [l for l in lines
+                   if not l.startswith("| 4 | 闸4.5 案例三源核验 |")]
+            self.assertEqual(len(out), len(lines) - 1, "反例前提不成立：未删掉 stage 4 行")
+            p.write_text("".join(out), encoding="utf-8")
+        self._fail_case("反例 C（漏行）", mutate, "闸号集合")
+
+    def test_anti_D_prose_only_change_must_not_fail(self):
+        """反例 D（**防误伤**）：只改「为什么要这么排」列的措辞 ⇒ **不得**判红。
+
+        证明守卫**只比 3 列**，散文怎么改都不触发（FEAT-20261022-001 教训）。
+        """
+        def mutate(pkg):
+            p = pkg / "docs" / "architecture.md"
+            t = p.read_text(encoding="utf-8")
+            old = "证据先行→蓝图：蓝图的二八难点清单依赖证据包的「易误解」标注，存在真实数据依赖 ⇒ 串行；并行会必然回问"
+            new = "（散文措辞改写测试：语义不变，只是换了说法）证据先行→蓝图。"
+            self.assertIn(old, t, "反例前提不成立：stage 1 理由列未按预期")
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._pass_case("反例 D（只改散文）", mutate)
+
+    # ── 反例 A–E（退出码镜像块，§3.5.3）──────────────────────
+    def test_anti_E_yaml_code_deleted(self):
+        """反例 A（退出码）：删掉 yaml 的 `4:` 码 ⇒ 必须判红（G2 + G4）。"""
+        def mutate(pkg):
+            p = pkg / "config" / "harness.yaml"
+            lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+            out = [l for l in lines if not l.startswith("  4: \"运行错误")]
+            self.assertEqual(len(out), len(lines) - 1, "反例前提不成立：未删掉 4 码")
+            p.write_text("".join(out), encoding="utf-8")
+        self._fail_case("反例 A（yaml 删码）", mutate, "gate_exit_codes")
+
+    def test_anti_F_yaml_extra_code(self):
+        """反例 B（退出码）：yaml 加码 6 ⇒ 必须判红（G2 双向）。"""
+        def mutate(pkg):
+            p = pkg / "config" / "harness.yaml"
+            t = p.read_text(encoding="utf-8")
+            anchor = "  4: \"运行错误"
+            self.assertIn(anchor, t, "反例前提不成立：未找到 4 码锚点")
+            t = t.replace(anchor, "  6: \"未定义码\"\n" + anchor, 1)
+            p.write_text(t, encoding="utf-8")
+        self._fail_case("反例 B（yaml 加码）", mutate, "gate_exit_codes")
+
+    def test_anti_G_semantics_changed_one_char(self):
+        """反例 C（退出码）：yaml 的 `4:` 语义改一个字 ⇒ 必须判红（G4 逐字）。"""
+        def mutate(pkg):
+            p = pkg / "config" / "harness.yaml"
+            t = p.read_text(encoding="utf-8")
+            old = "必须报 traceback 并走缺陷回流，不得当作红灯打回成员"
+            new = "必须报 traceback 并走缺陷回流，不得当作红灯打回老师"
+            self.assertIn(old, t, "反例前提不成立：未找到 4 码语义原文")
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._fail_case("反例 C（语义改一字）", mutate, "exit 4")
+
+    def test_anti_H_mirror_block_missing(self):
+        """反例 D（退出码）：删掉 GATE_EXIT_MIRROR 块 ⇒ 必须判红（G1）。"""
+        def mutate(pkg):
+            p = pkg / "references" / "harness-engine.md"
+            lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+            out, dropped = [], 0
+            inside = False
+            for l in lines:
+                if l.strip() == GATE_EXIT_BEGIN:
+                    inside = True
+                    continue
+                if l.strip() == GATE_EXIT_END:
+                    inside = False
+                    continue
+                if inside:
+                    dropped += 1
+                    continue
+                out.append(l)
+            self.assertGreater(dropped, 0, "反例前提不成立：镜像块内无内容")
+            p.write_text("".join(out), encoding="utf-8")
+        self._fail_case("反例 D（镜像块缺失）", mutate, "哨兵块")
+
+    def test_anti_I_prose_change_must_not_fail(self):
+        """反例 E（**防误伤**）：改镜像块外的散文措辞 ⇒ **不得**判红。"""
+        def mutate(pkg):
+            p = pkg / "references" / "harness-engine.md"
+            t = p.read_text(encoding="utf-8")
+            old = "- 每次调用自动写 trace（退出码、耗时、stderr 尾部）"
+            new = "- 每次调用自动写 trace（退出码、耗时、stderr 尾部记录）"
+            self.assertIn(old, t, "反例前提不成立：未找到散文锚点")
+            p.write_text(t.replace(old, new), encoding="utf-8")
+        self._pass_case("反例 E（只改散文）", mutate)
+
+    # ── 反例（team-lead 指针，§3.6.1）────────────────────────
+    def test_anti_J_team_lead_pointer_removed(self):
+        """反例：team-lead.md 删掉 yaml 指针 ⇒ 必须判红（锚点守卫）。"""
+        def mutate(pkg):
+            p = pkg / "agents" / "vet-med-ppt-team-team-lead.md"
+            t = p.read_text(encoding="utf-8")
+            old = "退出码语义唯一源 = `config/harness.yaml#gate_exit_codes`；"
+            self.assertIn(old, t, "反例前提不成立：未找到指针原文")
+            p.write_text(t.replace(old, "退出码语义唯一源 `references/harness-engine.md#6`；"),
+                         encoding="utf-8")
+        self._fail_case("反例 J（指针错位）", mutate, "gate_exit_codes")
 
 
 class TestHoursCaliberCrossRef(unittest.TestCase):

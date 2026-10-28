@@ -26,6 +26,10 @@ sample_fixtures.py — 外部课件样本的**可解析定位**层（v3.24.0）
   resolve_real_samples(...)  -> (list[Path], source_desc)   仅真实样本，不足即返回空
   resolve_samples(...)       -> (list[Path], source_desc)   真实优先，不足补合成
   build_synthetic_deck(...)  -> Path                       确定性合成课件
+
+跨学科样本的**可复现获取方式**（URL / sha256 / 放置路径 / 诚实说明）登记在
+  `references/sample-registry.md`
+—— 本模块只管「在哪、怎么选」，不管「从哪下载」；两者分开，避免代码里堆事实。
 """
 from __future__ import annotations
 
@@ -73,7 +77,61 @@ _ENV_FORCE_SYNTH = "VETMED_FORCE_SYNTHETIC"
 #    提供方可下载后置于该目录，或设 `VETMED_CROSS_DOMAIN_DIR`。
 _ENV_CROSS_DIR = "VETMED_CROSS_DOMAIN_DIR"
 _CROSS_DIR_DEFAULT = Path("/tmp/cross_domain")
+#: v3.24.0 的**固定文件名**（向后兼容保留）：目录里若恰好有它，仍**优先**选中，
+#:    保证既有行为不变（不因本次改造而改变任何已落位样本的选取结果）。
 _CROSS_FILENAME = "cdc_zoonotic_diseases.pptx"
+#: v3.25.0：目录内**任意** `*.pptx` 的兜底选取——
+#:    不同来源的跨学科样本**不必改名**即可落位（原先必须改名成固定文件名）。
+#:    ⚠ 跳过 Office 锁文件（`~$` 前缀：0 字节、不是合法 pptx）与隐藏文件。
+_CROSS_LOCK_PREFIX = "~$"
+
+#: v3.25.0：跨学科样本的**登记 sha256**（提示级软校验用）。
+#:    ⚠ 出处 = `references/sample-registry.md` 的登记条目（唯一真源）。
+#:    ⚠ **只提示、不阻断**：样本被替换/损坏属于「环境变化」，不是本包缺陷 ⇒
+#:      判红会让换机/换样本的人被无端拦下 ⇒ 违反「假阳性必须为零」。
+#:    ⚠ 值**留空则跳过校验**（登记缺失时不应制造假红）。
+_CROSS_SHA256_EXPECTED = "ed217fc68e2fc818bf0f1355bcd102e5029bc601ff9bc71f1bdf716f387d0fd9"
+
+
+def sha256_of(path: Path) -> str:
+    """计算文件 sha256（**只读**）。"""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def check_cross_domain_sha256(path: Optional[Path]) -> Optional[str]:
+    """跨学科样本 sha256 **软校验**（提示级·**不阻断**）。
+
+    返回值：
+      · `None` —— 通过 / 无需校验（未登记期望值、路径不存在、强制合成模式）；
+      · `str` —— **不一致的说明文本**（调用方负责打印提示，**不得**据此判红）。
+
+    依据：设计文档 v3.25.0 §3.7「改动 4 · sha256 软校验」——
+    「不匹配 ⇒ 提示（不阻断）」。
+    """
+    if force_synthetic() or path is None:
+        return None
+    expected = _CROSS_SHA256_EXPECTED.strip()
+    if not expected:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        actual = sha256_of(p)
+    except OSError as e:
+        return f"样本 sha256 计算失败（{p}）：{e}"
+    if actual == expected:
+        return None
+    return (f"样本 sha256 与登记值不一致：\n"
+            f"     登记（references/sample-registry.md）: {expected}\n"
+            f"     实际（{p.name}）: {actual}\n"
+            f"     ⇒ 样本可能被替换或损坏；**本项仅提示、不阻断**（跨学科样本不随包分发，"
+            f"换机/换样本属正常情况）")
 
 
 def force_synthetic() -> bool:
@@ -144,16 +202,39 @@ def resolve_cross_domain_sample() -> Tuple[Optional[Path], str]:
     """定位跨学科样本（T11 通用化验证用）。
 
     返回 (路径, 描述)；不存在 ⇒ (None, 描述)。
+
+    选取规则（v3.25.0，**两段式**）：
+      ① **固定文件名优先**（`_CROSS_FILENAME = "cdc_zoonotic_diseases.pptx"`）——
+         向后兼容：目录里恰好有它时仍选它，既有行为**完全不变**。
+      ② 否则取目录内**任意** `*.pptx`——不同来源的跨学科样本**不必改名**即可落位。
+         ⚠ **确定性**：按**文件名**升序排序取第一个（同名再按完整路径排序）。
+            排序键写死在此，⇒ 同一目录内容 ⇒ 同一结果（跨机器可复现）。
+         ⚠ 跳过 Office 锁文件（`~$` 前缀）与隐藏文件——它们不是合法 pptx。
+
     ⚠ **不自动下载**：网络依赖会让测试结果不确定；缺失时由调用方降级。
     ⚠ 强制合成自检（`VETMED_FORCE_SYNTHETIC=1`）⇒ 一律视为缺失。
     """
     if force_synthetic():
         return None, "强制合成模式(VETMED_FORCE_SYNTHETIC=1)"
     d = _env_dir(_ENV_CROSS_DIR) or _CROSS_DIR_DEFAULT
+    # ① 固定文件名优先（向后兼容）
     p = d / _CROSS_FILENAME
     if p.is_file():
         return p, f"跨学科样本({p})"
-    return None, f"跨学科样本缺失({p}；设 {_ENV_CROSS_DIR} 可覆盖)"
+    # ② 目录内任意 *.pptx（按文件名排序取第一个 ⇒ 确定性）
+    hits = sorted(
+        (q for q in d.glob("*.pptx")
+         if q.is_file()
+         and not q.name.startswith(_CROSS_LOCK_PREFIX)
+         and not q.name.startswith(".")),
+        key=lambda q: (q.name, str(q)),
+    )
+    if hits:
+        p = hits[0]
+        return p, (f"跨学科样本({p}；目录内任意 pptx，按文件名排序取第一个"
+                   f"——共 {len(hits)} 个候选)")
+    return None, (f"跨学科样本缺失({d}；设 {_ENV_CROSS_DIR} 可覆盖；"
+                  f"目录内需至少 1 个 *.pptx)")
 
 
 # ── 确定性合成 fixture ────────────────────────────────────────

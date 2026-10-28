@@ -73,8 +73,20 @@ $H budget check --kind spawn            # 剩余额度查询
 $H gate --deck <课件.pptx> --hours <N> --level P0|all
 ```
 
-- exit 0/1/2/3 语义不变（通过 / P0 / P1 / P2）
-- **exit 4 = 运行错误**（脚本 bug 或文件不可读），**走缺陷回流修脚本，不得当作课件红灯打回成员**
+- 退出码语义**逐项**见下方镜像块（机器比对面）；**唯一源 = `config/harness.yaml#gate_exit_codes`**（yaml 改了就必须同步本块，由守卫强制）
+
+<!-- GATE_EXIT_MIRROR_BEGIN -->
+exit 0 | 通过
+exit 1 | P0 硬阻断——禁止写回，先组织修复
+exit 2 | P1 阻断——可带修复计划写回，交付前清零
+exit 3 | P2 阻断——备注覆盖率未达标
+exit 4 | 运行错误——脚本/文件问题，非课件质量；必须报 traceback 并走缺陷回流，不得当作红灯打回成员
+<!-- GATE_EXIT_MIRROR_END -->
+
+<!-- 机器比对用镜像块（v3.25.0 新增）：scripts/test_arch_drift.py#TestGateExitMirror 把它与
+     config/harness.yaml#gate_exit_codes 逐码对账（码集合双向 + 语义逐字）——
+     删 yaml 的任一码、改任一语义、删本块，都会在体检期判红。 -->
+
 - ⚠️ **`--hours` 必填**（v3.0.0）：课时口径在闸 1 冻结并显式声明。**禁用按可见页数反推课时的 `--auto-hours`**——那是自证式通过（页数永远"符合"自己推导的档位），历史上正是它掩盖了真实的"课时不达标"
 - 每次调用自动写 trace（退出码、耗时、stderr 尾部）
 - **P2 覆盖率含机器草稿**，但输出会单独报 `machine_note_ratio`（AI 草稿页 / 已备注文页）；交付物必须明示该比例并标"待教师复核"（裁决④）

@@ -44,6 +44,7 @@ PROFILES = PKG / "config" / "domain-profiles.yaml"
 
 sys.path.insert(0, str(HERE))
 import yaml  # noqa: E402
+from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg  # noqa: E402
 
 
 def _run(args, timeout=180):
@@ -52,11 +53,21 @@ def _run(args, timeout=180):
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
-def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologist"):
-    """走完 route → collapse confirm → assemble，返回 (产物文本, 坍缩产物路径)。"""
+def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologist",
+                pkg: Path = None):
+    """走完 route → collapse confirm → assemble，返回 (产物文本, 坍缩产物路径)。
+
+    ⚠ **v3.25.0 新增参数 `pkg`**：指定在哪个**包根**里跑端到端链路。
+      传隔离副本 ⇒ 被测代码读的是副本的 config ⇒ 改副本即可构造反例，
+      **不碰生产 config**（原实现改生产 config 再复位 ⇒ 并发下污染被固化）。
+      省略 ⇒ 走真包（只读断言用）。
+    """
+    root = pkg if pkg is not None else PKG
+    harness = root / "scripts" / "harness.py"
+    assembler = root / "scripts" / "assemble_domain_prompt.py"
     ws = Path(tempfile.mkdtemp(prefix="v3191-"))
     task_id = "T-T"
-    rc, _, err = _run([HARNESS, "route", "--level", "L2", "--domain", domain_id,
+    rc, _, err = _run([harness, "route", "--level", "L2", "--domain", domain_id,
                        "--task-id", task_id, "--panel", panel, "--rationale", "测试",
                        "--workspace", ws])
     if rc != 0:
@@ -64,13 +75,13 @@ def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologi
     art = ws / ".harness-runs" / task_id / "_collapse" / f"collapse_{task_id}_{domain_id}.json"
     if not art.is_file():
         raise AssertionError(f"坍缩产物未生成：{art}")
-    rc, _, err = _run([HARNESS, "collapse", "confirm", "--id", domain_id, "--task-id", task_id,
+    rc, _, err = _run([harness, "collapse", "confirm", "--id", domain_id, "--task-id", task_id,
                        "--actor", "user", "--decision", "测试确认", "--rationale", "测试",
                        "--workspace", ws])
     if rc != 0:
         raise AssertionError(f"collapse confirm 失败 rc={rc}: {err[:300]}")
     out_md = ws / "p.md"
-    rc, _, err = _run([ASSEMBLER, "--member", "dvm-content-expert",
+    rc, _, err = _run([assembler, "--member", "dvm-content-expert",
                        "--collapse-artifact", art, "--task-id", task_id, "--out", out_md])
     if rc != 0:
         raise AssertionError(f"assemble 失败 rc={rc}: {err[:300]}")
@@ -103,28 +114,33 @@ def _kb_section(text: str) -> str:
 class TestCollapseDomainRender(unittest.TestCase):
     """v3.19.1·S1 端到端渲染护栏。"""
 
-    #: v3.23.1 W5：**类级一次性备份**（替代逐测 setUp/tearDown 备份）。
-    #: 原实现的隐患（本轮全量跑实测踩中）：setUp 读 _bak 时若文件**已被上一轮
-    #: 失败运行污染**（如 knowledge_bases 被清空后进程被杀），_bak 存的就是脏值
-    #: ⇒ tearDown「恢复」回脏值 ⇒ 污染**跨轮固化**，后续 test_external_tools
-    #: 的 T4/T7 拿到空库清单而假失败。
-    #: 修法：类开始时备份一次；类结束（tearDownClass）无条件恢复；
-    #: 且每个测试的 setUp **断言当前文件与类基线一致**（不一致 ⇒ 先重置再跑，
-    #: 让失败归因到「上一轮污染」而不是本测试）。
-    _class_bak: str = None
+    #: v3.25.0：**隔离副本**（替代「就地改 + finally / 类级备份复位」）。
+    #:
+    #: ⚠ 为什么改（真实缺陷，已实测复现）：
+    #:   原实现就地改写包内 `config/*.yaml`，靠类级备份 + `finally` 复位。
+    #:   `finally` 复位的是「**当时读到的内容**」——并发下那可能已被另一会话污染
+    #:   ⇒ **污染被固化**（本轮实测到 `external-tools.yaml` 的 `knowledge_bases`
+    #:   被从 7 条清空并丢注释，与本文件 T3/T8 写出的中间态逐字节相同）。
+    #: ⇒ 改为「改副本、跑副本」⇒ 彻底取消复位这一步 ⇒ 无时序依赖。
+    _iso: Path = None
 
     @classmethod
     def setUpClass(cls):
-        cls._class_bak = EXT_CFG.read_text(encoding="utf-8")
+        cls._iso = make_isolated_pkg(prefix="vetmed-iso-collapse-")
+        # 副本内的对应路径
+        cls.ext_cfg = cls._iso / "config" / "external-tools.yaml"
+        cls.profiles = cls._iso / "config" / "domain-profiles.yaml"
+        # 类级基线（**副本内**的干净内容）
+        cls._class_bak = cls.ext_cfg.read_text(encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
-        EXT_CFG.write_text(cls._class_bak, encoding="utf-8")
+        cleanup_isolated_pkg(cls._iso)
 
     def setUp(self):
-        # 防跨轮污染固化：当前文件若与类基线不一致（上轮残留），先重置
-        if EXT_CFG.read_text(encoding="utf-8") != self._class_bak:
-            EXT_CFG.write_text(self._class_bak, encoding="utf-8")
+        # 防跨测污染（**副本内**）：当前文件若与类基线不一致（上轮残留），先重置
+        if self.ext_cfg.read_text(encoding="utf-8") != self._class_bak:
+            self.ext_cfg.write_text(self._class_bak, encoding="utf-8")
 
     # ── T1 正例：7 库 + 词条 + 交付语言 ────────────────────────
     def test_T1_libraries_glossary_language_rendered(self):
@@ -182,31 +198,34 @@ class TestCollapseDomainRender(unittest.TestCase):
         """T3【反例】：把 external-tools 的库清空 → 产物回到「无知识库」文案。
 
         这是「有库才渲染库」这条判据的真实性证明（不是硬编码 7 条）。
+
+        ⚠ v3.25.0：改**副本**（`self.ext_cfg`），跑**副本**的端到端链路
+          （`_end_to_end(..., pkg=self._iso)`）⇒ 不碰生产 config，无复位步骤。
         """
         data = yaml.safe_load(self._class_bak)
         data["knowledge_bases"] = []
-        EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-        text, _art, _ws = _end_to_end("animal-medicine")
+        self.ext_cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        text, _art, _ws = _end_to_end("animal-medicine", pkg=self._iso)
         self.assertIn("本域无账号内知识库", text,
                       "库清空后仍渲染库——说明库清单是硬编码的，判据是假的")
         self.assertIn("通用兜底", text, "无库时未给出通用兜底说明")
 
     # ── T4 反例：glossary 清空 → 词条数为 0 ───────────────────
     def test_T4_glossary_cleared_zero_terms(self):
-        """T4【反例】：把域 glossary 清空 → 产物词条数为 0（段是真读 glossary）。"""
-        bak = PROFILES.read_text(encoding="utf-8")
-        try:
-            prof = yaml.safe_load(bak)
-            for d in prof["domains"]:
-                if d["id"] == "animal-medicine":
-                    d["glossary"] = []
-            PROFILES.write_text(yaml.safe_dump(prof, allow_unicode=True), encoding="utf-8")
-            text, _art, _ws = _end_to_end("animal-medicine")
-            self.assertIn("【六之二、交付语言与术语表】", text, "【六之二】段整段消失")
-            self.assertNotIn("Avian Influenza", text,
-                             "glossary 清空后仍渲染词条——词条是硬编码的")
-        finally:
-            PROFILES.write_text(bak, encoding="utf-8")
+        """T4【反例】：把域 glossary 清空 → 产物词条数为 0（段是真读 glossary）。
+
+        ⚠ v3.25.0：改**副本**（`self.profiles`）⇒ **删掉 finally 复位**
+          （副本用完即弃 ⇒ 无需复位 ⇒ 无时序依赖）。
+        """
+        prof = yaml.safe_load(self.profiles.read_text(encoding="utf-8"))
+        for d in prof["domains"]:
+            if d["id"] == "animal-medicine":
+                d["glossary"] = []
+        self.profiles.write_text(yaml.safe_dump(prof, allow_unicode=True), encoding="utf-8")
+        text, _art, _ws = _end_to_end("animal-medicine", pkg=self._iso)
+        self.assertIn("【六之二、交付语言与术语表】", text, "【六之二】段整段消失")
+        self.assertNotIn("Avian Influenza", text,
+                         "glossary 清空后仍渲染词条——词条是硬编码的")
 
     # ── T5 旧产物兼容 ─────────────────────────────────────────
     def test_T5_legacy_artifact_does_not_crash(self):
@@ -281,8 +300,8 @@ class TestCollapseDomainRender(unittest.TestCase):
         """
         data = yaml.safe_load(self._class_bak)
         data["knowledge_bases"] = []
-        EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-        text, _art, _ws = _end_to_end("animal-medicine")
+        self.ext_cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        text, _art, _ws = _end_to_end("animal-medicine", pkg=self._iso)
         sec = _kb_section(text)
         self.assertIn("本域无账号内知识库", sec, "库清空后应渲染「无账号内库」")
         self.assertNotIn("该库组", sec,

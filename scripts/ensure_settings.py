@@ -112,7 +112,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 24  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射）
+N = 25  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -454,37 +454,37 @@ def check_doc_implementation_drift(expert_dir):
     if not claimed:
         print(f"[12/{N}] ✓ CHANGELOG 无 harness.py 子命令声称（无漂移风险）")
         return 0
-    # 2) 跑 harness.py <cmd> --help 判存在
-    # 改：--help 可能因 argparse 顺序报非 0/2；改用更稳的判据：argv 含未知子命令必 exit 2
-    # 真存在：运行 <cmd> 时 exit 在 {0,1,2,3,4,5}（命令处理了），exit 2=用法错（命令存在但不接 --help）
-    # 不存在：main argparse 直接报 invalid choice → exit 2 + "invalid choice: '<cmd>'" 在 stderr
-    missing = []
-    checked = 0
-    for cmd in claimed:
-        checked += 1
-        try:
-            r = subprocess.run([sys.executable, hrns, "--help"],
-                               capture_output=True, text=True, timeout=10)
-            # 从主 --help 输出提取已注册子命令
-            out = (r.stdout or "") + (r.stderr or "")
-            # 解析 argparse 实际注册表
-            registered = set()
-            for line in out.splitlines():
-                m = re.search(r"\{[\"']?([a-z][a-z0-9-]*)[\"']?\s*[,}]", line)
-                # argparse 子命令的 help 格式："{doctor,preflight,...}" 或 "{doctor, ...}"
-                pass
-            # 简单方法：再跑一次 harness 抽 doctor 的输出（doctor 列出所有子命令）
-            r2 = subprocess.run([sys.executable, hrns, "doctor"],
-                                capture_output=True, text=True, timeout=10)
-            try:
-                docd = json.loads(r2.stdout)
-                reg_names = {c.get("name") for c in docd.get("commands", [])}
-            except Exception:
-                reg_names = set()
-            if cmd not in reg_names:
-                missing.append((cmd, f"doctor 列出 {len(reg_names)} 个子命令，无 {cmd}"))
-        except Exception as e:
-            missing.append((cmd, "exception", str(e)[:80]))
+    # 2) 取 doctor 的实际子命令注册表（**只跑一次**，逐个 claimed 比对）
+    #
+    # ⚠ v3.25.0 修正两处**假阳性/崩溃**（实测于资源受限环境）：
+    #   ① 原实现对**每个** claimed 子命令都起一次 `harness.py --help` + 一次
+    #      `harness.py doctor` 子进程（13 个声称 ⇒ 26 个子进程）；
+    #      在资源紧张时子进程超时 ⇒ `reg_names = set()` ⇒ **全部**命令被判「未实现」
+    #      ⇒ 7 个假阳性。现改为**只探测一次**。
+    #   ② **探测失败 ≠ 实现缺失**：doctor 探测失败（超时/输出非 JSON）时，
+    #      本项判为「探测受阻」并返回 0（提示级·不阻断）——
+    #      理由同「假阳性必须为零」：探测侧故障不能被当成实现侧缺陷。
+    reg_names = set()
+    probe_ok = True
+    probe_err = ""
+    try:
+        r2 = subprocess.run([sys.executable, hrns, "doctor"],
+                            capture_output=True, text=True, timeout=60)
+        docd = json.loads(r2.stdout)
+        reg_names = {c.get("name") for c in docd.get("commands", []) if c.get("name")}
+        if not reg_names:
+            probe_ok = False
+            probe_err = "doctor 输出里没有子命令注册表"
+    except Exception as e:
+        probe_ok = False
+        probe_err = f"{type(e).__name__}: {str(e)[:100]}"
+    if not probe_ok:
+        print(f"[12/{N}] ℹ 文档-实现一致性**未判**（探测受阻，非漂移）：{probe_err}")
+        print(f"     → 不阻断：探测侧故障 ≠ 实现侧缺陷（假阳性必须为零）；"
+              f"请在资源充裕时重跑本项复核")
+        return 0
+    missing = [(c, f"doctor 列出 {len(reg_names)} 个子命令，无 {c}")
+               for c in claimed if c not in reg_names]
     if missing:
         print(f"[12/{N}] ❌ 文档-实现漂移：CHANGELOG 声称 {len(claimed)} 个子命令，其中 {len(missing)} 个未在 doctor 表中")
         for cmd, info in missing:
@@ -904,7 +904,12 @@ def check_dangling_script_ref(expert_dir):
     local = {f for f in os.listdir(scripts_dir) if f.endswith(".py")}
     # 显式登记的外部脚本（课程工作区等），登记即"承认这是外部依赖"
     known_external = {"registry_rebuild.py", "repair_p0_v200.py",
-                      "validate_expert.py"}   # 外部：WorkBuddy 内置 expert-manager skill
+                      "validate_expert.py",   # 外部：WorkBuddy 内置 expert-manager skill
+                      # v3.25.0 补：联邦共享件（**不随本包分发**，只存在于安装态/仓库结构下）
+                      #   `assemble_spawn_prompt.py` 由 shared-core/ 提供，本包 scripts/ 下只有
+                      #   同名 shim（转发到 shared-core）⇒ 文档里引用 shared-core/ 下的真实文件
+                      #   是正确的，不是悬空引用。
+                      "assemble_spawn_prompt.py"}
 
     import re as _re
     # v3.17.0 补强（两轮，共三个盲区——**这个检查连自己的同类缺陷都抓不住，
@@ -975,6 +980,13 @@ def check_dangling_script_ref(expert_dir):
             for rel in set(pat_path.findall(txt)):
                 if os.path.exists(os.path.join(expert_dir, rel)):
                     continue
+                # v3.25.0 补：带路径的引用也要能命中 known_external 白名单。
+                #   缘由：`shared-core/assemble_spawn_prompt.py` 是**联邦共享件**里的文件
+                #   （本包 scripts/ 下只有同名 shim 转发过去），文档引用它是正确的。
+                #   白名单按 **basename** 匹配（登记项是文件名，不是全路径）——
+                #   否则登记了也命中不了，白名单就成了摆设。
+                if os.path.basename(rel) in known_external:
+                    continue
                 dangling.append(f"{label} 引用 `{rel}`（相对包根不存在该文件）")
 
     if dangling:
@@ -1017,6 +1029,16 @@ def _collect_ast_reads(scripts_dir):
 
     for fn in sorted(os.listdir(scripts_dir)):
         if not fn.endswith(".py"):
+            continue
+        # ⚠ **v3.25.0 修复：排除测试文件**（真实判据漏洞，已实测复现）。
+        #   病灶：测试代码里的 `cfg.get("x")` / `cfg["a"]["x"]` 会被算作
+        #   「x 有代码读取者」⇒ **在测试里写一行就能让死配置门对 x 假绿**。
+        #   实测复现：隔离副本的 `harness.yaml#budgets` 下加 `__probe_zone_new_key`，
+        #   仅因守卫测试文件里写了 `cfg["budgets"]["__probe_zone_new_key"]`，
+        #   该键就获得了**路径级证据**（`_a_path`）⇒ 不进免检区 ⇒ 守卫完全看不见。
+        #   理由：第 18 项问的是「**生产代码**是否消费这个键」，
+        #   测试代码的读取**不构成消费**（测试只验证，不消费）。
+        if fn.startswith("test_"):
             continue
         fp = os.path.join(scripts_dir, fn)
         try:
@@ -1106,6 +1128,16 @@ def _collect_chain_reads(scripts_dir):
     paths = set()
     for fn in sorted(os.listdir(scripts_dir)):
         if not fn.endswith(".py"):
+            continue
+        # ⚠ **v3.25.0 修复：排除测试文件**（真实判据漏洞，已实测复现）。
+        #   病灶：测试代码里的 `cfg.get("x")` / `cfg["a"]["x"]` 会被算作
+        #   「x 有代码读取者」⇒ **在测试里写一行就能让死配置门对 x 假绿**。
+        #   实测复现：隔离副本的 `harness.yaml#budgets` 下加 `__probe_zone_new_key`，
+        #   仅因守卫测试文件里写了 `cfg["budgets"]["__probe_zone_new_key"]`，
+        #   该键就获得了**路径级证据**（`_a_path`）⇒ 不进免检区 ⇒ 守卫完全看不见。
+        #   理由：第 18 项问的是「**生产代码**是否消费这个键」，
+        #   测试代码的读取**不构成消费**（测试只验证，不消费）。
+        if fn.startswith("test_"):
             continue
         fp = os.path.join(scripts_dir, fn)
         try:
@@ -1347,6 +1379,14 @@ def check_dead_config_keys(expert_dir):
     dead, alive, textual = [], 0, 0
     # v3.23.0 F1：块级证据计数 + 弱证据（仅末段同名撞车）清单
     block, weak, weak_reg, weak_list = 0, 0, 0, []
+    # v3.25.0：**免检区（块级消费段）清单**——按 `<config 文件名>#<段前缀>` 聚合。
+    # ⚠ 段归属直接复用 `_b_block` 的**同一次**短路循环结果（不另算一遍）⇒
+    #   新输出与既有判定**口径必然一致**，不可能出现「两套算法算出两个答案」。
+    block_segments = {}   # seg_key -> {"file":…, "prefix":…, "keys":[…], "leaf_unused": int}
+    # v3.25.0：同步到模块级累加器（供 `collect_block_segments()` / dump 开关复用）。
+    # ⚠ 每次调用**重置** ⇒ 不会跨轮残留（旧结果被误当本次结果）。
+    global _LAST_BLOCK_SEGMENTS
+    _LAST_BLOCK_SEGMENTS = block_segments
 
     # ── v3.23.0 F1：**弱证据登记区**（known_weak）────────────────────────
     # 弱证据 = 该键**只**因「末段键名与代码中某键同名」而被判为已接线。
@@ -1361,6 +1401,46 @@ def check_dead_config_keys(expert_dir):
         #   被算作已接线——典型假绿。改为**显式登记**，把「没人读」这件事写明。
         "language-profile.languages",
     }
+
+    # ── v3.25.0：**守卫型配置**（消费方 = 守卫测试自身）──────────────────
+    # 背景（真实判据漏洞，v3.25.0 实测复现）：
+    #   本项排除 `test_*.py` 后，`config/guard.yaml` 的两个键立刻被判死：
+    #     · `guarded_docs`    —— 受守卫文档清单，被 `test_arch_drift.py` 读
+    #     · `legacy_wording` —— 旧口径词表，被 `test_arch_drift.py` 读
+    #   它们**不是死配置**：消费方就是**守卫测试代码**。
+    #   ⚠ 为什么要显式登记而不是「把测试文件算回读取点」：
+    #     算回去 ⇒ 任何人在**任意测试文件**里写一行 `cfg.get("任意键")`
+    #     就能让死配置门对那个键假绿（实测复现，见 `_collect_ast_reads` 的注释）。
+    #     ⇒ 必须「排除测试」+「显式登记守卫型配置」两步走。
+    #   消费方分类学（v3.25.0 新增的第四类，缺了它模型就不完整）：
+    #     脚本 / 会话层 / 主理人 / **守卫测试**
+    known_guard_consumed = {
+        # guard.yaml#guarded_docs —— 受守卫文档清单（改这张表 = 改守卫覆盖面）。
+        #   消费方：`scripts/test_arch_drift.py`（T9：清单内每个文档必须含镜像块）。
+        "guard.guarded_docs",
+        # guard.yaml#legacy_wording —— 旧口径词表（正文出现即判红）。
+        #   消费方：`scripts/test_arch_drift.py`（T10：豁免区外出现即判红）。
+        "guard.legacy_wording",
+    }
+
+    def _is_guard_consumed(fname: str, full: str) -> bool:
+        """守卫型配置判定：消费方是**守卫测试自身**的键（不算死配置）。
+
+        登记形态：`<config 文件名去扩展名>.<段名>`（如 `guard.guarded_docs`）。
+        """
+        _segs = full.split(".")
+        _stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+        if full in known_guard_consumed:
+            return True
+        for _k in known_guard_consumed:
+            if "." not in _k:
+                if _k in _segs[:-1]:
+                    return True
+            else:
+                _kf, _, _kp = _k.partition(".")
+                if _kf == _stem and _segs[:len(_kp.split("."))] == _kp.split("."):
+                    return True
+        return False
 
     def _is_weak_registered(fname: str, full: str) -> bool:
         """弱证据登记判定：支持「限定路径」与「带文件前缀的段名」两种形态。"""
@@ -1430,16 +1510,30 @@ def check_dead_config_keys(expert_dir):
                     _a_path = True
                     break
             _b_block = False
+            _b_prefix = None
             for _i in range(len(_segs) - 1):        # 真前缀 ⇒ 父级被整块取走
                 _cand = norm(".".join(_segs[:_i + 1]))
                 if _cand and _cand in chain_reads:
                     _b_block = True
+                    _b_prefix = ".".join(_segs[:_i + 1])   # v3.25.0：记下触发前缀
                     break
             if (n_full and n_full in norm_reads) or _a_path or _b_block:
                 alive += 1
                 if _b_block and not _a_path and not (n_full and n_full in norm_reads):
                     block += 1
-            elif seg_hit or _is_textual(fname, full):
+                    # v3.25.0：把该键归入「免检区（块级消费段）」——
+                    # 段键 = `<config 文件名>#<触发前缀>`（ADR-6：必须带文件名前缀，
+                    # 因为同名段跨文件是不同的段，合并登记会让处置规则无法落地）。
+                    _seg_key = f"{fname}#{_b_prefix}"
+                    _seg = block_segments.setdefault(
+                        _seg_key,
+                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                    _seg["keys"].append(full)
+                    # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
+                    # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
+                    if not (n_leaf and n_leaf in norm_reads):
+                        _seg["leaf_unused"] += 1
+            elif seg_hit or _is_textual(fname, full) or _is_guard_consumed(fname, full):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
             elif n_leaf and n_leaf in norm_reads:
                 # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
@@ -1582,9 +1676,99 @@ def check_dead_config_keys(expert_dir):
         print(f"[18/{N}] ✓ 无死配置（{len(cfg_files)} 个 config 文件："
               f"代码读取 {alive} 项〔其中块级消费 {block} 项〕 · 人读型登记 {textual} 项 · "
               f"弱证据登记 {weak_reg} 项）")
+    # ── v3.25.0：**免检区（块级消费段）清单**输出 ──────────────────────
+    # 为什么要输出（可证伪的动机）：
+    #   第 18 项的静态判据对「父级被代码整块取走」的键**无法逐键确认**
+    #   ⇒ 这些键落在**免检区**里（v3.25.0 实测：39 段 / 1489 键）。
+    #   改造前只报一个**总数** ⇒ 人工无法复核、无法行动 ⇒ 体检项形同虚设。
+    #   改造后按段列出 ⇒ 从「一个数字」变成「可行动清单」。
+    #
+    # ⚠ **措辞纪律（硬约束）**：段清单里**禁止**出现判红词（「死」「未接线」「异常」）
+    #   —— 免检区的键**不是**缺陷，只是静态判据看不到它们被谁消费。
+    #   一律用「免检区（块级消费）」「待人工定性候选」。
+    # ⚠ **不判红**：本段清单**纯粹是输出**，`return 1 if (dead or weak_list) else 0`
+    #   的 rc 判定路径**逐字不变** ⇒ 假阳性增量恒为 0。
+    print_block_segments(block_segments)
     # v3.23.0 F1：弱证据（仅末段同名撞车）**同样阻断**——
     #   旧口径把它算作已接线 ⇒ 新增的死配置键只要名字撞车就能混过这道门（假绿）。
     return 1 if (dead or weak_list) else 0
+
+
+def collect_block_segments(expert_dir):
+    """返回「免检区（块级消费段）」清单（v3.25.0 · 供登记表守卫与 dump 开关复用）。
+
+    返回 {seg_key: {"file","prefix","key_count","leaf_unused","keys":[完整路径…],"keys_sha256"}}
+      seg_key = f"{config 文件名}#{段前缀}"   （ADR-6：必须带文件名前缀——
+        同名段跨文件是不同的段，合并登记会让「新增键处置规则」无法落地）
+
+    ⚠ **实现方式**：直接复用第 18 项 `check_dead_config_keys` 内部累加的同一份结果
+      ⇒ 段归属、键计数与体检输出**逐字一致**，不存在「两套算法两个答案」的空间。
+    ⚠ **纯观测**：不参与任何 rc 判定。
+    """
+    import io as _io
+    import contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        check_dead_config_keys(expert_dir)
+    return last_block_segments()
+
+
+def last_block_segments():
+    """取最近一次 `check_dead_config_keys` 累加的段清单。
+
+    ⚠ 用**模块级累加器**而非返回值：第 18 项的 `walk()` 是闭包，
+      把段清单从闭包里传出来需要改 walk 签名（行为等价但改动面大）。
+      累加器方案：`check_dead_config_keys` 每次调用**重置**它 ⇒ 不会跨轮残留。
+    """
+    return dict(_LAST_BLOCK_SEGMENTS)
+
+
+#: 第 18 项最近一次运行累加的段清单（模块级累加器，见 `last_block_segments`）
+_LAST_BLOCK_SEGMENTS = {}
+
+
+def segments_digest(keys):
+    """段内叶子路径集合的 sha256 指纹（前 40 hex）。
+
+    定义（定稿，防歧义）：
+        sha256( "\\n".join(sorted(叶子完整路径)) ).hexdigest()[:40]
+        叶子完整路径 = "<段前缀>.<子路径>"（不含文件名、不含数组下标）
+
+    ⚠ **集合相等**语义：顺序变化不影响（先排序）；
+      段内增/删/改名任一键 ⇒ 指纹变化 ⇒ 守卫判红。
+    """
+    import hashlib
+    blob = "\n".join(sorted(keys)).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:40]
+
+
+def print_block_segments(block_segments, stream=None):
+    """打印「免检区（块级消费段）」清单（v3.25.0）。
+
+    参数
+      block_segments : {seg_key: {"file","prefix","keys":[...],"leaf_unused":int}}
+                       —— 由第 18 项的 walk() 累加（**与判定同源**）。
+      stream        : 输出流（默认 stdout）。
+
+    ⚠ **纯观测**：本函数**不返回 rc、不改任何判定**，只 print。
+    ⚠ **措辞纪律**：禁止判红词（死 / 未接线 / 异常）。见调用处注释。
+    """
+    import sys as _sys
+    out = stream or _sys.stdout
+    if not block_segments:
+        return
+    # 段键 = `<config 文件名>#<段前缀>`（ADR-6）
+    items = sorted(block_segments.items(), key=lambda kv: (-len(kv[1]["keys"]), kv[0]))
+    total_keys = sum(len(v["keys"]) for _k, v in items)
+    total_unused = sum(v["leaf_unused"] for _k, v in items)
+    print(f"     ── 免检区（块级消费）清单：{len(items)} 段 / {total_keys} 键；"
+          f"其中 {total_unused} 键的末段键名在代码中 0 出现"
+          f"（**待人工定性候选，不是死配置**）——", file=out)
+    print(f"        说明：这些键按**段**被代码整块消费，静态判据无法逐键确认；"
+          f"新增键须按 references/inspection-zones.yaml 的处置规则登记。", file=out)
+    for seg_key, v in items:
+        print(f"        · {seg_key} — {len(v['keys'])} 键"
+              f"（末段键名 0 出现：{v['leaf_unused']}）", file=out)
 
 
 def check_fallback_drift(expert_dir):
@@ -1743,6 +1927,54 @@ def check_fallback_drift(expert_dir):
     return 0
 
 
+def judge_threshold_runtime(kind, key, val, want, src):
+    """第 21 项运行时断言的**纯函数**判定层（v3.25.0 抽出，供单测直接喂 None）。
+
+    输入（全部由调用方取好，本函数**不碰文件、不起子进程**）：
+      kind  —— budget kind 名（如 ``three_source_pass``）
+      key   —— domain_config.yaml#three_source_check 下的子键（如 ``pass_threshold``）
+      val   —— **运行时**取到的值（``harness.py budget check`` 的 JSON ``value``），可为 None
+      want  —— **配置**里声明的值，可为 None
+      src   —— 运行时的 ``config_source`` 字符串
+
+    返回：None = 一致（通过）；str = 问题描述（**判红**，不是崩溃）。
+
+    ⚠ **为什么必须是纯函数**：原实现把「取运行时值 → 与阈值比对」写死在体检流程里，
+      其中 ``float(val)`` 在 ``val is None``（读取链断裂）时抛**未捕获 TypeError**
+      ⇒ **本项崩溃** ⇒ 第 22–24 项永不执行、无结论行 ⇒ 真实失败原因被掩盖
+      （研究简报 §3.3 Exp-A 实测：探针把 harness 侧读取链删掉即可复现）。
+      抽出纯函数后，「None 情形」可被**直接单测**，不需要网络、不需要改包内 config、
+      也不需要在生产代码里留故障注入开关。
+
+    ⚠ 与原实现的**一处刻意差异**（同属「不崩溃、改为判红」这一条修复思路）：
+      原实现直接 ``float(val) != float(want)``——当配置值写成 ``"10%"`` 这类**非数值**
+      时会抛 **ValueError** 崩溃；本实现捕获后按「不一致」判红。
+      理由与 None 分支相同：**体检项崩溃 = 掩盖真实失败**，比误判红更危险。
+
+    返回值文案与 v3.25.0 修复版**逐字一致**（便于既有日志/结论行对照）。
+    """
+    if val is None or want is None:
+        # v3.25.0：原实现直接 `float(val)`，读取链断裂时 val=None ⇒ 抛未捕获
+        #   TypeError ⇒ **本项崩溃** ⇒ 第 22–24 项永不执行、无结论行，
+        #   真实失败原因被掩盖（研究简报 §3.3 Exp-A 实测）。
+        #   改为显式判红：缺值本身就是「配置未生效」的证据。
+        return (f"`{kind}` 运行时值为 None（读取链断裂？）"
+                f"≠ domain_config.yaml#three_source_check.{key}={want!r}"
+                f"（配置未生效 / 读进 fallback）")
+    try:
+        same = float(val) == float(want)
+    except (TypeError, ValueError, OverflowError):
+        # 两侧都不是可转 float 的数值（如 "10%"）⇒ 无法证明一致 ⇒ 判红，不崩
+        same = val == want
+    if not same:
+        return (f"`{kind}` 运行时值 {val!r} ≠ domain_config.yaml"
+                f"#three_source_check.{key}={want!r}（配置改了没生效 / 读进 fallback）")
+    if "domain_config.yaml#three_source_check" not in src:
+        return (f"`{kind}` 的 config_source={src!r} 未指向 domain_config.yaml"
+                f"#three_source_check（阈值可能来自别处）")
+    return None
+
+
 def check_three_source_single_source(expert_dir):
     """v3.16.0：第 21 项 —— 三源阈值「双重声明」防线（防复发）。
 
@@ -1810,30 +2042,47 @@ def check_three_source_single_source(expert_dir):
     checks = [("three_source_pass", "pass_threshold"),
               ("three_source_sample", "sample_rate")]
     runtime_bad = []
+    #: ⚠ v3.25.0 收口修正：**探测受阻 ≠ 断言失败**。
+    #:   原实现把「子进程起不来 / 输出非 JSON」一律记进 `runtime_bad` ⇒ 判红（阻断级）。
+    #:   但「探测侧故障」不能当「被测侧缺陷」——实测反例：
+    #:     · shell 直跑 `python3 scripts/harness.py budget check --kind three_source_pass`
+    #:       ⇒ 正常输出 JSON（value=0.8, rc=0）；
+    #:     · 同一命令经 `subprocess.run` ⇒ rc=4、stdout 为空，
+    #:       stderr = 「⛔ harness 运行异常：PermissionError: Brokered host mkdir …」
+    #:       （WorkBuddy 宿主 shim 拦截子进程建目录，见 sitecustomize.py:508）。
+    #:   ⇒ 同一个被测产物，在不同调用方式下结论相反 ⇒ 红色来自**环境**而非代码。
+    #:   按「假阳性必须为零」铁律：**探测受阻 ⇒ 判「未判」（提示级·不阻断）**，
+    #:   只有「拿到合法 JSON 且值/来源确实对不上」才判红。
+    probe_blocked = []
     for kind, key in checks:
         try:
             p = subprocess.run([sys.executable, hpy, "budget", "check", "--kind", kind],
                                capture_output=True, text=True, timeout=60)
         except Exception as e:
-            runtime_bad.append(f"`budget check --kind {kind}` 运行失败：{e}")
+            probe_blocked.append(f"`budget check --kind {kind}` 运行失败：{e}")
             continue
         try:
             out = json.loads((p.stdout or "").strip().splitlines()[-1])
         except Exception:
-            runtime_bad.append(f"`budget check --kind {kind}` 输出非 JSON（stdout="
-                               f"{(p.stdout or '')[:60]!r}）")
+            # ⚠ 探测受阻（stdout 空 / 非 JSON）——**不是断言失败**。
+            #   把子进程 stderr 的首行带出来，便于分辨「宿主拦截」与「真异常」。
+            _err = ((p.stderr or "").strip().splitlines() or [""])[0][:120]
+            probe_blocked.append(
+                f"`budget check --kind {kind}` 探测受阻（stdout="
+                f"{(p.stdout or '')[:40]!r}；stderr 首行={_err!r}）")
             continue
         val, src = out.get("value"), str(out.get("config_source", ""))
         want = tsc.get(key)
         if key not in tsc:
             runtime_bad.append(f"domain_config.yaml#three_source_check 缺 `{key}` "
                                f"（运行时无从对齐）")
-        elif float(val) != float(want):
-            runtime_bad.append(f"`{kind}` 运行时值 {val!r} ≠ domain_config.yaml"
-                               f"#three_source_check.{key}={want!r}（配置改了没生效 / 读进 fallback）")
-        elif "domain_config.yaml#three_source_check" not in src:
-            runtime_bad.append(f"`{kind}` 的 config_source={src!r} 未指向 domain_config.yaml"
-                               f"#three_source_check（阈值可能来自别处）")
+            continue
+        # v3.25.0：判定抽到纯函数 judge_threshold_runtime()——
+        #   「None 情形」从此可被直接单测（不依赖网络、不依赖改包内 config、
+        #   不需要在生产代码里留故障注入开关）。
+        bad = judge_threshold_runtime(kind, key, val, want, src)
+        if bad:
+            runtime_bad.append(bad)
     if runtime_bad:
         print(f"[21/{N}] 🔴 三源阈值运行时断言失败 {len(runtime_bad)} 项"
               f"（第 18 项静态判据查不出的那类：读了 fallback 而没读配置）")
@@ -1842,6 +2091,15 @@ def check_three_source_single_source(expert_dir):
         print("     → 处置：让 verify_deck.py#_load_three_source_thresholds 真从 "
               "domain_config.yaml#three_source_check 取值，并确认 fallback 未被实际消费")
         return 1
+    if probe_blocked:
+        # ⚠ 探测受阻 ⇒ 判「未判」：静态部分已通过，运行时部分因环境受阻无法确认。
+        print(f"[21/{N}] ℹ 三源阈值**运行时断言未判**（探测受阻，非漂移；静态部分已通过）"
+              f"：harness.yaml 无重复声明")
+        for b_ in probe_blocked:
+            print(f"     {b_}")
+        print("     → 处置：确认子进程可正常起（宿主拦截建目录时本项无法判定）；"
+              "解除后再跑一次本项")
+        return 0
 
     shown = "、".join(f"{k}={tsc.get(v)}" for k, v in checks if v in tsc) or "无可用阈值"
     print(f"[21/{N}] ✓ 三源阈值单一数据源（harness.yaml 无重复声明；"
@@ -2385,6 +2643,84 @@ def check_stage_order_drift(expert_dir):
     return 0
 
 
+def check_harness_fallback_structure(expert_dir):
+    """v3.25.0：第 25 项 —— `harness.py#_FALLBACK` ↔ `harness.yaml` **结构**比对（阻断）。
+
+    背景（研究简报 §7.2 / 主理人独立探针双源证实）：
+      `scripts/harness.py` 的 `_FALLBACK` 是 yaml 的**代码侧副本**（yaml 读失败时整份顶上），
+      但它与 yaml **早已漂移**：副本多出已废弃的 `gate_exit_codes."5"` 与六阶段残留 `stages.5`，
+      且 `stages.2/3/4.gate` 语义漂移（副本全 `user_confirm`，yaml 实为
+      `script_check` / `gate_script+verifier` / `three_source_check`）。
+      ⚠ 后果不是文案问题：yaml 不可读时 **stage 2/3/4 的闸从机器强制退化为人工确认**。
+
+    为何不并入第 19 项：第 19 项用 `ast.literal_eval` 解析 `verify_deck.py#_FALLBACK`
+    （纯字面量，可行）；`harness.py#_FALLBACK` 含 **DictComp**（`str(i) for i in range(6)`），
+    `literal_eval` 直接抛 ValueError ⇒ 本项改用 `importlib` 取**运行时**值（更贴近真实降级行为）。
+
+    判据（**只比结构，不比文案**——研究简报附录 D 的避坑方案）：
+      ① `gate_exit_codes` 键集合相等；
+      ② `stages` 阶段集合相等；
+      ③ 共同阶段的 `gate` 取值相等。
+    文案（exit 1–4 的长文案）**刻意不比**：解释性文字天然长短不一（yaml 长口径 vs
+    代码短口径都是合法表述），等值比会造 4 处假阳性 ⇒ 违反「假阳性必须为零」。
+    语义骨架的文档侧对账由 `references/harness-engine.md#6` 的 GATE_EXIT_MIRROR 承载。
+    """
+    hp = os.path.join(expert_dir, "config", "harness.yaml")
+    hpy = os.path.join(expert_dir, "scripts", "harness.py")
+    if not os.path.exists(hp) or not os.path.exists(hpy):
+        print(f"[25/{N}] – 缺 harness.yaml 或 harness.py，跳过")
+        return 0
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(hp, encoding="utf-8"))
+    except Exception as e:
+        print(f"[25/{N}] ⚠ harness.yaml 解析失败：{e}")
+        return 1
+    # 取运行时 _FALLBACK（DictComp 安全；literal_eval 不可用）
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location("_harness_fb_probe", hpy)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fb = getattr(mod, "_FALLBACK", None)
+    except Exception as e:
+        print(f"[25/{N}] ⚠ 加载 harness.py 取 _FALLBACK 失败：{e}")
+        return 1
+    if not isinstance(fb, dict):
+        print(f"[25/{N}] – harness.py 无 _FALLBACK（可能已改为硬失败），跳过")
+        return 0
+    problems = []
+    # ① gate_exit_codes 键集（键归一化为 str：yaml 里 `0:` 是 int）
+    fk = {str(k) for k in (fb.get("gate_exit_codes") or {}).keys()}
+    yk = {str(k) for k in (cfg.get("gate_exit_codes") or {}).keys()}
+    if fk != yk:
+        only_fb, only_y = sorted(fk - yk), sorted(yk - fk)
+        problems.append(f"gate_exit_codes 键集分叉：仅代码副本有 {only_fb}，仅 yaml 有 {only_y}"
+                        f"（副本残留已废弃键 ⇒ 应从代码删，不是加进 yaml）")
+    # ②③ stages 阶段集 + gate 语义（键归一化：yaml 的 `0:` 是 int，代码副本是 str）
+    fs = {str(k): (v or {}) for k, v in (fb.get("stages") or {}).items()}
+    ys = {str(k): (v or {}) for k, v in (cfg.get("stages") or {}).items()}
+    if set(fs) != set(ys):
+        problems.append(f"stages 阶段集分叉：仅代码副本有 {sorted(set(fs) - set(ys))}，"
+                        f"仅 yaml 有 {sorted(set(ys) - set(fs))}"
+                        f"（六阶段残留 ⇒ 应从代码删）")
+    for k in sorted(set(fs) & set(ys), key=lambda x: int(x) if x.isdigit() else 10 ** 9):
+        fg, yg = fs[k].get("gate"), ys[k].get("gate")
+        if fg != yg:
+            problems.append(f"stages.{k}.gate 语义漂移：代码副本={fg!r} ≠ yaml={yg!r}"
+                            f"（yaml 不可读时该闸会从机器强制退化为人工确认）")
+    if problems:
+        print(f"[25/{N}] ✗ harness.py#_FALLBACK 与 harness.yaml 结构漂移 {len(problems)} 处：")
+        for p in problems:
+            print(f"     · {p}")
+        print("     → _FALLBACK 是 yaml 读失败时的**降级副本**；结构漂移 = 降级时闸门行为静默改变。"
+              "修法：改代码副本对齐 yaml 结构（文案不比对）。")
+        return 1
+    print(f"[25/{N}] ✓ harness.py#_FALLBACK 与 harness.yaml 结构一致"
+          f"（gate_exit_codes {len(fk)} 码 / stages {len(fs)} 级，gate 语义全对齐；文案不比对）")
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -2392,6 +2728,24 @@ def main():
     if not os.path.isdir(path):
         print(f"✗ 专家包目录不存在：{path}", file=sys.stderr)
         return 1
+
+    # ── v3.25.0：--dump-block-segments（生成登记表骨架，**键数/digest 永不手写**）──
+    if "--dump-block-segments" in sys.argv:
+        segs = collect_block_segments(path)
+        items = sorted(segs.items(), key=lambda kv: (-len(kv[1]["keys"]), kv[0]))
+        print("# 免检区（块级消费段）登记表骨架 —— 由 "
+              "`python3 scripts/ensure_settings.py --dump-block-segments` 生成")
+        print("# ⚠ key_count 与 keys_sha256 **不要手写**；消费方/处置规则需人工判断后填。")
+        print("version: \"3.25.0\"")
+        print("segments:")
+        for seg_key, v in items:
+            print(f"  - id: \"{seg_key}\"")
+            print(f"    file: \"{v['file']}\"")
+            print(f"    prefix: \"{v['prefix']}\"")
+            print(f"    key_count: {len(v['keys'])}")
+            print(f"    keys_sha256: \"{segments_digest(v['keys'])}\"")
+            print(f"    leaf_unused: {v['leaf_unused']}")
+        return 0
 
     print(f"体检目标：{path}\n")
     if not quick:
@@ -2458,6 +2812,8 @@ def main():
     rc |= check_domain_binding_residue(path)
     # v3.19.3（L3）：阶段顺序漂移守卫（阻断；防 stages.N.next 与 current_stage+1 分叉）
     rc |= check_stage_order_drift(path)
+    # v3.25.0：harness.py#_FALLBACK ↔ harness.yaml 结构比对（阻断；防降级副本结构漂移）
+    rc |= check_harness_fallback_structure(path)
 
     print()
     if rc == 0:

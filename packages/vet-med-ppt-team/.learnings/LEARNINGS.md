@@ -6,11 +6,35 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ---
 
+## 📌 `Status` 字段语义（v3.25.0 补定义 · 与 `FEATURE_REQUESTS.md` 共用同一套）
+
+> ⚠ **此前无定义** —— 这是「登记状态与实际落地脱节」的根因：
+> 每条 LRN 都写 `pending`，但**不区分「建议动作尚未做」与「建议动作已做完、这条经验转为常驻纪律」**，
+> 于是下一轮盘点会**重复拾取已落地项**（v3.25.0 实测：6 条 LRN 全部标 pending，
+> 其中 4 条的建议动作早已落地）。
+> ⚠ **v3.25.0 初版两个文件的词表不一致**（本文件缺 `partial`/`resolved`），
+> 且 `FEAT-20261022-001` 条目内部自相矛盾 —— 均已修正为下表这一套。
+
+| 取值 | 含义 | 判据 |
+|---|---|---|
+| `pending` | 建议动作**尚未做**，有具体待办 | 能指出"还差哪一步没做" |
+| `partial` | **部分实现** | 须写明已做哪部分、未做哪部分 |
+| `applied` | 建议动作**已落地**（代码/流程已实现），经验转为常驻纪律 | 能在代码里指出落地位置 |
+| `manual-only` | 建议动作**本质是人工纪律**，工具化收益低于成本 | 须说明为何不值得工具化 |
+| `resolved` | **已闭合**（含"经实测否决、如实登记"这类闭合式结论） | 结论明确，无需再动 |
+| `superseded` | 已被后续做法取代 | 须指向取代它的那条 |
+
+> **纪律**：只有 `pending` / `partial` 才是待办；`applied` / `manual-only` / `resolved` / `superseded`
+> **不再进入下一轮遗留盘点**（它们是常驻纪律或已闭合结论）。
+> 状态更新须在**落盘的同一批**完成，不留到下轮。
+
+---
+
 ## [LRN-20261022-001] best_practice
 
 **Logged**: 2026-10-22T21:45:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: applied
 **Area**: config
 
 ### Summary
@@ -41,13 +65,21 @@ v3.14.0 回退阈值），根因统一为**多处各自定义 / 配了没人读*
 - First-Seen: 2026-10-22
 - Last-Seen: 2026-10-22
 
+### Resolution（v3.25.0 核实：已落地）
+建议动作「新增静态检查型体检前先跑首版、假阳性优先」**已在代码层落地**：
+- `scripts/ensure_settings.py` 有 `known_weak`（弱证据登记区，L1351+）与
+  `known_leaf_only`（通用词裸段名白名单，L1298+）两处显式登记机制；
+- 第 18 项据此从「阻断全盘判死」降级为分栏计数（代码读取 / 人读型登记 / 弱证据登记），
+  与本条「假阳性必须为零」的核心主张一致。
+⇒ 本条转为**常驻纪律**（`applied`），不再作为待办进入下一轮盘点。
+
 ---
 
 ## [LRN-20261022-002] correction
 
 **Logged**: 2026-10-22T21:45:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: manual-only
 **Area**: docs
 
 ### Summary
@@ -81,13 +113,23 @@ v3.14.0 回退阈值），根因统一为**多处各自定义 / 配了没人读*
 - First-Seen: 2026-10-22
 - Last-Seen: 2026-10-22
 
+### Resolution（v3.25.0 核实：人工纪律，不工具化）
+建议动作「断言"不存在"前查两个根（专家包 marketplace + 用户技能目录）」——
+v3.25.0 实测：`scripts/ensure_settings.py` 中**无**对应工具层实现
+（`rg 'skills' scripts/ensure_settings.py` 无命中），即该条**从未进入代码**。
+**定性为 `manual-only`**：它是**取证纪律**（"我说不存在"时必须给出查过的根），
+不是可自动判定的检查项——「某文件是否存在」本身是事实核查，交给工具反而会
+把"我查了 A、B 两处都没有"这个**证据链**降级成"工具说没有"。
+⇒ 保留为常驻人工纪律（每次诊断/取证时自问），不再作为待办。
+**配套措施**：本轮所有"不存在/未找到"结论均按此条附上**查过的根与命令**，可被他人复核。
+
 ---
 
 ## [LRN-20261022-003] best_practice
 
 **Logged**: 2026-10-22T21:45:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: applied
 **Area**: backend
 
 ### Summary
@@ -118,12 +160,22 @@ v3.12.0 修 Loop 状态的并发写缺陷时，我做了 `git stash` 对照实�
 - First-Seen: 2026-10-22
 - Last-Seen: 2026-10-22
 
+### Resolution（v3.25.0 核实：已落地并已制度化）
+建议动作「任何"修好了"的断言都要有一条能失败的测试证明它原本会失败」——
+v3.25.0 实测：包内**反例/对照护栏已成体系**（5 个测试文件含对照或反例验证）：
+- `scripts/test_dead_config_criteria.py` —— 第 18 项同名碰撞反例；
+- `scripts/test_arch_drift.py` —— 镜像块与旧口径复活检测；
+- `scripts/test_loop_state.py` —— 停等/冻结/预算触顶反例；
+- `scripts/test_insight_carrier.py`、`scripts/test_fix_md_image_refs.py` —— 合并/引用修复反例。
+且第 19/20 项体检的历史反例验证（改坏→应报警→恢复→应转绿）已写入代码注释。
+⇒ 本条转为**常驻纪律**（`applied`），不再作为待办。
+
 ---
 ## [LRN-20261024-001] best_practice
 
 **Logged**: 2026-10-24T20:40:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: applied
 **Area**: docs
 
 ### Summary
@@ -146,13 +198,27 @@ v3.17.0 新增「专家团动态坍缩」：route --domain 落盘 → collapse c
 - Tags: mechanism-wiring, end-to-end-assert, collapsed-expert
 - See Also: ERR-20261022-001
 
+### Resolution（v3.25.0 核实：已修复 —— 但**本条描述的缺陷位置需更正**）
+v3.25.0 主理人取证发现：本条描述的「装配链不读 `_collapse/`、零消费者」**已不成立**——
+消费端**存在**，且接线完整：
+- `scripts/assemble_domain_prompt.py` 已实现 `read_collapse_artifact()` /
+  `discover_collapse_artifacts()` / `pick_collapse_artifact()`，
+  并有 `--collapse-artifact` / `--run-dir` / `--workspace` 三个入参（L949+）；
+- 端到端护栏 `scripts/test_collapse_domain_render.py`（**9 例 T1–T9**，每例带反例）已覆盖
+  「route → collapse confirm → assemble」全链路。
+⚠ **注意**：`shared-core/assemble_spawn_prompt.py`（**另一份**装配器，非本包的）
+确实不读 `_collapse/` —— 但那是**别的专家团**的装配器，不是本条所说的链路。
+⇒ 本条**已修复**（v3.19.1·S1 批次），转为常驻纪律（`applied`），不再作为待办。
+**留下的价值**：本条确立的「机制类改动必须配端到端断言」这一要求，
+已被 v3.23.0 F3 的 `test_inject_notes_assertions.py`（9 例）继续执行。
+
 ---
 
 ## [LRN-20261026-001] best_practice
 
 **Logged**: 2026-10-26T22:20:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: applied
 **Area**: testing
 
 ### Summary
@@ -185,13 +251,21 @@ v3.17.0 新增「专家团动态坍缩」：route --domain 落盘 → collapse c
 - Related Files: scripts/ensure_settings.py, scripts/test_dead_config_criteria.py, scripts/test_dead_config_disposition.py
 - Tags: 静态判据, 路径级证据, 同名碰撞, 假绿, 反向例
 
+### Resolution（v3.25.0 核实：已落地）
+建议动作「静态判据型门禁上线前必须构造反向例证明它能失败」——
+v3.25.0 实测：`scripts/test_dead_config_criteria.py` 已按此要求建立
+「F1 反向例：同名碰撞不得造成假绿」，含 T1（同名撞车必须被检出）等用例，
+且与 `scripts/test_dead_config_disposition.py`（登记处置）配套。
+判据侧的三层证据（路径级 / 块级 / 弱证据）亦已落地于 `ensure_settings.py`。
+⇒ 本条转为**常驻纪律**（`applied`），不再作为待办。
+
 ---
 
 ## [LRN-20261026-002] gotcha
 
 **Logged**: 2026-10-26T22:20:00+08:00
 **Priority**: medium
-**Status**: pending
+**Status**: manual-only
 **Area**: tooling
 
 ### Summary
@@ -216,5 +290,17 @@ BSD grep 遇到不支持的分支表达式时**不报错、不输出**，退出�
 - Source: error
 - Related Files: scripts/inject_notes.py, scripts/ensure_settings.py
 - Tags: grep, macOS, BSD, 取证工具, 假绿, 可复核性
+
+### Resolution（v3.25.0 核实：人工纪律，不工具化）
+建议动作「取证阶段的『搜不到』必须用两种不同工具各验一次」——
+v3.25.0 实测：`scripts/*.py` 中**无**对应工具层实现
+（`rg 'grep -E|ripgrep' scripts/*.py` 零命中），即该条**从未进入代码**。
+**定性为 `manual-only`**：这是**取证方法**（用两个工具复核同一个"搜不到"），
+不是可自动判定的检查项——「某模式是否存在」是事实核查，
+把它自动化反而会丢掉"我用了哪两个工具"这个**可复核性证据**。
+⇒ 保留为常驻人工纪律，不再作为待办。
+**配套措施**：本轮所有"零命中/未找到"结论均附**工具名 + 命令**
+（如 `rg -n 'pattern' <path>` 与 `grep -E` 各一次），可被他人用另一工具复核。
+**已验证有效性**：v3.25.0 取证中，成员正是靠双工具复核避免了一次误报。
 
 ---

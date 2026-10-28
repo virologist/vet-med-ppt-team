@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.24.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.25.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -227,9 +227,26 @@ def _judge_sources(notes, where, keys):
         out[k] = {"source": ("回落内置值" if hit else "取自 yaml"), "note": hit}
     return out
 
-# yaml 缺失时的兜底（与 harness.yaml 同值；仅用于不阻断运行，且必须打印告警）
+# yaml 缺失时的兜底（与 harness.yaml **结构**同值；仅用于不阻断运行，且必须打印告警）
+# v3.25.0 漂移修复（结构级，经与 harness.yaml 逐键对账）：
+#   ① stages：删掉已废弃的 stage 5（六阶段残留）；gate 取值对齐 yaml 真值——
+#     原副本 0–5 全写 `user_confirm`，yaml 实为
+#     stage2=script_check / stage3=gate_script+verifier / stage4=three_source_check。
+#     ⚠ 这不是文案问题：gate 是**闸门执行方式**，副本漂移 ⇒ yaml 不可读时
+#     stage 2/3/4 的闸从「机器强制」退化成「人工确认」= 实质性护栏弱化。
+#   ② gate_exit_codes：删掉已废弃的 "5"（闸4.5，yaml 只有 0–4）。
+#     ⚠ 刻意**不**对齐 1–4 的文案（yaml 是长文案「P0 硬阻断——禁止写回…」，
+#     副本是短口径）：文案是解释性文字，天然长短不一；护栏只锁**结构**（键集），
+#     语义骨架由 `references/harness-engine.md#6` 的 GATE_EXIT_MIRROR 镜像块承载
+#     （与 test_arch_drift.py 的哨兵同范式）。
 _FALLBACK = {
-    "stages": {str(i): {"members": [], "gate": "user_confirm"} for i in range(6)},
+    "stages": {
+        "0": {"members": [], "gate": "user_confirm"},
+        "1": {"members": [], "gate": "user_confirm"},
+        "2": {"members": [], "gate": "script_check"},
+        "3": {"members": [], "gate": "gate_script+verifier"},
+        "4": {"members": [], "gate": "three_source_check"},
+    },
     "members": {},
     "routing": {},
     "fallback": {"max_spawn_attempts": 2, "on_unavailable": "degrade"},
@@ -244,7 +261,7 @@ _FALLBACK = {
                 "state_max_bytes": 32768, "state_allowed_keys": []},
     "observability": {"trace_file": ".workbuddy/harness_trace.jsonl"},
     "gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断",
-                        "4": "运行错误", "5": "闸4.5 三源核验未达标（v3.3.0）"},
+                        "4": "运行错误"},
 }
 
 
@@ -6643,7 +6660,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.24.0", "executable": __file__,
+    out = {"version": "v3.25.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -6973,7 +6990,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.24.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.25.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

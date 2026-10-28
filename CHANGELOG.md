@@ -6,6 +6,338 @@
 
 ---
 
+## [v3.25.0] - 2026-10-27（架构防漂移加固：测试隔离 + 第 18 项按段输出 + 文档守卫）
+
+> 依据：`02-design/v3.25.0-架构设计文档.md`（8 项「要做」+ 4 项「明确不做」+ 7 条 ADR）。
+> 核心命题：**假阳性必须为零**。本版所有新增判据均附**反例验证**（能红）+ **防误伤验证**（不红）。
+> 关键约束：`config/*.yaml` 是唯一真源；受守卫文档与守卫**同批落地**（中间态必红是刻意的）。
+
+### B1 · 测试隔离改造：9 处「就地改写生产 config」全部消除（+20 例）
+
+**病灶（真实缺陷，已实测复现）**：9 处测试用「就地改包内 `config/*.yaml` + `finally` 复位」。
+⚠ **`finally` 复位在并发下不成立**——它复位的是「**当时读到的内容**」，
+而那可能已被另一会话污染 ⇒ **污染被固化**。
+本轮实测到一次：`config/external-tools.yaml` 的 `knowledge_bases`
+被并发测试从 7 条清空并丢掉全部注释（与中间态**逐字节相同**）。
+
+**处置**：新增 `scripts/test_pkg_isolation.py` —— 隔离副本构造器 + 结构性静态守卫。
+- `make_isolated_pkg()` 构造 `<tmp>/plugins/vet-med-ppt-team` + `<tmp>/plugins/shared-core`（软链）；
+  ⚠ **布局硬约束**：副本必须与 shared-core **同级**（`assemble_spawn_prompt.py` shim 向上 ≤4 层找
+  `shared-core/`），且须一并拷 `.codebuddy-plugin/plugin.json`（装配器经 shared-core 的 `load_plugin()` 读它）
+  ⇒ 只拷 `config/`+`scripts/` 会让 27 个用例**假失败**。
+- `TestNoProductionWrite`：AST 扫全部 `scripts/test_*.py`，凡写盘接收者静态可判定为包内 `config/`
+  即判红 ⇒ **结构性守卫**，以后新增用例再犯同型自动判红。
+- 3 个既有测试文件（`test_external_tools.py` / `test_collapse_domain_render.py` /
+  `test_dead_config_disposition.py`）改为**改副本、跑副本**，**删除全部 `finally` 复位**。
+
+**踩坑留痕**：守卫首版写成 `(HERE / "test_*.py").glob("*.py")` —— 这是**字面路径**（含 `*`），
+glob 匹配不到任何文件 ⇒ 守卫「零命中恒绿」**假绿**；修正为 `HERE.glob("test_*.py")` 后立即报出 20 处真实违规。
+
+**⚠ 两个数字的口径（避免后人误判为自相矛盾）**：
+- **9 处** = **用例级**点位（设计文档 §2 F-1 的清点口径，逐个用例一行）；
+- **20 处** = **AST 写调用点级**（`write_text` / `unlink` 的调用点数，含每个用例内的
+  「改写 + finally 复位」两次写）。
+独立复核（对 HEAD 改造前版本跑包内探测器 `find_production_writes()`）：
+`test_collapse_domain_render.py` 6 处 + `test_external_tools.py` 8 处 +
+`test_dead_config_disposition.py` 6 处 = **20 个写调用点** ⇒ 与「20 处」一致。
+两数**各自成立**，只是统计粒度不同。
+
+**结果**：20 处原地写盘点全部消除；跑测前后 `git status config/` 为空，
+全部 `config/*.yaml` 与 HEAD **逐字节 sha256 相同** ⇒ 并发跑测基线从此可信。
+
+### B2 · 第 18 项按段输出 + 免检区段级登记表（39 段 / 1514 键）
+
+**病灶**：第 18 项（死配置巡检）只报**总数**（块级消费 1514 项）⇒ 人无法定位到「哪一段的哪个键」。
+
+**处置（纯输出层改动，判定路径逐字未动 ⇒ 假阳性增量恒为 0）**：
+- `ensure_settings.py` 抽出 `collect_block_segments()` / `segments_digest()` / `print_block_segments()`；
+  新增 `--dump-block-segments` 生成登记表骨架（`key_count` / `keys_sha256` **永不手写**）。
+- 新增 `references/inspection-zones.yaml`：**39 段 / 1514 键**的免检区（块级消费）登记表。
+  每段登记 `consumer`（脚本 22 / 脚本+会话层+主理人 11 / 会话层+主理人 6）与
+  `disposition`（新增键须登记 23 / 新增键须接线 10 / 禁止新增（冻结）6）。
+- 段键必须是 `<config 文件名>#<段前缀>`（ADR-6）—— 裸段名会把
+  `domain-profiles.yaml#domains`(794) 与 `domain_config.yaml#domains`(28) 合并成 822，
+  而两段的消费模型完全不同 ⇒ 合并登记会让「新增键处置规则」无法落地。
+- 守卫 R1–R6 + 3 条反例（段内加键 ⇒ digest 变红 / 登记幽灵段 ⇒ 检出 / 测试代码读取**不**构成消费）。
+
+**措辞纪律**：段清单**禁止**出现判红词（「死」「未接线」「异常」），一律用
+「免检区（块级消费）」「待人工定性候选」⇒ 清单不是判决书。
+
+### B3 · 文档守卫：`GATE_EXIT_MIRROR` + 人读视图表（+16 例）
+
+**病灶（真实缺陷，已实测复现）**：删掉 `config/harness.yaml#gate_exit_codes` 的 `4:` 行 ⇒
+体检 `rc=0`、全量 pytest **0 failed**，而 3 处 MD 仍在教成员「exit 4 = 运行错误」
+⇒ 退出码语义**静默退化**。
+且 `docs/architecture.md` 的「人读视图」表长期停在 stage 1 = `**并行**`，
+而 yaml 自 v3.17.0 起已改 `parallel: no`（伪并行修正）⇒ 文档在**直接教人做错的事**。
+
+**处置**：
+- `references/harness-engine.md` 新增 `GATE_EXIT_MIRROR` 哨兵块，**每行承载完整语义文本**，
+  与 yaml **逐字一致**（⚠ 不比长文案骨架——解释性文字天然长短不一，比对必造假阳性）。
+- `scripts/test_arch_drift.py` 新增三个测试类：
+  - `TestGateExitMirror`（G1 块可解析 / G2 **码集合双向相等** / G3 语义非空 / G4 语义**逐字**相等 /
+    G5 代码 fallback 码集 == yaml 码集 —— **默认关闭**，待 ADR-7 裁决）；
+  - `TestHumanReadStageTable`（**只比 3 列**：闸号 / 是否并行 / 门禁；
+    ⚠ 「名称」列**不比**——yaml 的 `stages.4.name` 带「（v3.3.0）」而人读表压缩掉了，逐字比必假阳性；
+    「干活的人」「为什么这么排」是散文，不比）；
+  - `TestTeamLeadExitCodePointer`（唯一源指针锚点存在性）。
+- 反例 12 条**全部固化**为回归用例（能红 10 条 + 防误伤 2 条）。
+
+**ADR-7 裁决落地**：代码 `_FALLBACK["gate_exit_codes"]` 的**第 5 码已删**（原 yaml 无产出者）
+⇒ fallback 与 yaml 对齐为 0–4 ⇒ `TEAMS_TOPOLOGY.md` 的「退出码 0-5」收敛为「0-4」。
+⇒ G5 断言**保持默认关闭**（裁决已落但守卫未启，待主理人确认后同批开启）。
+
+**踩坑留痕（两条工程纪律）**：
+① 反例若共用一个副本，mutation 会**累积** ⇒ 后一例的判红原因可能是前一例的脏数据 ⇒ 改为**每例全新副本**；
+② 反例子进程若跑**整个测试文件**，反例会**自举**（子进程里的反例又起子进程）⇒ 指数膨胀 + 死循环
+（实测 78 秒挂死）⇒ 子进程改为**只跑守卫类**（unittest 类名选择参数）。
+
+### B4 · 文档旧口径修正（7 处）
+
+| 文件 | 修正 |
+|---|---|
+| `docs/architecture.md` 人读视图表 | stage 1 名称改「闸2 设计（证据先行→蓝图·串行）」、「是否并行」改「**串行**」、理由按 yaml 注释改写 |
+| `docs/architecture.md` 并行判据小节 | 「并行判据 = members ≥ 2」→ 「= `stages[n].parallel` **显式声明**」 |
+| `docs/architecture.md` 同步清单第 5 条 | 改 `gate_exit_codes` → 同步 `GATE_EXIT_MIRROR` 块（守卫强制）；`delta_gate` **不复述** |
+| `README.md`（2 处） | stage 1 旧名 → 新名 |
+| `TEAMS_TOPOLOGY.md` | stage 1 旧名 → 新名；「退出码 0-5」→「0-4」 |
+| `agents/…-team-lead.md:79` | 「退出码语义唯一源 `references/harness-engine.md#6`」→ 「唯一源 = `config/harness.yaml#gate_exit_codes`；`harness-engine.md#6` 是其**人读镜像块**」 |
+
+### B5 · 样本登记 + 第 21 项纯函数化（承接 v3.25.0 前段）
+
+- `scripts/sample_fixtures.py` 样本定位层 + `references/sample-registry.md` 登记册；
+  跨学科真实样本（CDC Stacks `cdc/118221`，26 页，sha256 `ed217fc68e2fc818…`，`ooxml_lint` 0 ERROR / 35 WARN / rc=0）。
+- 第 21 项三源阈值断言**纯函数化**：`judge_threshold_runtime()` 把「取值 + 比对」抽成无副作用纯函数，
+  `None` ⇒ 判红不崩。
+- 第 25 项 harness fallback **结构比对**（只比 `gate_exit_codes` 键集 / `stages` 阶段集 / 共同阶段 `gate` 值，
+  **不比长文案**）。
+
+### B6 · 版本号 12 处同步升至 3.25.0
+
+`config/harness.yaml` · `config/domain_config.yaml` · `config/language-profile.yaml` ·
+`config/external-tools.yaml` · `references/result-envelope.yaml` ·
+`.codebuddy-plugin/plugin.json` · `.claude-plugin/plugin.json` ·
+`.codebuddy-plugin/marketplace.json` · `.claude-plugin/marketplace.json` ·
+`scripts/harness.py`（文件头 / doctor 常量 / argparse 描述）。
+
+### 验证
+
+- `pytest scripts/`：**452 passed / 1 skipped / 0 failed**（基线 422 ⇒ 净增 30 例）
+  —— 由**独立验证官**（agent-harness-tester）两轮复跑，均一致（369s / 517s）；
+  主理人侧第三轮独立复跑：**452 passed / 1 skipped / 0 failed / 11 subtests passed（590s）**
+- **独立验证报告**：`04-test/v3.25.0测试报告.md`（判定：阻断 **0** / 缺陷 **1** / 建议 **2**；
+  反例独立台 14/14 + 8/8 + 8/8 + 6/6 全绿；并发压力 2 路各 42 例全绿且生产 config 逐字节不变）
+- `ensure_settings.py`：**25 项中 23 项 ✓**；第 11 项 ⚠、第 23 项 ℹ（详见下方「残留」）⇒ **体检 rc=1**
+- 全部 `config/*.yaml` 与 HEAD **逐字节 sha256 相同**（跑测零污染；4 个文件的差异仅为 `version:` 行 3.24.0→3.25.0）
+- 反例 12 条**逐条实测**：能红 10 条（并行标记漂移 / 门禁列错 / 漏行 / yaml 删码 / yaml 加码 /
+  语义改一字 / 镜像块缺失 / 指针错位）、防误伤 2 条（只改散文不红）
+- G1/G4 **独立判红**已实测（语义改一字 ⇒ 只有 G4 红；镜像块缺失 ⇒ G1 红）
+- `scripts/test_dangling_script_ref.py` 三条双向护栏（D1 真悬空判红 / D2 已登记外部件不判红 / D3 真实包基线干净）
+- `packages/vet-med-ppt-team/` 镜像与包根 **零差异**（`diff -rq`）、`git status packages/` **零删除**
+- 末轮新增修复的验证：G5 开启后 **5 passed 真绿**（修复前必假红）；第 12 项 `rc=0` ✓；
+  sha256 软校验 **10 项纯逻辑验证全通过**（一致⇒无提示 / 不一致⇒有提示且含两值 / 豁免路径⇒无提示）
+- **⚠ 收口期环境裁定（重要，影响如何读上面的 pytest 数字）**：
+  本机 WorkBuddy broker 在收口时段**拦截了 pytest 自身所需的建目录动作**
+  （空白目录跑 `assert True` 亦报 `Brokered host mkdir`，exit 13）
+  ⇒ **收口时段内的 pytest 结果一律不可信**；上表 pytest 数字来自**收口前**的三轮正常复跑
+  （452 passed / 1 skipped / 0 failed，三轮一致：369s / 517s / 590s）。
+  收口段改用 **unittest 直跑**（不建临时目录 ⇒ 不触发 broker）复验，结论见 B10 的三重证据：
+  **失败 100% 为环境类，代码类失败 = 0** ⇒ 本版 5 项修复**未引入回归**。
+
+### 残留（如实登记）
+
+- **ADR-7 相关**：G5 断言默认关闭（fallback 已收敛为 0–4，但守卫未启，待主理人确认后同批开启）；
+  ⚠ v3.25.0 末轮已修其 **int/str 键类型假阳性**（见 B8·F1）⇒ 现在开启 G5 不会假红。
+- **第 23 项域绑定残留**：`references/sample-registry.md:108` 命中「禽」「禽流感」1 处（提示级·不阻断）；
+- **第 11 项旁路版本文件 2 个（体检 rc=1 的唯一来源）**：
+  - `M4A1_禽流感/高致病性禽流感防控_v9工作副本.pptx` —— 与主文件**逐字节相同**
+    ⇒ v9 已原地写回、仅未清理，属**真残留**；
+  - `M4A1_禽流感/高致病性禽流感防控_v10工作副本.pptx` —— 与主文件**内容不同**
+    ⇒ 在途新版本，**不是**违纪；
+  - ⚠ 二者均属**用户个人工作文件**，不在本包 git 内，**本轮不动**（移动/删除需用户明确授权）。
+    ⇒ 该项的 ⚠ 是**用户侧的真实信号**，不是本版缺陷；
+- **第 18 项「免检区」是登记而非判决**：1514 键中 211 键末段键名在代码中 0 出现，
+  属「待人工定性候选」，**不是**死配置；逐键定性工作量见 ADR-5（路径 A 已正式结案为 not-doing）；
+- 路径 B（运行时追踪）**未实现**（覆盖率是工作负载的函数，实测 70.3% ⇒ 绝不可作阻断判据）；
+- 跨学科样本**不随包分发**（对其他机器仍需外部提供）；v3.25.0 末轮已补 **sha256 软校验**
+  （见 B8·F3）⇒ 本机已有样本时可自动核对一致性（不一致**仅提示、不阻断**）。
+- **口径说明（两套数字并存，不是矛盾）**：设计文档 §2 F-3 记的「39 段 / 1489 键 / 204」
+  是**设计阶段探针口径**；落地登记表口径为「**39 段 / 1514 键 / 211**」
+  （`_collect_ast_reads` 新增 `if fn.startswith("test_"): continue` ⇒ **排除测试文件读取点**
+  ⇒ 键数上升）。**段数一致（39）**，键数差异**有据可查、非缺陷**。
+
+### B7 · 运行纪律补记：`TMPDIR` 不得指向包目录内（隔离副本会自我嵌套）
+
+`make_isolated_pkg()` 用 `shutil.copytree(PKG, 副本)` 拷贝**包内一切** ⇒ 若 `TMPDIR` 指向**包内**目录，
+副本里就带着那个目录，下一轮复制再拷一层 ⇒ **指数膨胀**。
+实测残留嵌套 **20+ 层**、路径长 909 字符 ⇒ 套件成片假红 + 超时。
+⇒ **用默认 TMPDIR**（`/var/folders/…/T`）。此纪律已写入 `INSTALL.md` / `UPGRADE.md` 的包外跑测约定。
+
+### B8 · 独立验证（agent-harness-tester）后修复的 3 项
+
+> 来源：`04-test/v3.25.0测试报告.md`（独立验证官，**未修改任何被验实现**）。
+> 判定：**阻断 0 / 缺陷 1 / 建议 2**。下列 3 项在本版内**全部修复**。
+
+- **F1 ·【缺陷】G5 断言 int/str 键类型假阳性 → 已修**
+  **根因**：yaml 的 `0:` 解析为 **int**，代码 `_FALLBACK` 的键是 **str**
+  ⇒ `set(int) != set(str)` ⇒ G5 **一旦开启即假红**（与「第二份真相是否收敛」无关）。
+  **修法**：`scripts/test_arch_drift.py` 的 G5 改为**键归一化为 str** 后再比
+  —— 与体检第 25 项（`ensure_settings.py` 同源判据）的既有做法**口径一致**
+  （此前两处口径不一致 ⇒ 第 25 项能过、其孪生守卫 G5 却不能）。
+  **验证**：临时开启 `ENABLE_FALLBACK_PARITY = True` 后 `TestGateExitMirror` → **5 passed 真绿**
+  ⇒ 修完后 G5 可安全开启（**断言本身仍保持默认关闭**，待主理人裁决）。
+- **F2 ·【建议】CHANGELOG「9 处 vs 20 处」口径自相矛盾 → 已补说明**（见 B1 的「两个数字的口径」）。
+- **F3 ·【建议】设计文档 §3.7「改动 4 · sha256 软校验」未落地 → 已落地**
+  **修法**：`scripts/sample_fixtures.py` 新增 `sha256_of()` / `check_cross_domain_sha256()`；
+  `test_ooxml_lint.py::T11` 在 `real` 分支做**只读比对**——
+  一致 ⇒ 打印 ✓；不一致 ⇒ **打印提示但不判红**（换机/换样本属正常情况 ⇒ 判红即假阳性）。
+  **护栏**：`scripts/test_sample_fixtures.py::TestCrossDomainSha256SoftCheck`（T7–T9）
+  —— 匹配 ⇒ 无提示（防假阳性）/ 不匹配 ⇒ 有提示且文本含两个哈希值与「不阻断」字样（防假绿）/
+  路径不存在或强制合成 ⇒ 无提示（不制造假提示）。
+
+### B9 · 末轮体检暴露的 2 项真缺陷（第 12 项）
+
+> 发现路径：**收口前跑全量体检**时第 12 项直接**抛异常中断**（不是判红，是崩溃）。
+> 两项都是**既有代码的潜伏缺陷**，与 v3.25.0 新增内容无直接因果，但被本版体检触发。
+
+- **F4 ·【缺陷·崩溃】第 12 项 `missing` 元组长度不一致 ⇒ `ValueError` 中断体检**
+  **根因**：`missing.append((cmd, "exception", str(e)[:80]))` 追加 **3 元组**，
+  而消费端 `for cmd, info in missing:` 按 **2 元组**解包 ⇒
+  `ValueError: too many values to unpack (expected 2)` ⇒ **体检在第 12 项直接崩掉**，
+  第 13–25 项**根本没跑**。
+  ⚠ 触发条件：`subprocess.run` 抛异常（超时 / 资源不足 / 进程被杀）——
+  正是「环境紧张」时 ⇒ 平时测不出来，一卡就崩。
+  **修法**：统一为 2 元组 `missing.append((cmd, f"exception: {str(e)[:80]}"))`。
+- **F5 ·【缺陷·假阳性】第 12 项「探测失败」被当成「实现缺失」⇒ 7 个假阳性**
+  **根因**：原实现对**每个** claimed 子命令都起 2 个子进程（13 个声称 ⇒ 26 个子进程）；
+  资源紧张时子进程超时 ⇒ `reg_names = set()` ⇒ **全部**命令被判「未在 doctor 表中」。
+  实测：doctor 实际注册 **23 个**子命令，白名单过滤后 13 个声称，差集为**空**
+  ⇒ 「7 个未实现」**全是假阳性**。
+  **修法**（两处）：
+  ① 只探测**一次** doctor（13×2 个子进程 → 1 个）；
+  ② **探测失败 ≠ 实现缺失**：doctor 探测受阻时，本项判「未判」并返回 0（提示级·不阻断）——
+  理由同「假阳性必须为零」：探测侧故障不能被当成实现侧缺陷。
+  **验证**：`check_doc_implementation_drift('.')` ⇒ `[12/25] ✓ 文档-实现一致：CHANGELOG 声称 13 个子命令，全部在 doctor 表中`，`rc=0`。
+
+### B10 · 运行环境纪律补记：broker 会拦 `os.mkdir`（测试随机失败的根因）
+
+本轮多次遇到 `PermissionError: Brokered host mkdir requires an available runtime file rule`：
+报错栈落在 WorkBuddy 自身 shim 层（`sitecustomize.py:508`），**不是**本包代码。
+⚠ **放行规则是动态的**：同一台机、同一命令，早先会话能放行、后续会话收紧
+⇒ 表现为「同一套测试**每次失败的用例集合都不同**」（实测两轮：先 T1/T2/T7、后 T3/T5b/T6/T8）。
+**判别法**：失败集合**每次都变** ⇒ 环境故障，不是代码回归
+（代码回归是**确定性**的：同一用例必挂）。
+⇒ 处置：① 用**纯逻辑验证**绕开需建目录的用例（本轮 sha256 软校验 10 项纯逻辑验证全通过）；
+② 需建目录的用例待 broker 放行后再补跑；③ **不要**为此改生产代码去迁就环境。
+
+**收口时的补充取证（三重独立证据，结论：pytest 路线整体不可用，非代码回归）**：
+
+| # | 探针 | 结果 | 说明 |
+|---|---|---|---|
+| 1 | **空白目录**跑最平凡的 `assert True` | `Brokered host mkdir requires an available runtime file rule`（exit 13） | pytest 在**收集阶段**就要建临时目录 ⇒ 连最平凡用例都跑不起来 ⇒ 此前任何 pytest 结果不可信 |
+| 2 | `test_sample_fixtures.py::T3b` 的完整 traceback | `File ".../shim/sitecustomize.py", line 774, in _brokered_path_mkdir` → `line 508, in _broker_request_host_operation` → `raise PermissionError` | 报错栈**全在 WorkBuddy 自身 shim 层**，本包代码只是调用方 |
+| 3 | 逐套件抓 traceback 根因分类 | `test_external_tools.py` 16 个失败**全部**为 `ENV_BROKER`（发生在 `setUpClass` 建隔离副本时），**代码类失败 = 0** | 失败集中在「**建目录**」这一动作上，与断言逻辑无关 |
+
+⇒ **结论**：全量回归的成片 F/E **100% 是环境故障**，**本轮 5 项修复未引入任何回归**。
+⇒ **替代验证路径**：`unittest` 直跑（不建临时目录 ⇒ 不触发 broker 拦截），
+由 `.workbuddy/run_unittest_all.py` 收集全部套件并按根因分类（环境类 / 代码类）。
+
+**⚠ 补记一条可复用纪律**：`settings.json` 被 git 追踪，而宿主热重载会吞掉它
+（本包 `ensure_settings.py` 第 1 项即为该文件的自愈逻辑，注释记「已丢失 5 次」）。
+⇒ 提交前若 `git status` 出现 `D settings.json`，**必须 `git checkout -- settings.json` 还原**，
+否则会把「宿主吞文件」这一**环境行为**误固化为「本版删除文件」。
+
+### B11 · 第 21 项「探测受阻」误判为断言失败（**假阳性**，已修）
+
+**现象**：收口体检时第 21 项报 🔴 阻断级——
+`budget check --kind three_source_pass` 输出非 JSON（stdout=`''`）。
+**定性反例（决定性）**：同一个被测产物，两种调用方式结论相反——
+
+| 调用方式 | 结果 |
+|---|---|
+| shell 直跑 `python3 scripts/harness.py budget check --kind three_source_pass` | **正常输出 JSON**（`value=0.8`、`config_source=config/domain_config.yaml#three_source_check.pass_threshold`、`rc=0`） |
+| 经 `subprocess.run` 跑同一命令 | `rc=4`、stdout 为空、stderr = `⛔ harness 运行异常：PermissionError: Brokered host mkdir requires an available runtime file rule` |
+
+⇒ 红色来自**环境**（宿主拦子进程建目录），不是被测代码。
+⇒ **原实现把「子进程起不来 / 输出非 JSON」一律记进 `runtime_bad` ⇒ 判红（阻断级）**，
+这正是「探测侧故障被当成被测侧缺陷」的假阳性。
+
+**修法**：拆成两条路径——
+① `runtime_bad`：**拿到合法 JSON 且值/来源确实对不上** ⇒ 判红（阻断级，判据不变）；
+② `probe_blocked`：**子进程起不来 / 输出非 JSON** ⇒ 判「**未判**」（ℹ 提示级·不阻断），
+并把子进程 stderr 首行带出来，便于分辨「宿主拦截」与「真异常」。
+
+**防假绿验证**（判据本身必须仍能判红，纯函数 5 反例全通过）：
+`judge_threshold_runtime()` 对「值不一致 / config_source=`_FALLBACK` /
+config_source 指向 `harness.yaml#budgets` / 运行时值为 `None`」**四种情形全部判红**，
+正常情形（值与来源都对）返回 `None` ⇒ **只放宽了探测受阻路径，未削弱真判据**。
+
+### B12 · 环境恢复后重测：**B10 的「pytest 整体不可用」结论已被推翻**（事实修正）
+
+B10 记录的环境故障在**收口次日复测时已不复存在**——broker 对 `os.mkdir` 的放行规则
+**确实是动态的**（B10 已预警），本节记录恢复后的实测，以**更新的事实**为准：
+
+| 探针 | B10 时（故障期） | 收口次日复测（环境恢复） |
+|---|---|---|
+| 空白目录跑最平凡 `assert True` | `Brokered host mkdir …`（exit 13） | **1 passed in 0.14s** ✅ |
+| `pytest scripts/` 收集 | 收集阶段即失败 | **456 tests collected in 1.16s** ✅ |
+| 解释器 | —— | `Python 3.13.12 + pytest 9.1.1`（`/Users/biodog/.workbuddy/binaries/python/versions/3.13.12/bin/python3`；⚠ `/opt/homebrew/bin/python3` 是 3.15 且**无 pytest**） |
+
+⇒ **决定性对照实验**（同环境、同解释器；HEAD 版用 `git worktree add --detach` 还原**完整包树**，
+避免「平铺 `scripts/*.py` 破坏 `PKG = Path(__file__).parent.parent`」导致结论失真）：
+
+| 对象 | 命令 | 结果 |
+|---|---|---|
+| **HEAD 版（v3.24.0）** | `pytest scripts/test_external_tools.py` | **16 passed in 115.75s** |
+| **当前版（v3.25.0）** | `pytest scripts/test_external_tools.py` | **16 passed in 99.64s** |
+
+⇒ **两版都通过 ⇒ 本轮 5 项修复未引入任何回归**（与 B10 的结论方向一致，但**证据等级提升**：
+从「根因分类推断」升级为「同环境两版对照实测」）。
+
+**⚠ 本节同时纠正一条容易误判的现象**：「全量跑到某个用例后长时间无输出」**不是**死锁：
+`test_external_tools.py` 含 **HTTP 通道探测**，单文件即需 **100–115 秒**；
+全量串行累积到该文件时，观察窗口若短于实际耗时，就会被**误读为挂死**。
+⇒ 判别法：**同一文件单独跑能过** ⇒ 是耗时，不是挂死；**只有两版都过才算回归证据**。
+
+### B13 · 体检第 21 项修复复验：🔴 → ✓
+
+B11 修完「探测受阻 ⇒ 误判断言失败」的假阳性后，在**环境已恢复**的条件下复验：
+
+```
+[21/25] ✓ 三源阈值单一数据源（harness.yaml 无重复声明；budget check 运行时值……
+         three_source_pass=0.8、three_source_sample=0.1 与 domain_config.yaml#three_source_check 一致）
+```
+
+⇒ 不仅**假阳性消失**，**真判据也真实通过**（运行时值与 yaml 真源一致）⇒ 修复未削弱判据。
+
+### B14 · 权威全量回归（环境恢复后）：**455 passed / 1 skipped / 0 failed** + 直跑式 74/74
+
+**执行方式**：新增 `.workbuddy/run_pytest_per_file.py`——**逐测试文件一个独立进程 + 硬超时**。
+
+**为什么必须逐文件**（实测教训）：
+① 整套 `pytest scripts/` 单进程串行会在**跨文件**处长时间无输出，且**失败点随机漂移**
+   （先后卡在 `test_collapse_domain_render.py::T8`、`test_external_tools.py::T11`）；
+② **同一文件单独跑全部通过** ⇒ 排除「用例级死锁」；
+③ 逐文件 ⇒ 结果**可归因到文件**，慢文件获得完整时间预算，且互不拖累。
+
+**结果**（30 个测试文件，29 OK / 1 见下）：
+
+| 项 | 值 |
+|---|---|
+| 用例合计 | **455 passed / 1 skipped / 0 failed / 0 errors / 0 timeout** |
+| 最慢文件 | `test_external_tools.py` 82–98s（HTTP 通道探测）、`test_arch_drift.py` 55–65s |
+| 唯一非 OK 文件 | `test_loop_state.py` — `rc=5, no tests ran` ⇒ **不是失败**，见下 |
+
+**`test_loop_state.py` 的定性（本轮新增登记，非回归）**：
+该文件**不含任何 `def test_*`**（用例写在 `main()` 里 ⇒ **直跑式**）⇒ pytest 收集不到。
+- 本轮**未改动**该文件（`git status` 无记录）⇒ **非本轮引入**；
+- 直跑验证：**`python3 scripts/test_loop_state.py` → 通过 74 / 失败 0**（含 NCBI 429 退避）；
+- ⇒ 补齐口径：**pytest 455 + 直跑式 74 = 529 项断言全通过，0 失败**。
+- ⚠ 遗留提示：`test_loop_state.py` 是**唯一**的直跑式测试文件 ⇒ pytest 覆盖有 1 个缺口，
+  体检第 7 项（直跑套件）已覆盖它，但**建议后续把它改写成 pytest 可发现的 `def test_*`**。
+
+---
+
 ## [v3.24.0] - 2026-10-27（登记缺口收口：3 处 skip 转真跑 + C5 判据落地 + V3 实测否决）
 
 > 依据：v3.23.1 之后的**残留盘点**（`.learnings/FEATURE_REQUESTS.md` 全量过账）。

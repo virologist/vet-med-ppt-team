@@ -40,7 +40,7 @@
                        ▼
               ┌──────────────────────────┐
               │ verify_deck.py (SSOT)     │
-              │ 退出码 0-5 语义已固化     │
+              │ 退出码 0-4 语义已固化     │
               └──────────────────────────┘
 ```
 
@@ -49,7 +49,7 @@
 | 闸 | 名称 | 必调成员 | gate 判据 |
 |---|---|---|---|
 | 0 | 闸1 任务冻结 | — | user_confirm |
-| 1 | 闸2 设计（蓝图∥证据）| dvm + pedagogy | user_confirm |
+| 1 | 闸2 设计（证据先行→蓝图·串行）| dvm + pedagogy | user_confirm |
 | 2 | 闸3 成稿（页表∥版式）| pedagogy + visual | script_check |
 | 3 | 闸4 交付（门禁+独立验证）| verifier | gate_script+verifier |
 | 4 | 闸4.5 案例三源核验（v3.3.0）| dvm + verifier | three_source_check |

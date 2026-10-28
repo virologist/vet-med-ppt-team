@@ -38,6 +38,7 @@ except ImportError:
 #   顶上，断言仍真跑。**降级类型显式登记，不静默**（见 `_resolve_decks()`）。
 from sample_fixtures import (  # noqa: E402
     build_synthetic_deck,
+    check_cross_domain_sha256,
     resolve_cross_domain_sample,
     resolve_real_samples,
 )
@@ -302,13 +303,33 @@ class TestOoxmlLint(unittest.TestCase):
             deck = build_synthetic_deck(self.tmpdir / "synth_cross_domain.pptx")
             kind, desc = "synthetic", f"{_CROSS_DESC} → 合成 fixture"
         print(f"\n[T11] 跨学科样本来源：{kind} — {desc}")
+        # v3.25.0（设计文档 §3.7 改动 4）：sha256 **软校验**——
+        #   与登记值（references/sample-registry.md）不一致 ⇒ **只打印提示，不判红**
+        #   （跨学科样本不随包分发，换机/换样本属正常情况 ⇒ 判红即假阳性）。
+        if kind == "real":
+            _sha_warn = check_cross_domain_sha256(deck)
+            if _sha_warn:
+                print(f"[T11] ⚠ {_sha_warn}")
+            else:
+                print("[T11] ✓ 跨学科样本 sha256 与登记值一致")
         runner = LintRunner(str(deck))
         rc = runner.run()
         # 不强求 exit 0（可能真有 ERROR，但说明跨学科场景可触发），
         # 关键是 lint 跑得通
         self.assertIn(rc, (0, 1), f"跨学科样本 lint 跑通（exit 0 或 1），实际 {rc}")
-        # 输出含 issues 即视为规则集覆盖
-        self.assertGreaterEqual(len(runner.issues), 0, "跨学科样本与动医样本共享同一规则集")
+        # v3.25.0：断言加强。原断言 `>= 0` 是**恒真式**（任何非负数都过）——
+        #   实测合成 fixture 分支 issues=0 也过 ⇒ T11 不检验任何 lint 规则。
+        #   改为：**真实样本**（自带底纹/文本）必触发规则集 ⇒ issues > 0；
+        #         **合成样本**（python-pptx 裸新建，干净）不强制 issues>0，但要求
+        #         runner.issues 结构可用（能产出列表 ⇒ 规则集真的执行了）。
+        if kind == "real":
+            self.assertGreater(
+                len(runner.issues), 0,
+                "真实跨学科样本应触发至少 1 条 lint 发现（0 条 ⇒ 规则集未真正执行）")
+        else:
+            self.assertIsInstance(
+                runner.issues, list,
+                "合成样本下 runner.issues 应为可用列表（规则集已执行）")
 
 
 @unittest.skipUnless(PPTX_OK, "python-pptx 未装")

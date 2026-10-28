@@ -40,6 +40,7 @@ HARNESS_YAML = PKG / "config" / "harness.yaml"
 
 sys.path.insert(0, str(HERE))
 import yaml  # noqa: E402
+from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg  # noqa: E402
 
 
 def _run(args, timeout=200):
@@ -50,22 +51,36 @@ def _run(args, timeout=200):
 class TestExternalTools(unittest.TestCase):
     """v3.19.0 外部工具链回归护栏。"""
 
-    #: v3.23.1 W5：类级基线快照（防上一轮测试运行的残留配置固化成本轮起点）。
-    _class_bak: str = None
+    #: v3.25.0：**隔离副本**（替代「就地改 + finally 复位」）。
+    #:
+    #: ⚠ 为什么改（真实缺陷，已实测复现）：
+    #:   原实现就地改写包内 `config/*.yaml`，靠 `finally` 复位。
+    #:   `finally` 复位的是「**当时读到的内容**」——并发下那可能已被另一会话污染
+    #:   ⇒ **污染被固化**（本轮实测到 `external-tools.yaml` 的 `knowledge_bases`
+    #:   被从 7 条清空并丢注释，与本文件 T3/T4 写出的中间态逐字节相同）。
+    #: ⇒ 改为「改副本、跑副本」⇒ 彻底取消复位这一步 ⇒ 无时序依赖。
+    _iso: Path = None
 
     @classmethod
     def setUpClass(cls):
-        cls._class_bak = EXT_CFG.read_text(encoding="utf-8")
+        cls._iso = make_isolated_pkg(prefix="vetmed-iso-exttools-")
+        # 副本内的对应路径（**只读**断言仍指真包，见 EXT_CFG 等模块常量）
+        cls.ext_cfg = cls._iso / "config" / "external-tools.yaml"
+        cls.lang_cfg = cls._iso / "config" / "language-profile.yaml"
+        cls.harness = cls._iso / "scripts" / "harness.py"
+        cls.probe = cls._iso / "scripts" / "probe_channels.py"
+        # 类级基线（**副本内**的干净内容）
+        cls._class_bak = cls.ext_cfg.read_text(encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
-        EXT_CFG.write_text(cls._class_bak, encoding="utf-8")
+        cleanup_isolated_pkg(cls._iso)
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        # 防跨轮污染固化：起点必须与干净基线一致
-        if EXT_CFG.read_text(encoding="utf-8") != self._class_bak:
-            EXT_CFG.write_text(self._class_bak, encoding="utf-8")
+        # 防跨测污染（**副本内**）：起点必须与干净基线一致
+        if self.ext_cfg.read_text(encoding="utf-8") != self._class_bak:
+            self.ext_cfg.write_text(self._class_bak, encoding="utf-8")
 
     # ── T1 结构完整 ─────────────────────────────────────────────
     def test_T1_config_structure(self):
@@ -84,19 +99,19 @@ class TestExternalTools(unittest.TestCase):
 
     # ── T2 反例：语言规格改坏 → delivery_language 报红 ───────────
     def test_T2_delivery_language_break_detected(self):
-        """T2【反例】：把 terminology.format 清空 → delivery_language 项必须报红。"""
+        """T2【反例】：把 terminology.format 清空 → delivery_language 项必须报红。
+
+        ⚠ v3.25.0：改**副本**（`self.lang_cfg`），跑**副本**的 harness
+          （`self.harness`）⇒ 不碰生产 config，**无复位步骤**。
+        """
         ws = self.tmp / "ws"
         ws.mkdir(parents=True, exist_ok=True)
-        bak = LANG_CFG.read_text(encoding="utf-8")
-        try:
-            data = yaml.safe_load(bak)
-            data["terminology"]["format"] = ""
-            LANG_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-            rc, out, _ = _run([str(HARNESS), "gate1-check", "--workspace", str(ws)])
-            self.assertNotEqual(rc, 0, "语言规格被改坏后 gate1-check 仍通过——判据是假的")
-            self.assertIn("delivery_language", out)
-        finally:
-            LANG_CFG.write_text(bak, encoding="utf-8")
+        data = yaml.safe_load(self.lang_cfg.read_text(encoding="utf-8"))
+        data["terminology"]["format"] = ""
+        self.lang_cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        rc, out, _ = _run([str(self.harness), "gate1-check", "--workspace", str(ws)])
+        self.assertNotEqual(rc, 0, "语言规格被改坏后 gate1-check 仍通过——判据是假的")
+        self.assertIn("delivery_language", out)
 
     def test_T2b_delivery_language_ok(self):
         """T2b 正例：配置完好时 delivery_language 项就绪。"""
@@ -109,36 +124,41 @@ class TestExternalTools(unittest.TestCase):
 
     # ── T3 反例：外部工具配置改坏 → knowledge_channel 报红 ───────
     def test_T3_knowledge_channel_break_detected(self):
-        """T3【反例】：把 external-tools.yaml 改名（模拟配置缺失）→ knowledge_channel 报红。"""
+        """T3【反例】：把 external-tools.yaml 改名（模拟配置缺失）→ knowledge_channel 报红。
+
+        ⚠ v3.25.0：改**副本**。原实现是 `EXT_CFG.unlink()`——**删除生产文件**，
+          再靠 finally 写回（并发下会固化污染态）。
+          副本内改为**改名**（`external-tools.yaml.bak`）：
+          同样表达「配置缺失」，但**不删除任何文件** ⇒ 即使副本构造失败也不伤生产。
+        """
         ws = self.tmp / "ws3"
         ws.mkdir(parents=True, exist_ok=True)
-        bak = EXT_CFG.read_text(encoding="utf-8")
+        renamed = self.ext_cfg.with_suffix(".yaml.bak")
+        self.ext_cfg.rename(renamed)
         try:
-            EXT_CFG.unlink()
-            rc, out, _ = _run([str(HARNESS), "gate1-check", "--workspace", str(ws)])
+            rc, out, _ = _run([str(self.harness), "gate1-check", "--workspace", str(ws)])
             self.assertNotEqual(rc, 0, "外部工具配置缺失时 gate1-check 仍通过")
             self.assertIn("knowledge_channel", out)
         finally:
-            EXT_CFG.write_text(bak, encoding="utf-8")
+            renamed.rename(self.ext_cfg)
 
     # ── T4 反例：库属其他专业 → scope_mismatch 阻断 ─────────────
     def test_T4_scope_mismatch_blocks(self):
-        """T4【反例】：把某库的 owner_scope 改成别的专业 → 探针必须报 scope_mismatch。"""
-        bak = EXT_CFG.read_text(encoding="utf-8")
-        try:
-            data = yaml.safe_load(bak)
-            data["knowledge_bases"][0]["owner_scope"] = "computing"
-            EXT_CFG.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-            rc, out, _ = _run([str(PROBE), "--domain", "animal-medicine"])
-            d = json.loads(out)
-            self.assertTrue(d.get("scope_mismatches"),
-                            "库属其他专业却未报 scope_mismatch——判据是假的")
-            self.assertEqual(rc, 1, "scope 冲突应返回 rc=1（阻断级）")
-            blocks = [s for s in d.get("replace_suggestions") or []
-                      if s.get("severity") == "block"]
-            self.assertTrue(blocks, "scope 冲突未产出 block 级提醒")
-        finally:
-            EXT_CFG.write_text(bak, encoding="utf-8")
+        """T4【反例】：把某库的 owner_scope 改成别的专业 → 探针必须报 scope_mismatch。
+
+        ⚠ v3.25.0：改**副本**（`self.ext_cfg`），跑**副本**的探针（`self.probe`）。
+        """
+        data = yaml.safe_load(self.ext_cfg.read_text(encoding="utf-8"))
+        data["knowledge_bases"][0]["owner_scope"] = "computing"
+        self.ext_cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        rc, out, _ = _run([str(self.probe), "--domain", "animal-medicine"])
+        d = json.loads(out)
+        self.assertTrue(d.get("scope_mismatches"),
+                        "库属其他专业却未报 scope_mismatch——判据是假的")
+        self.assertEqual(rc, 1, "scope 冲突应返回 rc=1（阻断级）")
+        blocks = [s for s in d.get("replace_suggestions") or []
+                  if s.get("severity") == "block"]
+        self.assertTrue(blocks, "scope 冲突未产出 block 级提醒")
 
     # ── T5 L1/L2 分层契约 ──────────────────────────────────────
     def test_T5_mcp_channels_are_L2(self):

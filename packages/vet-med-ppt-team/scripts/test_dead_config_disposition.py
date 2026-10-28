@@ -181,28 +181,44 @@ class TestDeadConfigDisposition(unittest.TestCase):
 
         同时验证守卫的 **YAML int 键归一化**（`0:` 被解析成 int，
         不归一化会恒取到 None 而误报漂移——本守卫首版即踩此坑）。
+
+        ⚠ **v3.25.0：改隔离副本，不改生产 config**。
+          原实现就地改写包内 `config/harness.yaml` 再 `finally` 复位——
+          复位的是「当时读到的内容」，并发下可能已被污染 ⇒ **污染被固化**
+          （而 harness.yaml 是**阶段真源**，被污染会直接让第 24 项误判）。
+          `check_stage_order_drift(expert_dir)` 只按 `expert_dir` 取 config
+          ⇒ 直接传副本根即可，**无需 monkeypatch**。
         """
         import yaml
-        bak = HARNESS_YAML.read_text(encoding="utf-8")
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
+
+        iso = make_isolated_pkg(prefix="vetmed-iso-stageord-")
         try:
-            cfg = yaml.safe_load(bak)
+            hy = iso / "config" / "harness.yaml"
+            cfg = yaml.safe_load(hy.read_text(encoding="utf-8"))
             cfg["stages"][2]["next"] = 5
-            HARNESS_YAML.write_text(
+            hy.write_text(
                 yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
                 encoding="utf-8")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 es2 = _load_es()
-                rc = es2.check_stage_order_drift(str(PKG))
+                rc = es2.check_stage_order_drift(str(iso))
             self.assertEqual(rc, 1, "注入漂移后第 24 项未报红（守卫失效）")
             self.assertIn("stages.2.next=5", buf.getvalue(),
                           "报错信息未指出具体漂移项")
-        finally:
-            HARNESS_YAML.write_text(bak, encoding="utf-8")
+            # 复原对照（副本内）⇒ 归绿 ⇒ 证明判红确由注入引起，不是恒红
+            hy.write_text(
+                yaml.safe_dump(yaml.safe_load(
+                    (PKG / "config" / "harness.yaml").read_text(encoding="utf-8")),
+                    allow_unicode=True, sort_keys=False),
+                encoding="utf-8")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc2 = _load_es().check_stage_order_drift(str(PKG))
+                rc2 = _load_es().check_stage_order_drift(str(iso))
             self.assertEqual(rc2, 0, "复原后第 24 项未归绿——配置可能未还原")
+        finally:
+            cleanup_isolated_pkg(iso)
 
     # ── T4：75 键定性后的预期残留 ───────────────────────────────────────
     def test_T4_no_residual_dead_keys(self):
@@ -261,28 +277,24 @@ class TestBClassWiring(unittest.TestCase):
 
         这条是防「改配置不改行为」的**决定性判据**——若有人把接线改回硬编码，
         本测试立刻红。
+
+        ⚠ **v3.25.0：删除写盘动作（死代码）**。
+          `m.license_uncertain_markers(cfg)` 的入参 `cfg` 是**调用方传入的 dict**，
+          函数**从不读文件** ⇒ 原实现的 `p.write_text(...)` 与断言**完全无关**
+          （纯副作用）。既无判别力，又在并发下污染生产 config。
+          ⇒ 改为：只在内存里构造 cfg 副本传给函数，**一个字节都不写盘**。
         """
         import importlib.util
         spec = importlib.util.spec_from_file_location("foa", PKG / "scripts" / "fetch_oa_image.py")
         m = importlib.util.module_from_spec(spec)
         sys.modules["foa"] = m
         spec.loader.exec_module(m)
-        p = PKG / "config" / "domain_config.yaml"
-        bak = p.read_text(encoding="utf-8")
-        try:
-            import yaml
-            cfg = yaml.safe_load(bak)
-            cfg["image_fetch"]["license_uncertain_markers"] = ["待核实", "授权待确认"]
-            p.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-            marks, _ = m.license_uncertain_markers(cfg)
-            self.assertEqual(marks, ("待核实", "授权待确认"),
-                             "改 yaml 后读到的值未变——接线被改回硬编码了")
-        finally:
-            p.write_text(bak, encoding="utf-8")
-            marks2, _ = m.license_uncertain_markers(
-                yaml.safe_load(p.read_text(encoding="utf-8")))
-            self.assertEqual(marks2, ("待核实", "未明", "未知", "待定"),
-                             "复原后未归位——配置可能未还原")
+        import yaml
+        cfg = yaml.safe_load((PKG / "config" / "domain_config.yaml").read_text(encoding="utf-8"))
+        cfg["image_fetch"]["license_uncertain_markers"] = ["待核实", "授权待确认"]
+        marks, _ = m.license_uncertain_markers(cfg)
+        self.assertEqual(marks, ("待核实", "授权待确认"),
+                         "改 yaml 后读到的值未变——接线被改回硬编码了")
 
     def test_T6_gate_default_levels_from_yaml(self):
         """T6 正例：sweep/gate 的默认门禁等级从 yaml 读。
@@ -306,25 +318,38 @@ class TestBClassWiring(unittest.TestCase):
                              f"{key} 读取时产生告警——说明没真读到 yaml（走了回退）")
 
     def test_T6b_reverse_example_gate_level_yaml_change_propagates(self):
-        """T6b 反例：改 yaml 的 deliver_gate_level ⇒ 默认等级必须跟着变。"""
+        """T6b 反例：改 yaml 的 deliver_gate_level ⇒ 默认等级必须跟着变。
+
+        ⚠ **v3.25.0：改隔离副本**（原实现就地改写包内 `config/visual-rules.yaml`
+          再 `finally` 复位 ⇒ 并发下污染被固化）。
+          `_default_gate_level` 用模块级 `PKG` 拼路径 ⇒ 只需把副本的 harness 模块
+          的 `PKG` 指向副本根（**同文件 T7 的既有范式**，见 `:338-350`）。
+        """
         import importlib.util
-        spec = importlib.util.spec_from_file_location("h", PKG / "scripts" / "harness.py")
-        m = importlib.util.module_from_spec(spec)
-        sys.modules["h"] = m
-        spec.loader.exec_module(m)
-        p = PKG / "config" / "visual-rules.yaml"
-        bak = p.read_text(encoding="utf-8")
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
+
+        iso = make_isolated_pkg(prefix="vetmed-iso-gatelevel-")
         try:
+            spec = importlib.util.spec_from_file_location("h_iso", iso / "scripts" / "harness.py")
+            m = importlib.util.module_from_spec(spec)
+            sys.modules["h_iso"] = m
+            spec.loader.exec_module(m)
+            # 副本的 harness 模块 PKG → 副本根
+            m.PKG = str(iso)
+            p = iso / "config" / "visual-rules.yaml"
             import yaml
-            cfg = yaml.safe_load(bak)
+            cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
             cfg["gate"]["deliver_gate_level"] = "P1"
             p.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
             self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "P1",
                              "改 yaml 后默认等级未变——argparse 又被写回硬编码了")
-        finally:
-            p.write_text(bak, encoding="utf-8")
+            # 复原对照（副本内）⇒ 归位 ⇒ 证明判红确由该注入引起
+            p.write_text((PKG / "config" / "visual-rules.yaml").read_text(encoding="utf-8"),
+                         encoding="utf-8")
             self.assertEqual(m._default_gate_level("deliver_gate_level", "all"), "all",
                              "复原后未归位——配置可能未还原")
+        finally:
+            cleanup_isolated_pkg(iso)
 
     def test_T7_gate_level_fallback_warns_not_silent(self):
         """T7：yaml 读不到/值非法时**回落并告警**，不静默。"""
@@ -348,6 +373,238 @@ class TestBClassWiring(unittest.TestCase):
                             "读不到时必须告警（不静默）")
         finally:
             m.PKG = str(PKG)
+
+
+class TestInspectionZoneRegistry(unittest.TestCase):
+    """T8–T12：免检区（块级消费段）登记表守卫（R1–R6）。
+
+    背景（v3.25.0 实测）：
+      第 18 项的静态判据对「父级被代码整块取走」的键**无法逐键确认**
+      ⇒ 这些键落在**免检区**（实测 39 段 / 1489 键 / 204 键末段键名 0 出现）。
+      改造前只报一个**总数** ⇒ 人工无法复核、无法行动。
+      改造后 `references/inspection-zones.yaml` 把免检区变成**可行动清单**：
+      每段登记「消费方」+「新增键处置规则」+「键集合指纹」。
+
+    守卫断言集（每条都有反例，防假绿）：
+      R1  登记表存在且含**全部**实时段（缺文件/缺段 ⇒ FAIL，不是 SKIP）
+      R2  登记的段在实时 config 中**仍存在**
+      R3  实时叶子路径集合 digest == 登记 `keys_sha256`（**集合相等** ⇒ 段内增/删/改名任一 ⇒ 判红）
+      R4  实时 `key_count` == 登记 `key_count`（与 R3 交叉核对，防只改一个字段）
+      R5  实时段集合 == 登记段集合（**双向** ⇒ 新段未登记 / 登记了不存在的段 ⇒ 判红）
+      R6  `consumer` / `disposition` ∈ 枚举（格式越界即判红——格式破坏属真问题）
+
+    ⚠ **为什么 R3/R5 是「段级增量守卫」**：
+      R3 比的是「段内叶子路径**集合**是否变化」，不是「谁读了它」
+      ⇒ 不需要叶子级白名单（那等于又一份声明源）
+      ⇒ 段内新增一个键 ⇒ 必红 ⇒ 必须显式登记处置规则（新增键须登记/须接线/禁止新增）。
+    """
+
+    REGISTRY = PKG / "references" / "inspection-zones.yaml"
+
+    #: `consumer` 允许取值（枚举校验用）
+    #: ⚠ 「脚本+会话层+主理人」是**三者齐备**的形态，与「三者兼有」同义；
+    #:   保留两个写法是为了让登记能精确表达「部分命中」与「全部命中」两种常见情况，
+    #:   避免为 11 段各造一个生僻词（生僻词 = 枚举漂移的温床）。
+    CONSUMERS = {
+        "脚本", "会话层", "主理人",
+        "脚本+会话层", "脚本+主理人", "会话层+主理人",
+        "脚本+会话层+主理人", "三者兼有",
+    }
+    #: `disposition` 允许取值
+    DISPOSITIONS = {"新增键须登记", "新增键须接线", "禁止新增（冻结）"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.es = _load_es()
+        cls.live = cls.es.collect_block_segments(str(PKG))
+        import yaml
+        cls.reg = yaml.safe_load(cls.REGISTRY.read_text(encoding="utf-8"))
+
+    # ── R1：登记表存在且含全部实时段 ─────────────────────────────
+    def test_T8_registry_file_exists_and_covers_all_segments(self):
+        """R1：登记表必须存在、可解析，且**覆盖全部**实时免检区段。"""
+        self.assertTrue(self.REGISTRY.is_file(),
+                        f"缺 {self.REGISTRY}——它是 v3.25.0 新增的必交付物")
+        self.assertIsInstance(self.reg, dict)
+        segs = self.reg.get("segments")
+        self.assertIsInstance(segs, list, "登记表缺 segments 列表")
+        reg_ids = {s.get("id") for s in segs}
+        live_ids = set(self.live)
+        missing = live_ids - reg_ids
+        self.assertEqual(missing, set(),
+                         f"以下实时免检区段未登记（{len(missing)} 段）：{sorted(missing)}")
+        self.assertEqual(len(segs), len(live_ids),
+                         f"登记表段数 {len(segs)} ≠ 实时段数 {len(live_ids)}")
+
+    # ── R2/R3/R4/R5：逐段核对 ───────────────────────────────────
+    def test_T9_registry_segments_match_live(self):
+        """R2+R3+R4+R5：登记的每段都必须与实时状态**完全一致**。"""
+        problems = []
+        for s in self.reg.get("segments") or []:
+            sid = s.get("id")
+            live = self.live.get(sid)
+            if live is None:
+                problems.append(f"{sid}：登记的段在实时 config 中**不存在**（R2）")
+                continue
+            # R3：键集合 digest（集合相等 ⇒ 段内增/删/改名任一 ⇒ 判红）
+            live_sha = self.es.segments_digest(live["keys"])
+            if live_sha != s.get("keys_sha256"):
+                problems.append(
+                    f"{sid}：键集合已变（登记 {s.get('keys_sha256')} ≠ 实时 {live_sha}）"
+                    f"——段内新增/删除/改名了键，请更新登记表或显式处置该新增键（R3）")
+            # R4：键数（与 R3 交叉核对，防只改一个字段）
+            if int(live and len(live["keys"])) != int(s.get("key_count", -1)):
+                problems.append(
+                    f"{sid}：键数不一致（登记 {s.get('key_count')} ≠ "
+                    f"实时 {len(live['keys'])}）（R4）")
+        # R5：双向集合相等
+        reg_ids = {s.get("id") for s in self.reg.get("segments") or []}
+        live_ids = set(self.live)
+        for sid in sorted(reg_ids - live_ids):
+            problems.append(f"{sid}：登记了但实时**不存在**该段（R5）")
+        for sid in sorted(live_ids - reg_ids):
+            problems.append(f"{sid}：实时存在但**未登记**（R5）")
+        self.assertEqual(problems, [],
+                         "免检区登记表与实时 config 不一致：\n"
+                         + "\n".join(f"  · {p}" for p in problems))
+
+    # ── R6：枚举校验 ────────────────────────────────────────────
+    def test_T10_registry_enums_valid(self):
+        """R6：`consumer` / `disposition` 必须落在枚举内。"""
+        bad = []
+        for s in self.reg.get("segments") or []:
+            sid = s.get("id")
+            if s.get("consumer") not in self.CONSUMERS:
+                bad.append(f"{sid}：consumer={s.get('consumer')!r} 不在枚举内")
+            if s.get("disposition") not in self.DISPOSITIONS:
+                bad.append(f"{sid}：disposition={s.get('disposition')!r} 不在枚举内")
+            for f in ("file", "prefix", "note"):
+                if not s.get(f):
+                    bad.append(f"{sid}：{f} 为空")
+        self.assertEqual(bad, [],
+                         "登记表字段越界（格式破坏属真问题）：\n"
+                         + "\n".join(f"  · {b}" for b in bad))
+
+    # ── 反例 A（能失败）：段内新增键 ⇒ R3 判红 ───────────────────
+    def test_T11_reverse_example_new_key_in_segment_trips_r3(self):
+        """T11 反例：在免检区段里加一个键 ⇒ R3（digest）必须判红。
+
+        这是「段级增量守卫」的核心价值证明：
+        没有 R3，段内新增一个没人读的键**永远不会被发现**。
+        ⚠ 全程在**隔离副本**上做（不碰生产 config）。
+        """
+        import shutil
+        import tempfile
+        import yaml
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
+
+        iso = make_isolated_pkg(prefix="vetmed-iso-zones-")
+        try:
+            es_iso = _load_es_on(iso)
+            live = es_iso.collect_block_segments(str(iso))
+            sid = "harness.yaml#budgets"
+            self.assertIn(sid, live, "样例段不存在（免检区结构变了？）")
+            before = live[sid]["keys"]
+
+            # 在副本的该段下加一个新键
+            hy = iso / "config" / "harness.yaml"
+            cfg = yaml.safe_load(hy.read_text(encoding="utf-8"))
+            cfg["budgets"]["__probe_zone_new_key"] = True
+            hy.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+                          encoding="utf-8")
+
+            live2 = es_iso.collect_block_segments(str(iso))
+            after = live2[sid]["keys"]
+            self.assertNotEqual(before, after, "新键未进入免检区段键集合——判据失效")
+            self.assertEqual(len(after), len(before) + 1,
+                             f"新键未计入：{len(before)} → {len(after)}")
+            # digest 必须变化 ⇒ R3 会判红
+            self.assertNotEqual(es_iso.segments_digest(before),
+                                es_iso.segments_digest(after),
+                                "新键加入后 digest 未变——R3 失效（假绿）")
+        finally:
+            cleanup_isolated_pkg(iso)
+
+    # ── 反例 B（能失败）：登记了不存在的段 ⇒ R2/R5 判红 ─────────
+    def test_T12_reverse_example_phantom_segment_detected(self):
+        """T12 反例：登记一个**不存在**的段 ⇒ R2/R5 必须判红。
+
+        没有这条，登记表会逐渐积累「僵尸声明」而不被发现。
+        """
+        import yaml
+        reg = yaml.safe_load(self.REGISTRY.read_text(encoding="utf-8"))
+        reg.setdefault("segments", []).append({
+            "id": "foo.yaml#bar", "file": "foo.yaml", "prefix": "bar",
+            "key_count": 1, "keys_sha256": "0" * 40, "leaf_unused": 0,
+            "consumer": "脚本", "disposition": "新增键须登记", "note": "探针",
+        })
+        self.assertNotIn("foo.yaml#bar", self.live,
+                         "探针段竟真实存在——反例前提失效")
+        # R2：登记的段在实时 config 中不存在 ⇒ 必须能被检出
+        phantom = [s for s in reg["segments"] if s["id"] not in self.live]
+        self.assertTrue(phantom, "未检出幽灵段——R2 失效（假绿）")
+        # R5：登记集合 ≠ 实时集合 ⇒ 必须不等
+        self.assertNotEqual({s["id"] for s in reg["segments"]}, set(self.live),
+                            "集合竟相等——R5 失效（假绿）")
+
+
+# ── 反例 C（能失败）：测试文件里的读取点**不得**算作「有读取者」 ──
+    def test_T13_reverse_example_test_file_reads_do_not_count(self):
+        """T13 反例：**测试文件**里的 `cfg.get("x")` 不得让 `x` 获得读取证据。
+
+        病灶（v3.25.0 实测复现）：
+          第 18 项的 AST 读取集原本扫**全部** `scripts/*.py`（含 `test_*.py`）
+          ⇒ 在测试里写一行 `cfg["a"]["x"]` 就能让死配置门对 `x` **假绿**。
+          实测：隔离副本的 `harness.yaml#budgets` 下加 `__probe_zone_new_key`，
+          仅因本守卫测试文件里写了那一句，该键就获得**路径级证据**（`_a_path`）
+          ⇒ 不进免检区 ⇒ 守卫完全看不见。
+
+        本用例把这个漏洞**钉死**：测试文件里的读取**不构成消费**。
+        ⚠ 全程在**隔离副本**上做（不碰生产 config）。
+        """
+        import yaml
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
+
+        iso = make_isolated_pkg(prefix="vetmed-iso-testread-")
+        try:
+            es_iso = _load_es_on(iso)
+            live = es_iso.collect_block_segments(str(iso))
+            sid = "harness.yaml#budgets"
+            self.assertIn(sid, live, "样例段不存在（免检区结构变了？）")
+            before = list(live[sid]["keys"])
+
+            # 在副本的该段下加一个新键
+            hy = iso / "config" / "harness.yaml"
+            cfg = yaml.safe_load(hy.read_text(encoding="utf-8"))
+            cfg["budgets"]["__probe_test_read_key"] = True
+            hy.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+                          encoding="utf-8")
+
+            # 关键：副本的 scripts/ 下**放一个测试文件**，里面读取该键
+            probe = iso / "scripts" / "test_probe_reader.py"
+            probe.write_text(
+                'def _f(cfg):\n'
+                '    return cfg["budgets"]["__probe_test_read_key"]\n',
+                encoding="utf-8")
+
+            live2 = es_iso.collect_block_segments(str(iso))
+            after = live2[sid]["keys"]
+            self.assertNotEqual(before, after,
+                                "新键未进入免检区段键集合——判据失效")
+            self.assertEqual(len(after), len(before) + 1,
+                             f"新键未计入：{len(before)} → {len(after)}")
+        finally:
+            cleanup_isolated_pkg(iso)
+
+
+def _load_es_on(pkg_root):
+    """按路径加载指定包根下的 ensure_settings.py（隔离副本用）。"""
+    spec = importlib.util.spec_from_file_location(
+        "es_zones_tmp", Path(pkg_root) / "scripts" / "ensure_settings.py")
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["es_zones_tmp"] = m
+    spec.loader.exec_module(m)
+    return m
 
 
 if __name__ == "__main__":

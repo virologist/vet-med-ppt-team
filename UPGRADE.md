@@ -38,12 +38,12 @@ git push  → GitHub  virologist/vet-med-ppt-team
 
 修改 `agents/*.md` 或 `plugin.json` 后，**WorkBuddy 热重载会吞掉 `settings.json`**（已复现 5 次）。同时 `validate_expert.py` 只校验 `.codebuddy-plugin/plugin.json`，不查 `.claude-plugin/plugin.json` —— 两端版本漂移从未被官方工具发现（2026-09-17 实证 v1.4.1→v1.5.1 漂移 2 个小版本）。
 
-故 `scripts/ensure_settings.py` 已升级为 doctor：23 项体检 + 1 项自愈。**任一告警都必须先处理再发布**：
+故 `scripts/ensure_settings.py` 已升级为 doctor：**25 项体检 + 1 项自愈**（v3.25.0 起为 25 项）。**任一告警都必须先处理再发布**：
 
 ```bash
 cd ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
 
-# 5. 【必做】doctor 23 项（settings.json 自愈 + 版本/agent/门禁等只读告警）
+# 5. 【必做】doctor 25 项（settings.json 自愈 + 版本/agent/门禁等只读告警）
 python3 scripts/ensure_settings.py
 #   退出码 0 = 全绿可发布；非 0 = 有告警必须先处理
 #   ⚠️ 全量体检含第 7 项「回归测试」——**会串行跑 scripts/ 下全部 test_*.py**
@@ -226,6 +226,37 @@ echo '{"agent": "vet-med-ppt-team-team-lead"}' > \
 cp packages/vet-med-ppt-team/settings.json \
    ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team/
 ```
+
+---
+
+## ⚠️ 在包外跑测试的布局约定（v3.25.0 实测踩坑）
+
+本包**不自带**联邦共享件 `shared-core/`，它只存在于安装态/仓库结构下
+（`~/.workbuddy/plugins/marketplaces/my-experts/plugins/shared-core`）。
+两个硬依赖，缺任一 ⇒ 用例**假失败**（不是真缺陷）：
+
+| # | 依赖 | 后果 | 满足方式 |
+|---|---|---|---|
+| 1 | 副本必须与 `shared-core` **同级** | `scripts/assemble_spawn_prompt.py`（联邦 shim）按「包根向上 ≤4 层」找 `shared-core/assemble_spawn_prompt.py` ⇒ 找不到即报「shared-core 缺失」 | 布局 `<某目录>/plugins/vet-med-ppt-team` + `<某目录>/plugins/shared-core` |
+| 2 | 必须保留 `.codebuddy-plugin/plugin.json` | `scripts/assemble_domain_prompt.py` 经 shared-core 的 `load_plugin()` 读它 ⇒ 装配不出域上下文 | 拷贝时连 `.codebuddy-plugin/` 一起拷 |
+
+包内 `scripts/test_pkg_isolation.py::make_isolated_pkg()` **已按此布局实现**（自动建 shared-core 软链），
+用它造隔离副本就不会踩。详见 `INSTALL.md` 的同名问答。
+
+### ⚠️ 第三个硬约束：`TMPDIR` **不得指向包目录内**
+
+`make_isolated_pkg()` 用 `shutil.copytree(PKG, 副本)` 拷贝**包内一切**。
+若 `TMPDIR` 指向包内某目录 ⇒ 副本带着那个目录 → 下一轮复制再拷一层 ⇒ **指数膨胀**
+（实测残留嵌套 20+ 层、路径 909 字符）⇒ 套件成片假红 + 整体超时。
+
+```bash
+cd <包根> && python3 -m pytest scripts/ -q          # ✅ 不设 TMPDIR，用系统默认
+TMPDIR="$HOME/.cache/vetmed-tmp" ...                # ✅ 指到包外
+TMPDIR="$PWD/.tmpprobe" ...                         # ❌ 指到包内 → 指数膨胀
+```
+
+若日志出现 `PermissionError: Brokered host mkdir requires an available runtime file rule`，
+先确认自己的 `TMPDIR` 设到了哪里 —— 该报错**不是**被测代码的缺陷。
 
 ---
 
