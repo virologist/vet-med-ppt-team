@@ -730,7 +730,87 @@ def check_doc_implementation_drift(expert_dir):
     return 0
 
 
-def check_federation_sync(expert_dir):
+#: 联邦 shim 巡检的**当前版本契约**（声明字符串才是契约，行数会随实现微调）。
+FEDERATION_SHIM_STANDARD = "v3.4.2 P0-1"
+#: 上一版声明（= 未跟升的标志）。
+FEDERATION_SHIM_LEGACY = "v3.4.1 R9"
+#: shim 头部扫描行数（声明在文件头 docstring 里，40 行足够覆盖）。
+FEDERATION_SHIM_HEAD_LINES = 40
+#: 联邦 shim 巡检的**固定跳过集**（不含「自身包」——见 federation_skip_set 的说明）。
+#:   · shared-core      —— 它是**真源**本身，不是 shim 包；
+#:   · viral-evo-lab    —— 独立定制版 shim（595 行），不参与联邦统一版本契约。
+FEDERATION_FIXED_SKIP = frozenset({"shared-core", "viral-evo-lab"})
+
+
+def federation_skip_set(explicit_skip=()):
+    """构造联邦 shim 巡检的 skip 集合：固定跳过集 ∪ 显式传入的包名。
+
+    ⚠ **绝不含「自身包」**——这正是 v3.4.3 B3 巡检的**漏检根因**：
+      旧实现把 `os.path.basename(expert_dir)` 放进 skip（形如
+      `skip = {"shared-core", "viral-evo-lab", expert_dir and os.path.basename(expert_dir)}`）
+      ⇒ 自身包的 shim **永远不被扫描**
+      ⇒ 「自身包 shim 未跟升 / 自身包 vendor 漂移」这类断层**结构性不可见**
+      ⇒ 2026-10 实测的真缺陷（vet-med-ppt-team 停在 v3.4.1 R9、无 vendor 兜底）
+        正是这样躲过了第 13 项体检。
+
+    ⇒ 因此：**自身包必须被扫描**。要排除某个包，只能**显式**传进
+      `explicit_skip`，让调用方留下可见的意图，而不是自动按「自己是谁」隐式跳过。
+    """
+    return set(FEDERATION_FIXED_SKIP) | set(explicit_skip or ())
+
+
+def scan_federation_shims(plugins_root, core_path, skip=()):
+    """【纯逻辑】扫描联邦各包的 shim 版本声明 + vendor 副本哈希。
+
+    不打印、不改文件、不依赖全局状态 ⇒ 可在隔离目录里构造反例直接单测
+    （这是 `check_federation_sync` 拆成「纯函数 + 薄壳」的原因：
+      原实现把扫描与打印揉在一起 ⇒ 无法在不影响真实联邦目录的前提下测）。
+
+    参数：
+      plugins_root  联邦 plugins/ 根目录（各包的父目录）
+      core_path     联邦真源 shared-core/assemble_spawn_prompt.py 的路径
+                    （不存在 ⇒ 不做 vendor 哈希比对，因缺少比对基准）
+      skip          跳过的包名集合
+
+    返回：(rows, stale, drift)
+      rows   —— [(包名, 展示用版本描述), ...]，按包名排序
+      stale  —— 声明停留在旧版（未跟升）的包名列表
+      drift  —— vendor 副本与联邦真源哈希不一致的包名列表
+    """
+    import hashlib
+    rows, stale, drift = [], [], []
+    skip_set = set(skip or ())
+    if not os.path.isdir(plugins_root):
+        return rows, stale, drift
+    core_sha = ""
+    if core_path and os.path.isfile(core_path):
+        core_sha = hashlib.sha256(open(core_path, "rb").read()).hexdigest()
+    for name in sorted(os.listdir(plugins_root)):
+        pkg = os.path.join(plugins_root, name)
+        shim = os.path.join(pkg, "scripts", "assemble_spawn_prompt.py")
+        if not os.path.isdir(pkg) or name in skip_set or not os.path.isfile(shim):
+            continue
+        head = "".join(open(shim, encoding="utf-8", errors="replace").readlines()
+                       [:FEDERATION_SHIM_HEAD_LINES])
+        if FEDERATION_SHIM_STANDARD in head:
+            ver = "P0-1 ✅"
+        elif FEDERATION_SHIM_LEGACY in head:
+            ver = "R9 ⚠ 未跟升"
+            stale.append(name)
+        else:
+            ver = "无标准声明（独立版/待审）"
+        # vendor 副本哈希比对（存在才查；有真源才有比对基准）
+        vend = os.path.join(pkg, "vendor", "shared-core", "assemble_spawn_prompt.py")
+        if core_sha and os.path.isfile(vend):
+            vsha = hashlib.sha256(open(vend, "rb").read()).hexdigest()
+            if vsha != core_sha:
+                ver += " | vendor漂移❌"
+                drift.append(name)
+        rows.append((name, ver))
+    return rows, stale, drift
+
+
+def check_federation_sync(expert_dir, extra_skip=()):
     """v3.4.3 B3：联邦 shim 巡检——各包 shim 版本声明一致性 + vendor 副本哈希比对。
 
     背景（2026-10-15 五维诊断 2.1 实证）：v3.4.2 P0-1 升级了 smart-textbook-team 的
@@ -738,53 +818,35 @@ def check_federation_sync(expert_dir):
     triz-invention-team 停留 v3.4.1 R9 未跟升——此前 12 项体检无一项问
     "联邦各包的 shim 是否还在同一版本"（R2 联邦断层直到独立诊断才暴露）。
 
-    方法：
+    方法（薄壳：扫描逻辑全在 scan_federation_shims 纯函数里）：
       1. 扫联邦 plugins/ 下各包 scripts/assemble_spawn_prompt.py 头部 40 行，
          提取最新版本声明（"v3.4.2 P0-1" 为当前标准；"v3.4.1 R9" = 未跟升 ⚠）；
       2. 包内有 vendor/shared-core/ 副本时，比对 sha256 == 联邦真源（防漂移）；
-      3. viral-evo-lab（独立定制版）与 shared-core 自身跳过。
+      3. 跳过 shared-core 自身与 viral-evo-lab（独立定制版）。
     判据从"行数"改为"声明标准"：行数会随实现微调，声明字符串才是版本契约。
+
+    ⚠ **自身包不再被 skip**（v3.4.3 B3 漏检根因修复）：
+      旧实现把 `os.path.basename(expert_dir)` 塞进 skip ⇒ 自身包的 shim 断层
+      永远不可见。现在 skip 只含固定跳过集（shared-core / viral-evo-lab）
+      ∪ 调用方**显式**传入的包名，详见 federation_skip_set 的说明。
     """
-    import hashlib
     plugins_root = os.path.dirname(os.path.abspath(expert_dir))
     core = os.path.join(plugins_root, "shared-core", "assemble_spawn_prompt.py")
     if not os.path.isdir(plugins_root) or not os.path.isfile(core):
         print(f"[13/{N}] – 联邦 plugins/shared-core 不存在（非安装态），跳过")
         return 0
-    core_sha = hashlib.sha256(open(core, "rb").read()).hexdigest()
-    STANDARD = "v3.4.2 P0-1"
-    LAGACY = "v3.4.1 R9"
-    skip = {"shared-core", "viral-evo-lab", expert_dir and os.path.basename(expert_dir)}
-    rows, stale, drift = [], [], []
-    for name in sorted(os.listdir(plugins_root)):
-        pkg = os.path.join(plugins_root, name)
-        shim = os.path.join(pkg, "scripts", "assemble_spawn_prompt.py")
-        if not os.path.isdir(pkg) or name in skip or not os.path.isfile(shim):
-            continue
-        head = "".join(open(shim, encoding="utf-8", errors="replace").readlines()[:40])
-        if STANDARD in head:
-            ver = "P0-1 ✅"
-        elif LAGACY in head:
-            ver = "R9 ⚠ 未跟升"
-            stale.append(name)
-        else:
-            ver = "无标准声明（独立版/待审）"
-        # vendor 副本哈希比对（存在才查）
-        vend = os.path.join(pkg, "vendor", "shared-core", "assemble_spawn_prompt.py")
-        if os.path.isfile(vend):
-            vsha = hashlib.sha256(open(vend, "rb").read()).hexdigest()
-            if vsha != core_sha:
-                ver += " | vendor漂移❌"
-                drift.append(name)
-        rows.append((name, ver))
+    rows, stale, drift = scan_federation_shims(
+        plugins_root, core, federation_skip_set(extra_skip))
     if stale or drift:
-        print(f"[13/{N}] ⚠ 联邦同步有缺口：{len(stale)} 包 shim 未跟升 {STANDARD}、{len(drift)} 包 vendor 漂移")
+        print(f"[13/{N}] ⚠ 联邦同步有缺口：{len(stale)} 包 shim 未跟升 "
+              f"{FEDERATION_SHIM_STANDARD}、{len(drift)} 包 vendor 漂移")
         for n, v in rows:
             print(f"     {n:32s} {v}")
         print(f"     → 处置：未跟升包按 smart-textbook-team 先例升级（shim+vendor+test 三件套）；"
               f"vendor 漂移包 cp 联邦 core 后更新 VENDOR.json")
         return 1
-    print(f"[13/{N}] ✓ 联邦同步一致：{len(rows)} 包 shim 均达 {STANDARD}，vendor 哈希无漂移")
+    print(f"[13/{N}] ✓ 联邦同步一致：{len(rows)} 包 shim 均达 "
+          f"{FEDERATION_SHIM_STANDARD}，vendor 哈希无漂移")
     for n, v in rows:
         print(f"     {n:32s} {v}")
     return 0

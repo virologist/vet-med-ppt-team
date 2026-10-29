@@ -1,0 +1,48 @@
+# version-policy.yaml — 版本迭代机制策略真源（v3.28.0）
+# ═══════════════════════════════════════════════════════════════════════
+# ★ 入库 ⇒ 跨版本存活：切到任意历史版本都读得到（这是 v3.28.0 的关键修正）。
+#
+# 缘起（实测踩坑，第 6 个真缺陷）：
+#   原设计把策略放在 `.versionctl/config.json`（**入库**）⇒ 两个致命问题：
+#     ① `switch` 的 `git checkout --detach` 替换**整个工作树**
+#        ⇒ 该文件被 checkout **删除** ⇒ 切到 v3.28.0 之前后策略真源消失
+#           （实测：切到 v3.27.0 后 `.versionctl/` 整个目录都不存在了）；
+#     ② 反过来，用户改一次策略就让工作区**变脏**
+#        ⇒ `switch` 直接拒绝切换（实测报错 "Your local changes ... would be
+#           overwritten by checkout"）。
+#   ⇒ 修法：真源上移到本文件（入库、跨版本存活）；
+#     `.versionctl/` 退化为**纯运行时状态**（本地副本 + 日志 + 归档区 + 自举锚点），
+#     整体 gitignored ⇒ ① 不再被 checkout 删除 ② 改策略不弄脏工作区 ③ 跨版本存活。
+#
+# 维护方式：
+#   python3 scripts/versionctl.py policy --set key=value --confirm
+#   python3 scripts/versionctl.py policy --set key=value --local --confirm  # 仅本机
+#   python3 scripts/versionctl.py migrate --confirm                        # schema 升级
+#
+# ⚠ schema 升级走 `versionctl migrate`（幂等、只补缺键、**不删**用户已有键）。
+# ⚠ 迁移前会自动备份到 `.versionctl/archive/<时间戳>/version-policy.yaml.bak`。
+# ═══════════════════════════════════════════════════════════════════════
+
+# 策略文件 schema 版本（升级时由 `versionctl migrate` 逐级推进）
+schema_version: 2
+
+# 保留最近 N 个版本（永不归档清理）
+keep_recent: 10
+
+# 里程碑版本永久保留（minor 为偶数且 patch==0 视为里程碑）
+keep_milestones: true
+
+# git tag 是否永久保留
+#   默认 true：tag 几乎不占空间，删了会破坏可回滚性 ⇒ 不设清理入口
+keep_tags: true
+
+# 归档区目录（相对包根）
+archive_dir: .versionctl/archive
+
+# 需要纳入清理视野的产物目录（相对**包根**或**工作空间**，均可）
+#   ★ 空列表 = 不自动清理任何产物目录（默认最保守）
+#   ★ 归档 ≠ 删除：命中项会被**移动**到归档区并留清单，可原样还原
+artifact_dirs: []
+
+# 单个产物的最大保留字节（超过则归档；<=0 表示不限）
+artifact_max_bytes: 0

@@ -72,20 +72,25 @@ EXCLUDE_PATTERNS = (
 
 #: ★ v3.28.0：版本迭代机制的**运行时状态**目录（相对包根）。
 #:
-#: ⚠ 为什么不能用 EXCLUDE_PATTERNS（那是 basename 匹配）：
-#:   `.versionctl` 整个排除会把 `.versionctl/config.json`（**策略真源**）也排掉
-#:   ⇒ 策略会随机器丢失，`versionctl policy` 改了就白改。
+#: ★★ v3.28.0 收尾修正（实测踩坑，第 6 个真缺陷的连带项）：
+#:   策略真源已从 `.versionctl/config.json` **上移**到
+#:   `config/version-policy.yaml`（入库 ⇒ 跨版本存活），
+#:   `.versionctl/` 退化为**纯运行时状态**（本地副本 + 日志 + 归档区 + 自举锚点）
+#:   且**整体 gitignored**。
 #:
-#: ⇒ 故用**路径级**排除：只排 `archive/`（归档区）与 `journal/`（操作日志），
-#:   保留 `config.json`。
+#:   ⇒ 故此处的路径级排除也必须**整体排除 `.versionctl`**：
+#:     否则镜像里会带上「自举锚点里的控制面副本」与本机 journal
+#:     ⇒ ① 分发包泄漏本机操作痕迹 ② 镜像与版本层口径漂移。
 #:
-#: ★ 与 .gitignore 的口径必须一致：
-#:   .gitignore 排 `.versionctl/archive/` + `.versionctl/journal/`
+#: ★ 与 .gitignore 的口径必须严格一致：
+#:   .gitignore 排 `.versionctl/`（整体）
 #:   ⇒ 同步层与版本层看到的是同一批文件 ⇒ 不会出现「git 收了但镜像没有」
 #:      或「镜像有但 git 没有」的漂移。
+#:
+#: ⚠ 策略真源 `config/version-policy.yaml` **不受此排除影响**
+#:   （它在 `config/` 下，正常同步进镜像）。
 EXCLUDE_REL_PATHS = (
-    ".versionctl/archive",
-    ".versionctl/journal",
+    ".versionctl",
 )
 
 #: 镜像目录名（相对于包根）：`packages/<包名>/`。
@@ -301,6 +306,42 @@ def do_sync(src_root: Path, mirror_root: Path, missing, differing, extra,
     return n_new, n_upd, n_del, (backup_dir if n_backup else None)
 
 
+# ───────────────────────────────────────────────────── 运行时残留检测
+def find_runtime_residue(mirror_root: Path):
+    """找出镜像里「本应被排除、却仍残留」的文件（相对路径列表）。
+
+    ★★ v3.28.0 收尾修正（实测踩坑）：
+      `--prune` 的删除传播只处理 `extra`（**受管文件集之外**）的项。
+      但 `.versionctl/` 这类**被排除规则挡掉**的目录，其残留文件
+      （例如上一轮同步留下的 `.versionctl/config.json`）**根本不在受管集里**
+      ⇒ `--prune` **永远清不掉它们**
+      ⇒ 旧版本内容会长期滞留在分发包里。
+
+      —— 实测：`mirror_sync --prune` 输出「镜像多出 0 个」，
+         但磁盘上 `packages/vet-med-ppt-team/.versionctl/config.json` 仍在。
+
+      ⇒ 本函数**独立**于受管集，直接扫描镜像里的排除路径 ⇒ 找出残留。
+    """
+    residue = []
+    if not mirror_root.is_dir():
+        return residue
+    for pat in EXCLUDE_REL_PATHS:
+        target = mirror_root / pat
+        if not target.exists():
+            continue
+        if target.is_file():
+            residue.append(pat)
+            continue
+        for dirpath, dirnames, filenames in os.walk(target):
+            dirnames[:] = [d for d in dirnames if not is_excluded(d)]
+            for fn in filenames:
+                if is_excluded(fn):
+                    continue
+                full = Path(dirpath) / fn
+                residue.append(str(full.relative_to(mirror_root)))
+    return sorted(residue)
+
+
 # ───────────────────────────────────────────────────── 同步后校验
 def verify_with_diff(src_root: Path, mirror_root: Path):
     """用 `diff -q` 逐文件校验根与镜像。
@@ -453,6 +494,10 @@ def main(argv=None, pkg_root=None) -> int:
                     help="真正执行同步（默认 dry-run：只报告，不写任何文件）")
     ap.add_argument("--prune", action="store_true",
                     help="额外允许删除「镜像多出的文件」（默认关闭；关闭时只报告不删）")
+    ap.add_argument("--purge-runtime", action="store_true",
+                    help="清理镜像里「本应被排除却仍残留」的运行时文件"
+                         "（如 .versionctl/）—— --prune 清不掉它们，"
+                         "因为它们根本不在受管文件集里")
     ap.add_argument("--pkg-root", default=None,
                     help="指定包根（默认由脚本位置推导；也可用环境变量 "
                          "VETMED_MIRROR_PKG_ROOT）")
@@ -497,10 +542,20 @@ def main(argv=None, pkg_root=None) -> int:
         print("      若确认这些文件确实该删，请显式加 --prune 重跑。")
     print()
 
+    # ── ★ 运行时残留（被排除规则挡掉、却仍留在镜像里的文件）
+    #   ★★ `--prune` 清不掉它们（不在受管集里）⇒ 需独立检测与清理。
+    residue = find_runtime_residue(mirror_root)
+    print(f"  运行时残留（应被排除却仍在镜像）：{len(residue)} 个")
+    print(_fmt_list(residue))
+    if residue:
+        print("    ↑ 这类文件**不在受管文件集里** ⇒ `--prune` 清不掉。")
+        print("      需显式加 `--purge-runtime` 才会清理。")
+    print()
+
     if not args.confirm:
         print("─" * 66)
         print("预演模式：未写入任何文件。确认无误后加 --confirm 真正执行。")
-        total = len(missing) + len(differing) + len(extra)
+        total = len(missing) + len(differing) + len(extra) + len(residue)
         if total:
             print(f"结论：存在 {total} 处差异（rc=1，便于 CI 发现漂移）。")
             return 1
@@ -513,6 +568,49 @@ def main(argv=None, pkg_root=None) -> int:
     n_new, n_upd, n_del, backup_dir = do_sync(
         root, mirror_root, missing, differing, extra,
         prune=args.prune, backup_root=backup_root)
+    # ── 运行时残留清理（**独立于 --prune**；先备份再删）
+    n_purge = 0
+    if args.purge_runtime and residue:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        pdir = backup_root / ts
+        # ★★ 收尾修正（实测踩坑）：备份目录**必须先建**。
+        #   漏建 ⇒ `shutil.copy2` 抛 FileNotFoundError ⇒ 被 `except OSError`
+        #   **静默吞掉** ⇒ 文件**没删也没报错** ⇒ 残留永远清不掉，
+        #   而用户看到的是「命令成功」⇒ **静默失败**（最坏的一类缺陷）。
+        #   —— 实测：沙盒里 `backup_root` 不存在 ⇒ D7d 判红。
+        pdir.mkdir(parents=True, exist_ok=True)
+        purge_failed = []
+        for rel in residue:
+            f = mirror_root / rel
+            if not f.is_file():
+                continue
+            try:
+                bak = pdir / rel
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(f), str(bak))
+                f.unlink()
+                n_purge += 1
+            except OSError as e:
+                # ★ 失败**必须显式报告** ⇒ 不得静默吞（否则用户以为清干净了）
+                purge_failed.append((rel, str(e)))
+        # 清理空目录
+        for dirpath, dirnames, filenames in os.walk(mirror_root, topdown=False):
+            p = Path(dirpath)
+            if p.resolve() == mirror_root.resolve():
+                continue
+            if not dirnames and not filenames:
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
+        if n_purge:
+            print(f"  运行时残留已清理 {n_purge} 个（备份：{pdir}）")
+        if purge_failed:
+            print(f"  ⚠ 有 {len(purge_failed)} 项残留清理失败（**已保留原文件**）：")
+            for rel, err in purge_failed[:10]:
+                print(f"     {rel}：{err}")
+            if len(purge_failed) > 10:
+                print(f"     …… 另有 {len(purge_failed) - 10} 项")
     print(f"  新增 {n_new} 个 / 覆盖 {n_upd} 个 / 删除 {n_del} 个")
     if backup_dir:
         print(f"  备份目录：{backup_dir}")

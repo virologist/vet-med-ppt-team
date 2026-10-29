@@ -219,6 +219,227 @@ D7b 同步不得动根上的归档产物（只读不写）。
 - `migrate_artifacts`：**16 个变异点全部能红**。
 - `mirror_sync`（D7）：**3 个变异点全部能红**。
 
+### P0 · 收口期挖出的 **8 个真实缺陷**（含 1 个架构级**死锁**）
+
+> ★ 这一节是 v3.28.0 的**收口期实录**：机制写完 ≠ 机制可用。
+> 下面 8 条全部是**实测复现**的（不是代码审阅推测），且多数**只在真跑一遍
+> 端到端流程时才暴露** —— 单元测试全绿而真实用户流程是死的。
+
+#### 缺陷 6（★ 架构级死锁）· `switch` 把自己锁在历史版本里出不来
+
+**现象（实测）**：`switch` 用 `git checkout --detach` ⇒ **整个工作树**被替换
+⇒ 控制面脚本 `scripts/versionctl.py` **自己也被换掉**：
+- 切到 v3.28.0 之前 ⇒ 该文件**根本不存在**；
+- 切到更早的版本 ⇒ 该文件是**旧逻辑**（旧的 `recover` 只 `checkout --detach`）。
+
+⇒ 切出去后**没有任何办法执行 `recover`** ⇒ 用户被**死锁**在历史版本里。
+—— 实测：切到 v3.27.0 后 `.versionctl/` 整个目录消失、`scripts/versionctl.py` 不存在。
+
+**修法（三件套，互相咬合）**：
+1. **自举锚点** `.versionctl/bin/versionctl.py`：**gitignored** ⇒ 跨 checkout 存活；
+   `switch` 执行**前**自动把当前控制面固化进去（临时文件 + `os.replace` 原子替换）。
+2. **新增 `bootstrap` 子命令**：显示锚点状态与恢复指引；`--restore` 可把锚点里的
+   控制面装回工作树（在旧版本里也能用完整功能）。
+3. **`recover` 优先用锚点**：切出去后的正确用法是
+   `python3 .versionctl/bin/versionctl.py recover --confirm`。
+
+#### 缺陷 7 · 策略真源随 checkout 消失（且「改策略就切不动」）
+
+**现象（实测）**：`.versionctl/config.json` 原本**入库** ⇒
+① 切到旧版本时被 checkout **删除** ⇒ 策略真源消失；
+② 反过来，用户改一次策略就让工作区**变脏** ⇒ `switch` 直接**拒绝切换**
+（实测报错「Your local changes to the following files would be overwritten by checkout」）。
+
+**修法（双轨策略）**：
+- **包级真源**：`config/version-policy.yaml`（**入库** ⇒ 跨版本存活；
+  且本包既有约定本就是「`config/*.yaml` 是唯一数据源」）。
+- **运行时副本**：`.versionctl/config.json`（**不入库**）⇒ 改策略不弄脏工作区。
+- 读取优先级：`DEFAULT_POLICY` → YAML 真源 → JSON 副本（后者覆盖前者）。
+- `policy --local` ⇒ 只写本机副本，**不动**包级真源。
+- `.versionctl/` 整体 `.gitignore` ⇒ 不再被 checkout 删除。
+
+#### 缺陷 8 · 死锁的**第二重门**：checkout 造成的删除被当成「工作区脏」
+
+**现象（实测）**：切到旧版本时，入库的 `config/version-policy.yaml` 被 checkout 删除
+⇒ `git status` 报 `" D"` ⇒ `recover` 判定「工作区有未提交改动」⇒ **拒绝恢复**
+⇒ 仍然死锁。
+
+**修法**：新增纯函数 `classify_dirty()`，把 `git status --porcelain` 分成
+`blocking`（**用户真实改动** ⇒ 必须拒绝恢复）与 `benign`（checkout 副作用 ⇒ 放行）。
+
+#### 缺陷 9 · 死锁的**第三重门**：工具自身的运行时目录也算「脏」
+
+**现象（实测）**：`.versionctl/` 整体 gitignored 后 ⇒ `git status` 报
+`?? .versionctl/` ⇒ 若未跟踪也算阻塞 ⇒ **仍然死锁**。
+
+**修法**：`classify_dirty()` 增加 `ignore_rel_prefixes` ⇒ 工具自身运行时目录
+**永不**构成阻塞。
+
+#### 缺陷 10 · `recover` 恢复的是「分支当前指向」，而非 journal 记录的提交
+
+**现象**：`git checkout <分支>` ⇒ 回到的是分支**当前指向**的提交，
+而非 journal 里的 `before_head` ⇒ 若期间分支前进过，恢复目标就**错了**
+（静默回错位置 = 最坏的恢复语义）。
+
+**修法**：`git checkout -B <分支> <before_head>` ⇒ 分支与提交**同时**回到原状态；
+失败才退化到 `checkout <分支>` → `checkout --detach <target>`。
+
+#### 缺陷 11 · detached 状态下 `--abbrev-ref HEAD` 返回字面量 `"HEAD"`
+
+**现象**：`git rev-parse --abbrev-ref HEAD` 在 detached 时返回 **`"HEAD"`**
+（不是 `"(detached)"`、也不是空）⇒ `recover` 拿 `"HEAD"` 当分支名去
+`git checkout HEAD` ⇒ 那只是**重新 detach 到同一提交** ⇒ 分支永远回不去。
+
+**修法**：`head_state()` 显式 `if branch == "HEAD": branch = "(detached)"`。
+
+#### 缺陷 12 · `--prune` 清不掉「被排除规则挡掉却仍残留」的文件
+
+**现象（实测）**：`--prune` 的删除传播只处理 `extra`（**受管文件集之外**）的项。
+但 `.versionctl/` 这类**被排除规则挡掉**的目录，其残留文件
+（上一轮同步留下的 `.versionctl/config.json`）**根本不在受管集里**
+⇒ `--prune` **永远清不掉它们** ⇒ 旧版本内容长期滞留在分发包里。
+—— 实测：`mirror_sync --prune` 输出「镜像多出 0 个」，
+但磁盘上 `packages/vet-med-ppt-team/.versionctl/config.json` 仍在。
+
+**修法**：新增 `find_runtime_residue()`（**独立于**受管集扫描排除路径）
++ `--purge-runtime` 开关（**默认关闭**，显式开启才清理，且先备份）。
+
+#### 缺陷 13 · 清理失败被**静默吞掉**（最坏的一类缺陷）
+
+**现象**：`--purge-runtime` 的备份目录**未先创建** ⇒ `shutil.copy2` 抛
+`FileNotFoundError` ⇒ 被 `except OSError: continue` **静默吞掉**
+⇒ 文件**没删也没报错** ⇒ 残留永远清不掉，而用户看到的是「命令成功」。
+
+**修法**：先建备份目录；失败项**显式列出**（保留原文件，不硬删）。
+
+#### 缺陷 14 · T13 的 dry-run 判据过宽（误伤别的工具的合法产物）
+
+**现象**：原判据「归档区里不得存在 `ARCHIVE_MANIFEST.json`」把
+`migrate_artifacts.py` 的**合法产物**当违规 ⇒ 误判红。
+
+**修法**：改为「**新增条目集合必须为空**」（只看增量，不管既有内容）
+⇒ 更强，且对既有残留免疫。
+
+#### 缺陷 15 · `mirror_sync` 不认 gitignore + `lstrip("./")` 吃掉开头的点
+
+**现象**：`is_excluded` 按 **basename** 匹配 ⇒ 无法只排子目录；
+且 `str.lstrip("./")` 按**字符集**剥离 ⇒ `".versionctl/archive"` 变成
+`"versionctl/archive"`（**开头的点被吃掉**）⇒ 路径级排除**静默失效**。
+
+**修法**：改用**路径级**排除 + 精确的「去 `./` 前缀」while 循环。
+
+#### 缺陷 16 · 锚点回落 root commit 必然破坏单调性（回滚语义失效）
+
+**现象**：任何回落基准都必须保证锚点单调性（否则「回滚到 vX」会落到比 vX 更晚的提交），
+而 root commit **不满足**该性质。
+
+**修法**：回落基准改为「**沿用前一版本的锚点**」⇒ 单调性**由构造保证**。
+
+### P0 · 新增判据（收口期）：T24 / T25 / T26 + D7c / D7d / D7e
+
+- **T24**（2 项）：`recover` 必须**回到原分支**（不是 detached），且必须回到**原提交**。
+  ★ 判据走**真实用户路径**：用**自举锚点**执行 `recover`
+  （工作树里的脚本此时已被 checkout 换掉 ⇒ 用它测等于测旧逻辑 ⇒ **假阳性**）。
+- **T25**（4 项，★ **死锁自由**）：切到 v3.27.0（控制面尚不存在的年代）⇒
+  锚点必须存活 ⇒ 用锚点 recover 必须回到原分支与原提交 ⇒
+  策略真源必须跨 checkout 存活 ⇒ `.versionctl/` 不得被 git 跟踪。
+- **T26**（5 项）：`classify_dirty` 的判据 —— 受保护文件被删除 / 工具运行时目录
+  ⇒ benign；**用户的真实改动 / 未跟踪新文件** ⇒ 必须 blocking（不能为解死锁而丢工作）。
+- **D7c/D7d/D7e**（3 项）：自举锚点不得进镜像；`--purge-runtime` 必须清掉残留；
+  且**必须显式开启**（默认只报告不删）。
+
+### P0 · 镜像同步口径同步（随双轨策略调整）
+
+- `EXCLUDE_REL_PATHS` 由 `(".versionctl/archive", ".versionctl/journal")`
+  改为 **`(".versionctl",)`**（整体排除）⇒ 与新的 `.gitignore` 口径**严格一致**
+  ⇒ 避免「git 收了但镜像没有」/「镜像有但 git 没有」的漂移。
+- 新增 `--purge-runtime`：清理「应被排除却仍残留」的文件（先备份，失败显式报告）。
+
+### P0 · 收口期**第二轮**：D9–D13 五缺陷 + 第 13 项 R9 缺口闭合
+
+> ★ 本节记录 v3.28.0 定稿后的**追加收口**。两处**重大更正**必须写明，
+> 因为上一轮的结论是**错的**，若照抄会误导后续维护。
+
+#### ★ 更正一：第 13 项 R9 缺口 ≠ 「守卫文件不存在」
+
+上一轮结论「`scripts/test_dead_config_disposition.py` 缺失」**不成立** ——
+实测该文件**早已入库**（v3.25.0 commit `8897db8`，611 行，17 用例全绿）。
+**真缺口**是**守卫自己的守卫**缺位：其 T11/T12/T13 三个反例测的是「机制」
+而非「判据本体」⇒ 把守卫里的 R2/R3/R4/R5/R6 分支删掉，17 个用例**照样全绿**。
+
+**修法**：新建 `scripts/test_inspection_zone_registry_red.py`（**17 用例**，三层结构）：
+1. **判据级红证明** —— R1–R6 各一条，**直接调用真实守卫的判据方法**，
+   断言抛出 `AssertionError` 且消息**点名对应判据标签**；
+2. **变异敏感性证明** —— 断言 mutant 抓不到对应破坏 ⇒ **反证**红证明有鉴别力；
+3. **端到端红证明** —— 隔离副本改坏实时 config，子进程跑真包形态守卫。
+
+★ **实测 6/6 判据的变异体全部被杀**（掏空 R3 → 5 failed / R4 → 2 / R6 → 3 /
+R2 → 3 / R5 → 3 / R1 → 1）⇒ 无假守卫。
+
+#### ★ 更正二：第 13 项「已 rc=0 无缺口」也不成立
+
+`check_federation_sync()` 的 `skip` 集合**含自身包**
+（`os.path.basename(expert_dir)`）⇒ `vet-med-ppt-team` 自己的 shim 停在
+**v3.4.1 R9**（65 行、无 vendor 兜底），而另 3 包已达 **v3.4.2 P0-1**
+（102 行、有 vendor 兜底）⇒ **断层永远不可见**。
+—— 实测 `tests/test_vendor_core.py` **V6 FAIL**（git-clone 态 `exit=3`）。
+
+**修法**（三处）：
+1. `scripts/assemble_spawn_prompt.py`：自身 shim 由 v3.4.1 R9 升级到 **v3.4.2 P0-1**
+   （两级解析：联邦真源 → vendor 兜底 → `exit 3`），支持 `SHIM_DEBUG=1` /
+   `EXPERT_DIR`，保留本包归属声明块；
+2. `scripts/ensure_settings.py`：`check_federation_sync` 重构为**纯函数 + 薄壳**
+   （`federation_skip_set` / `scan_federation_shims` / `check_federation_sync`）
+   ⇒ **skip 不再含自身包**；
+3. 新建 `scripts/test_federation_sync_guard.py`（**11 用例**，G1–G6，每条配能红反例）。
+
+★ **V6 已从 FAIL 变 PASS**；体检第 13 项现为
+「✓ 联邦同步一致：4 包 shim 均达 v3.4.2 P0-1，vendor 哈希无漂移」。
+
+#### P0 · 新增 D9–D13 五缺陷（全部实测复现，全部补齐专属判据）
+
+| 编号 | 缺陷 | 根因 | 修法 |
+|---|---|---|---|
+| **D9** | `switch` 把工具自身的运行时文件（`?? .versionctl/policy.local.json`）误判为「工作区脏」⇒ **功能自锁**（刚设的本机策略就再也切不了版本） | 脏判定未复用 `classify_dirty` | `cmd_switch` 改用 `classify_dirty`（工具自有路径 ⇒ benign，用户真实改动 ⇒ 仍 blocking） |
+| **D10** | 迁移后运行时层丢 `schema_version` ⇒ 迁移**形同虚设**（运行时层自己都读不出自己的 schema） | 覆盖层的「只留不同键」过滤把 `schema_version` 一起滤掉 | 覆盖层**始终自带** `schema_version`（**两处赋值点**都要修） |
+| **D11** | 旧副本里的用户设置被**静默丢弃**（真源该键仍是默认值时旧值被忽略 ⇒ `artifact_dirs` 失效 ⇒ prune 一个产物都不归档） | 「只补真源没有的键」口径太粗 | 新增 `_source_is_default()` ⇒「**真源优先、默认值让位**」兜底 |
+| **D12** | `migrate_policy` 把**迁移源自己**归档（move）掉了 ⇒ 迁移后原路径 `FileNotFound` | `save_policy` 事后把迁移源当「旧版残留」归档 | `save_policy` 新增 `keep_runtime_names`；迁移源**就地升级**成覆盖层 |
+| **D13** | `cmd_prune` 只遍历**一层** ⇒ 深层产物（`artifacts/sub/bundle.zip`）永远找不到 ⇒ **磁盘无限膨胀** | `p.iterdir()` 非递归 | 改 `p.rglob("*")` 递归逐文件；并抽成纯函数 `collect_artifacts()` 供单测 |
+
+**★ D13 曾是「改了代码却没判据」的假阴性** —— 实测把 `rglob` 改回 `iterdir`
+时 `test_versionctl.py` **129 passed 一个都没杀**。本轮为 D9–D13 **各补显式
+命名判据**（`class T28DefectGuards`，**19 个新用例**），并逐个**实测变异体**：
+
+| 变异体 | 杀死判据数 |
+|---|---|
+| D9 `tool_owned_rel_paths` 清空 | **3** |
+| D10 覆盖层丢 `schema_version`（YAML 在场分支） | **2** |
+| D10 覆盖层丢 `schema_version`（只有 JSON ⇒ 提升为真源分支） | **3**（含 2 subtest） |
+| D11 旧副本无条件覆盖真源 | **5** |
+| D12 `save_policy` 忽略 `keep_runtime_names` | **3**（含 2 subtest） |
+| D13 `rglob` → `iterdir` | **5** |
+
+★ **D10 曾漏覆盖一个赋值点**（第 1478 行「只有 JSON ⇒ 提升为真源」分支），
+本轮补 `test_D10_promoted_source_overlay_carries_schema_version` 闭合。
+★ D12 的「`migrate_policy` 调用点漏传」实测**会红**
+（`test_D12_migration_source_is_not_archived` 的「归档区无 `*.stale`」断言直击语义）
+⇒ 覆盖已足，不另加判据。
+
+**★ 本轮全部变异均在真实仓库里跑**（基线 146 passed ⇒ 任何失败只可能由变异体
+引起，**零噪声**），备份 → 替换 → 跑 → **立即还原** → md5 校验逐字节一致。
+
+#### P0 · 体检与回归的最终结果
+
+- **体检 26 项**：23 项 ✓、**0 项 ✗**；余 2 项为**提示级**且**都在用户个人工作区**
+  （`养禽与禽病防治/`）：[11/26] 旁路版本文件 1 个、[23/26] 域绑定残留 1 处
+  ⇒ ★ **本包纪律不擅动用户个人工作区** ⇒ 只报告，不动手。
+- **回归 37/37 套件全绿**（体检第 7 项 rc=0，含新增的
+  `test_federation_sync_guard.py` / `test_inspection_zone_registry_red.py`）。
+- **`test_versionctl.py`：148 passed + 4 subtests**（基线 119 → 129 → 148）。
+- **镜像同步**：`--confirm` 后 **150 个受管文件逐字节零差异**；
+  `--purge-runtime` 清掉镜像里的运行时残留 `.versionctl/config.json`（先备份）
+  ⇒ 复跑 **rc=0**（根 ⇄ 镜像零差异）。
+
 ---
 
 ## [v3.27.0] - 2026-10-29（未验证项可见化 + 镜像同步 + 包外脚本归档）

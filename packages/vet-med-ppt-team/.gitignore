@@ -77,7 +77,16 @@ packages/.mirror_backups/
 #   是版本迭代机制产生的**操作痕迹**，不是包内容 ⇒ 不入库。
 #   ★ 归档区里的东西另有去处：归档的是「已被 git 持有」或「另有副本」的产物
 #     ⇒ 权威副本在 git 对象库或对照目录里 ⇒ 这里不入库不会丢东西。
-#   ⚠ 但 `.versionctl/config.json`（保留/归档策略）是**配置真源** ⇒ 必须入库，
-#     否则策略会随机器丢失（`versionctl policy` 改了就白改）。
-.versionctl/archive/
-.versionctl/journal/
+#
+# ★★ v3.28.0 收尾修正（实测踩坑，第 6 个真缺陷）：`.versionctl/` **整体**不入库。
+#   缘由：`switch` 用 `git checkout --detach` ⇒ **整个工作树**被替换 ⇒
+#     ① `.versionctl/config.json`（原先入库）被 checkout **删除** ⇒ 策略真源丢失；
+#     ② 反过来，用户改一次策略就让工作区**变脏** ⇒ `switch` 直接拒绝切换；
+#     ③ 目录被删空后连 `.versionctl/journal/`（恢复依据）一起消失 ⇒ recover 无从谈起。
+#   ⇒ 策略真源**上移到 `config/version-policy.yaml`（入库、跨版本存活）**；
+#     `.versionctl/` 退化为**纯运行时状态**（本地副本 + 日志 + 归档区 + 自举锚点），
+#     整体 gitignored ⇒ ① 不再被 checkout 删除 ② 改策略不弄脏工作区 ③ 跨版本存活。
+#
+#   ⚠ `.versionctl/bin/`（自举锚点）必须保持 ignored：
+#     它保存控制面脚本的**固化副本**，用于「切到旧版本后仍能 recover」⇒ 不能被 checkout 换掉。
+.versionctl/

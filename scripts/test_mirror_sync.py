@@ -93,9 +93,13 @@ class MirrorSandbox:
         (self.mirror / "stale" / "old.txt").write_text("OLD\n", encoding="utf-8")
 
         # ★ v3.28.0：版本迭代机制的运行时状态（.versionctl/）
-        #   · config.json   ← **策略真源** ⇒ 必须同步进镜像
-        #   · archive/      ← 归档区（运行时痕迹）⇒ 不得进镜像
-        #   · journal/      ← 操作日志（运行时痕迹）⇒ 不得进镜像
+        #   ★★ 收尾修正：`.versionctl/` 已退化为**纯运行时状态**（整体不入库）
+        #      · config.json   ← 运行时本地副本
+        #      · archive/      ← 归档区（运行时痕迹）
+        #      · journal/      ← 操作日志（运行时痕迹）
+        #      · bin/          ← **自举锚点**（控制面的固化副本）
+        #   ⇒ 整棵都不得进镜像。
+        #   策略真源已上移到 `config/version-policy.yaml` ⇒ 那里必须进镜像。
         vc = self.root / ".versionctl"
         vc.mkdir()
         (vc / "config.json").write_text('{"schema_version": 2}\n', encoding="utf-8")
@@ -103,6 +107,12 @@ class MirrorSandbox:
         (vc / "archive" / "20260101-000000" / "x.md").write_text("X\n", encoding="utf-8")
         (vc / "journal").mkdir()
         (vc / "journal" / "20260101-000000.jsonl").write_text("{}\n", encoding="utf-8")
+        (vc / "bin").mkdir()
+        (vc / "bin" / "versionctl.py").write_text("# anchor\n", encoding="utf-8")
+        # 策略真源（入库 ⇒ 必须同步进镜像）
+        (self.root / "config").mkdir(exist_ok=True)
+        (self.root / "config" / "version-policy.yaml").write_text(
+            "schema_version: 2\nkeep_recent: 10\n", encoding="utf-8")
 
     def run(self, argv):
         """跑脚本，返回 (rc, 输出文本)。"""
@@ -379,28 +389,85 @@ class TestMirrorSyncDiscipline(unittest.TestCase):
 
     # ── D7：版本迭代机制的运行时状态不进镜像（v3.28.0 新增）─────
     def test_D7_versionctl_runtime_state_not_mirrored(self):
-        """D7：`.versionctl/archive/` 与 `.versionctl/journal/` **不得**进镜像。
+        """D7：`.versionctl/` **整棵**不得进镜像；策略真源在 `config/` 下必须进。
 
-        ★ 为什么必须有（v3.28.0 实测）：版本迭代机制会在包根下产生
-          `.versionctl/`（归档区 + 操作日志）。`mirror_sync` 原本按
-          **basename** 排除 ⇒ 若把 `.versionctl` 加进排除清单，
-          会连 **`.versionctl/config.json`（策略真源）** 一起排掉
-          ⇒ 策略随机器丢失 ⇒ `versionctl policy` 改了就白改。
-          ⇒ 故改为**路径级**排除：只排 archive/journal，留 config.json。
+        ★★ v3.28.0 收尾修正（实测踩坑，第 6 个真缺陷的连带项）：
+          策略真源已从 `.versionctl/config.json` **上移**到
+          `config/version-policy.yaml`（入库 ⇒ 跨版本存活），
+          `.versionctl/` 退化为**纯运行时状态**（本地副本 + 日志 + 归档区
+          + **自举锚点**）且整体 gitignored。
+          ⇒ 镜像排除规则必须同步改成**整体排除 `.versionctl`**，
+            否则镜像里会带上「自举锚点里的控制面副本」与本机 journal
+            ⇒ ① 分发包泄漏本机操作痕迹 ② 镜像与版本层口径漂移。
 
-        ★ **能红反例**：若把 `.versionctl` 整棵排除 ⇒ config.json 缺失 ⇒ 判红；
-          若不排除路径级 ⇒ archive/journal 进镜像 ⇒ 判红。
+        ★ **能红反例**：
+          · 若不排除 `.versionctl` ⇒ archive/journal/锚点进镜像 ⇒ 判红；
+          · 若把 `config/` 也排掉 ⇒ 策略真源缺失 ⇒ 判红。
         """
         self.s.run(["--confirm"])
         vc_mirror = self.s.mirror / ".versionctl"
-        # ① 运行时痕迹不得进镜像
-        self.assertFalse((vc_mirror / "archive").exists(),
-                         "归档区（运行时痕迹）不得同步进镜像")
-        self.assertFalse((vc_mirror / "journal").exists(),
-                         "操作日志（运行时痕迹）不得同步进镜像")
-        # ② 策略真源必须进镜像
-        self.assertTrue((vc_mirror / "config.json").is_file(),
-                        "策略真源 config.json 必须同步进镜像")
+        # ① 运行时状态（整棵）不得进镜像
+        self.assertFalse(vc_mirror.exists(),
+                         "★ `.versionctl/` 是纯运行时状态，不得进镜像")
+        # ② 策略真源（已上移到 config/）必须进镜像
+        self.assertTrue((self.s.mirror / "config" / "version-policy.yaml").is_file(),
+                        "策略真源 config/version-policy.yaml 必须同步进镜像")
+
+    def test_D7c_bootstrap_anchor_not_mirrored(self):
+        """D7c：**自举锚点**（控制面的固化副本）不得进镜像。
+
+        —— 锚点是本机运行时产物（含绝对路径上下文）⇒ 进分发包等于泄漏。
+        """
+        self.s.run(["--confirm"])
+        self.assertFalse((self.s.mirror / ".versionctl" / "bin").exists(),
+                         "自举锚点不得同步进镜像")
+
+    def test_D7d_purge_runtime_cleans_stale_residue(self):
+        """D7d：`--purge-runtime` 必须能清理「被排除规则挡掉却仍残留」的文件。
+
+        ★★ v3.28.0 收尾修正（实测踩坑）：
+          `--prune` 的删除传播只处理 `extra`（**受管文件集之外**）的项。
+          但 `.versionctl/` 这类**被排除规则挡掉**的目录，其残留文件
+          （上一轮同步留下的 `.versionctl/config.json`）**根本不在受管集里**
+          ⇒ `--prune` **永远清不掉它们** ⇒ 旧版本内容长期滞留在分发包里。
+
+          —— 实测：`mirror_sync --prune` 输出「镜像多出 0 个」，
+             但磁盘上镜像里的 `.versionctl/config.json` 仍在。
+
+        ★ **能红反例**：去掉 `find_runtime_residue` 的扫描 ⇒ 残留检不出 ⇒ 判红。
+        """
+        # 先造出残留：手动在镜像里塞一个「本应被排除」的文件
+        residue = self.s.mirror / ".versionctl" / "config.json"
+        residue.parent.mkdir(parents=True, exist_ok=True)
+        residue.write_text('{"stale": true}\n', encoding="utf-8")
+
+        # ① 必须被检出
+        found = MS.find_runtime_residue(self.s.mirror)
+        self.assertIn(".versionctl/config.json", found,
+                      "★ 运行时残留必须被检出（--prune 清不到它们）")
+
+        # ② --prune 单独用**清不掉**（证明必须有独立机制）
+        self.s.run(["--confirm", "--prune"])
+        self.assertTrue(residue.exists(),
+                        "★ --prune 本就清不掉它（不在受管集里）")
+
+        # ③ --purge-runtime 必须清掉
+        rc, out = self.s.run(["--confirm", "--purge-runtime"])
+        self.assertFalse(residue.exists(),
+                         "★ --purge-runtime 必须清理运行时残留")
+        self.assertIn("残留", out, "输出应报告运行时残留")
+
+    def test_D7e_purge_runtime_is_opt_in(self):
+        """D7e：运行时残留清理**必须**显式开启（默认只报告、不删）。
+
+        —— 删文件的动作不得成为默认行为（对齐本包「默认 dry-run」纪律）。
+        """
+        residue = self.s.mirror / ".versionctl" / "config.json"
+        residue.parent.mkdir(parents=True, exist_ok=True)
+        residue.write_text('{"stale": true}\n', encoding="utf-8")
+        self.s.run(["--confirm"])          # 不带 --purge-runtime
+        self.assertTrue(residue.exists(),
+                        "★ 默认不得删除运行时残留（必须显式 --purge-runtime）")
 
     def test_D7b_root_side_runtime_state_untouched_by_sync(self):
         """D7b：同步**不得动**根上的运行时状态（只读不写）。

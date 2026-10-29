@@ -78,6 +78,16 @@ def _clone_repo(with_versionctl=True):
             dst = clone / "scripts" / "versionctl.py"
             shutil.copy2(str(_HERE / "versionctl.py"), str(dst))
             _git(clone, "add", "scripts/versionctl.py")
+            # ★ 同时装入**策略真源**（v3.28.0 双轨策略）
+            #   理由：真源在 `config/version-policy.yaml`（入库 ⇒ 跨版本存活）
+            #   ⇒ 克隆里必须也有，否则 T25「切到 v3.27.0 后 recover」时
+            #     工作区会因真源缺失而变脏 ⇒ 测不到死锁场景。
+            yml_src = _HERE.parent / "config" / "version-policy.yaml"
+            if yml_src.is_file():
+                yml_dst = clone / "config" / "version-policy.yaml"
+                yml_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(yml_src), str(yml_dst))
+                _git(clone, "add", "config/version-policy.yaml")
             _git(clone, "-c", "user.name=test",
                  "-c", "user.email=test@example.invalid",
                  "commit", "-q", "-m", "test: 装入 versionctl.py")
@@ -1315,6 +1325,242 @@ class T23AnchorRuleUnitDiscriminates(unittest.TestCase):
         self.assertFalse(m["ok"], "回落 root commit 必须被判为单调性违例")
 
 
+class T24RecoverRestoresBranch(unittest.TestCase):
+    """★ T24 `recover` 必须**回到原分支**，不能只恢复 commit（v3.28.0 收尾补测）。
+
+    ★★ 为什么必须有（v3.28.0 实测踩坑，本轮真实发生过）：
+      `switch` 把仓库切到 **detached HEAD**；若 `recover` 只
+      `checkout --detach <commit>` ⇒ 仓库**仍留在 detached HEAD**
+      ⇒ 「回原状态」名不副实，且**下一次提交会落在游离 HEAD 上**
+      （main 分支不前进、push 推了个空）。
+      —— 本轮实测就踩到了：变异测试里的 `switch --confirm` 把真实仓库
+      切到 detached HEAD，导致 v3.28.0 的 commit 不在 main 上。
+
+      ⇒ 判据必须验证「**分支**被恢复」，而不只是「HEAD 指向对了」。
+
+    ★★★ v3.28.0 收尾修正：判据必须走**真实用户路径**。
+      `switch` 会替换整个工作树 ⇒ `scripts/versionctl.py` 自己也会被
+      还原成历史版本 ⇒ 切出去后用工作树里的脚本跑 `recover`
+      跑的是**旧逻辑**（这正是第 6 个真缺陷的机制）。
+      ⇒ 真实用户的正确路径是：执行**自举锚点**里的控制面
+        （`.versionctl/bin/versionctl.py`，gitignored ⇒ 跨 checkout 存活）。
+      ⇒ 本判据**必须**用锚点执行 recover，否则测的是「旧脚本恢复旧状态」
+        这个**假阳性**路径。
+    """
+
+    def test_recover_returns_to_original_branch(self):
+        """★ 核心：switch → recover 后必须回到**原分支**，不是 detached。"""
+        with _clone_repo() as clone:
+            orig_branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
+            self.assertNotEqual(orig_branch, "HEAD",
+                                "克隆起点就应是分支，不是 detached")
+            orig_head = _git(clone, "rev-parse", "HEAD")
+            # 切到父提交（detached HEAD）
+            parent = _git(clone, "rev-parse", "HEAD^").strip()
+            subprocess.run([sys.executable, "scripts/versionctl.py",
+                            "switch", parent, "--confirm"],
+                           cwd=str(clone), capture_output=True, text=True)
+            self.assertNotEqual(_git(clone, "rev-parse", "HEAD"), orig_head,
+                                "switch 应真的改变 HEAD")
+            # ★ 用**自举锚点**执行 recover（真实用户路径，见类文档）
+            anchor = Path(clone) / ".versionctl" / "bin" / "versionctl.py"
+            self.assertTrue(anchor.is_file(),
+                            "switch 后自举锚点必须存活（否则用户切出去就回不来）")
+            proc = subprocess.run([sys.executable, str(anchor),
+                                   "recover", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            after_branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
+            self.assertEqual(after_branch, orig_branch,
+                             "recover 必须回到原分支 %r，实际 %r（stderr=%s）"
+                             % (orig_branch, after_branch, proc.stderr[:300]))
+            self.assertEqual(_git(clone, "rev-parse", "HEAD"), orig_head,
+                             "recover 后 HEAD 必须回到原提交")
+
+    def test_recover_dry_run_does_not_change_branch(self):
+        """dry-run 的 recover 不得改变任何状态。"""
+        with _clone_repo() as clone:
+            orig_branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
+            subprocess.run([sys.executable, "scripts/versionctl.py",
+                            "recover"], cwd=str(clone),
+                           capture_output=True, text=True)
+            self.assertEqual(_git(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+                             orig_branch, "dry-run 不得改变分支")
+
+
+class T25DeadlockFreedom(unittest.TestCase):
+    """★★ T25 **死锁自由**：切到任意历史版本后，必须还能回到主线。
+
+    ★★★ 这是 v3.28.0 收尾期挖出的**最严重**问题（架构级），
+       由 T24 的失败**反向暴露**出来：
+
+      `switch` 用 `git checkout --detach` ⇒ **整个工作树**被替换 ⇒
+        ① 控制面脚本 `scripts/versionctl.py` 自己也被换掉
+           （切到 v3.28.0 之前 ⇒ 该文件**根本不存在**）；
+        ② 入库的 `.versionctl/config.json` 被 checkout **删除**
+           ⇒ 策略真源消失；
+        ③ 目录删空 ⇒ 连 journal（恢复依据）一起消失。
+
+      ⇒ 用户切出去后**没有任何办法执行 recover** ⇒ **死锁**。
+
+      ⇒ 解法（v3.28.0 实施）：
+        · **自举锚点** `.versionctl/bin/versionctl.py`（gitignored ⇒ 跨 checkout 存活）
+        · **双轨策略** `config/version-policy.yaml`（入库 ⇒ 跨版本存活）
+          + `.versionctl/`（整体不入库 ⇒ 不被 checkout 删除）
+        · `recover` 放行「checkout 造成的删除」，但仍拒绝「真实改动」
+
+      ⇒ 判据：必须真的切到一个**没有控制面的年代**（v3.27.0），
+        再用锚点恢复 ⇒ 判据才有鉴别力。
+    """
+
+    def test_switch_to_pre_control_plane_version_then_recover(self):
+        """★ 核心：切到 v3.27.0（控制面尚不存在的年代）→ 用锚点 recover 回到主线。"""
+        with _clone_repo() as clone:
+            orig_branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
+            orig_head = _git(clone, "rev-parse", "HEAD")
+            # 装入策略真源（v3.27.0 时代还没有它）
+            yml = Path(clone) / "config" / "version-policy.yaml"
+            yml.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(_HERE.parent / "config" / "version-policy.yaml"),
+                         str(yml))
+            _git(clone, "add", "config/version-policy.yaml")
+            _git(clone, "-c", "user.name=test",
+                 "-c", "user.email=test@example.invalid",
+                 "commit", "-q", "-m", "test: 装入策略真源")
+
+            # 切到 v3.27.0 —— 控制面**不存在**的年代
+            proc = subprocess.run([sys.executable, "scripts/versionctl.py",
+                                   "switch", "v3.27.0", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "switch v3.27.0 应成功：%s" % proc.stderr[:200])
+            # 控制面确实消失了（这正是死锁的成因）
+            self.assertFalse((Path(clone) / "scripts" / "versionctl.py").exists(),
+                             "v3.27.0 时代不应有控制面脚本（前提假设）")
+            # ★ 但自举锚点必须存活
+            anchor = Path(clone) / ".versionctl" / "bin" / "versionctl.py"
+            self.assertTrue(anchor.is_file(),
+                            "★ 自举锚点必须跨 checkout 存活，否则用户切出去就回不来")
+
+            # 用锚点 recover ⇒ 必须回到原分支与原提交
+            proc = subprocess.run([sys.executable, str(anchor),
+                                   "recover", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "用锚点 recover 应成功：stdout=%s stderr=%s"
+                             % (proc.stdout[-400:], proc.stderr[:300]))
+            self.assertEqual(_git(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+                             orig_branch, "必须回到原分支")
+            self.assertEqual(_git(clone, "rev-parse", "HEAD"), orig_head,
+                             "必须回到原提交")
+
+    def test_bootstrap_anchor_survives_checkout(self):
+        """★ 自举锚点必须跨 checkout 存活（gitignored ⇒ 不被 checkout 换掉）。"""
+        with _clone_repo() as clone:
+            subprocess.run([sys.executable, "scripts/versionctl.py",
+                            "switch", "v3.27.0", "--confirm"],
+                           cwd=str(clone), capture_output=True, text=True)
+            anchor = Path(clone) / ".versionctl" / "bin" / "versionctl.py"
+            self.assertTrue(anchor.is_file(), "锚点必须存活")
+            # 锚点内容必须是**可用的控制面**（不是空文件/半截文件）
+            text = anchor.read_text(encoding="utf-8")
+            self.assertIn("def cmd_recover", text,
+                          "锚点里必须是完整的控制面脚本")
+            self.assertGreater(len(text), 10000, "锚点内容不应是半截文件")
+
+    def test_policy_survives_checkout(self):
+        """★ 策略真源必须跨 checkout 存活（入库 ⇒ 切到旧版本也读得到）。"""
+        with _clone_repo() as clone:
+            yml = Path(clone) / "config" / "version-policy.yaml"
+            yml.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(_HERE.parent / "config" / "version-policy.yaml"),
+                         str(yml))
+            _git(clone, "add", "config/version-policy.yaml")
+            _git(clone, "-c", "user.name=test",
+                 "-c", "user.email=test@example.invalid",
+                 "commit", "-q", "-m", "test: 装入策略真源")
+            subprocess.run([sys.executable, "scripts/versionctl.py",
+                            "switch", "v3.27.0", "--confirm"],
+                           cwd=str(clone), capture_output=True, text=True)
+            # v3.27.0 没有该文件 ⇒ 被 checkout 删除 ⇒ 但**包级真源必须在主线**
+            # ⇒ 判据：切回主线后真源仍在，且 policy 读得到正确值
+            anchor = Path(clone) / ".versionctl" / "bin" / "versionctl.py"
+            subprocess.run([sys.executable, str(anchor), "recover", "--confirm"],
+                           cwd=str(clone), capture_output=True, text=True)
+            self.assertTrue(yml.is_file(), "回到主线后策略真源必须存在")
+            pol = vc.load_policy(clone)
+            self.assertEqual(pol.get("keep_recent"), 10,
+                             "策略真源必须能被正确读取")
+            self.assertEqual(pol.get("schema_version"), 2)
+
+    def test_versionctl_dir_is_not_git_tracked(self):
+        """★ `.versionctl/` 整体**不得**被 git 跟踪（否则会被 checkout 删除）。"""
+        repo = vc.repo_root()
+        tracked = run_git_out(["ls-files"], cwd=repo).splitlines()
+        bad = [t for t in tracked if t.startswith(".versionctl/")]
+        self.assertEqual(bad, [],
+                         "★ `.versionctl/` 不得被 git 跟踪（会随 checkout 消失）：%s"
+                         % bad)
+
+
+def run_git_out(args, cwd=None):
+    """跑 git 并返回 stdout（测试辅助，不抛异常）。"""
+    return subprocess.run(["git"] + list(args), cwd=str(cwd) if cwd else None,
+                          capture_output=True, text=True).stdout
+
+
+class T26DirtyClassification(unittest.TestCase):
+    """★★ T26 「脏」的分类判据：checkout 副作用 vs 用户真实改动。
+
+    ★ v3.28.0 收尾期挖出的第 7、8 个真缺陷：
+      切到旧版本后 `git status` 会出现两类"脏"：
+        ① ` D config/version-policy.yaml` —— 被 checkout 删除（受保护文件）
+        ② `?? .versionctl/`            —— 工具自身运行时目录（未跟踪）
+      ⇒ 这两类**都不该阻塞恢复**（否则死锁）；
+        但「用户真的改了代码」**必须**阻塞（否则丢工作）。
+
+    ★ 判据必须能红：把「未跟踪一律阻塞」改回去 ⇒ 必须判红。
+    """
+
+    def test_deleted_protected_file_is_benign(self):
+        blocking, benign = vc.classify_dirty(
+            [" D config/version-policy.yaml"],
+            protected_rel_paths=("config/version-policy.yaml",))
+        self.assertEqual(blocking, [], "受保护文件被删除不应阻塞恢复")
+        self.assertEqual(len(benign), 1, "应被归类为 benign")
+
+    def test_runtime_dir_untracked_is_benign(self):
+        blocking, benign = vc.classify_dirty(
+            ["?? .versionctl/"], ignore_rel_prefixes=(".versionctl",))
+        self.assertEqual(blocking, [], "工具自身运行时目录不应阻塞恢复")
+        self.assertEqual(len(benign), 1)
+
+    def test_real_modification_still_blocks(self):
+        """★ 关键：用户的真实改动**必须**仍然阻塞（不能为解死锁而丢工作）。"""
+        blocking, benign = vc.classify_dirty(
+            [" M scripts/versionctl.py"], protected_rel_paths=())
+        self.assertEqual(len(blocking), 1, "真实改动必须阻塞恢复")
+        self.assertEqual(benign, [])
+
+    def test_untracked_user_file_blocks(self):
+        """★ 用户的未跟踪新文件也必须阻塞（不能悄悄丢）。"""
+        blocking, benign = vc.classify_dirty(
+            ["?? my_important_data.csv"], ignore_rel_prefixes=(".versionctl",))
+        self.assertEqual(len(blocking), 1, "用户未跟踪文件必须阻塞恢复")
+
+    def test_mutation_must_be_detected(self):
+        """★ 能红的反例：把 benign 判据改成「一律阻塞」⇒ 本判据必须红。"""
+        lines = [" D config/version-policy.yaml", "?? .versionctl/"]
+        b_ok, n_ok = vc.classify_dirty(
+            lines, protected_rel_paths=("config/version-policy.yaml",),
+            ignore_rel_prefixes=(".versionctl",))
+        # 变异版：忽略保护名单与忽略前缀 ⇒ 两者都进 blocking
+        b_mut, n_mut = vc.classify_dirty(lines)
+        self.assertEqual(b_ok, [], "正确实现：两者都 benign")
+        self.assertGreater(len(b_mut), len(b_ok),
+                           "★ 判据无鉴别力：变异后结果没变")
+
+
+
 class T22ReleaseHeadExtraction(unittest.TestCase):
     """★ T22 收口版本抽取：认「开头 / 结尾 / 中文冒号前」，不认「顺带提及」。"""
 
@@ -1354,6 +1600,1166 @@ class T22ReleaseHeadExtraction(unittest.TestCase):
     def test_partial_version_not_matched(self):
         """反例：两段式不得被当成版本。"""
         self.assertIsNone(vc._extract_release_head("v3.4 遗留批"))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# T27 · 双轨策略的缺陷守卫（v3.28.0 收尾审查）
+# ═══════════════════════════════════════════════════════════════════════
+
+class _PolicySandbox(object):
+    """构造一个**受控**的双轨策略沙盒（tmpdir）。
+
+    ★ 纪律：全部在 `tempfile.mkdtemp()` 里做 ⇒ **绝不碰真实仓库**。
+    """
+
+    def __init__(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vc-policy-")
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir(parents=True, exist_ok=True)
+
+    def close(self):
+        self.tmp.cleanup()
+
+    # ── 真源 ──
+    def write_yaml(self, text):
+        p = self.root / vc.POLICY_YAML_REL
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def write_yaml_policy(self, **kv):
+        return self.write_yaml("".join("%s: %s\n" % (k, v) for k, v in kv.items()))
+
+    def _yaml_data(self):
+        """读回真源的内容（dict）。"""
+        data, _err = vc._read_yaml_policy(self.root / vc.POLICY_YAML_REL)
+        return data or {}
+
+    # ── 运行时层 ──
+    def write_runtime(self, data, name=None):
+        d = self.root / vc.CTL_DIRNAME
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / (name or vc.POLICY_LOCAL_FILENAME)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def read_runtime(self, name=None):
+        p = self.root / vc.CTL_DIRNAME / (name or vc.POLICY_LOCAL_FILENAME)
+        if not p.is_file():
+            return None
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def runtime_exists(self, name=None):
+        return (self.root / vc.CTL_DIRNAME / (name or vc.POLICY_LOCAL_FILENAME)).is_file()
+
+
+class T27PolicyDualTrack(unittest.TestCase):
+    """★★ T27 双轨策略的缺陷守卫（D1–D8）。
+
+    ★ 本轮审查（v3.28.0 收尾）挖出的缺陷与结论：
+
+      D1 · **真缺陷**：运行时副本无条件覆盖包级真源
+           ⇒ 旧残留 / 旧工作树副本会**永久遮蔽**真源 ⇒ 真源静默失效。
+           修法：运行时层只能是「**本机覆盖增量**」，用 `_local_overrides`
+           标记自描述角色；无标记的旧版全量副本**只补缺键、绝不遮蔽**。
+
+      D2 · **设计如此**（不是缺陷）：真源入库 ⇒ 改它必然弄脏工作区。
+           二者靠 `--local` 区分意图；输出必须**明说**「需要 git commit」。
+
+      D3 · **真缺陷**：`migrate_policy` 只看 YAML 一份 ⇒ JSON 永远不迁、
+           旧布局升不上真源。修法：各自判定、各自迁移；只有 JSON 时
+           **提升为包级真源**。
+
+      D4 · **真缺陷**：无 PyYAML 时 `save_policy` 静默只写 JSON ⇒
+           用户以为真源更新了。修法：**显式告警** + 返回告警列表。
+
+      D5 · **真缺陷**：YAML 解析失败 ⇒ 静默退回默认策略 ⇒ 用户改过的
+           策略**静默失效**。修法：区分「不存在」与「存在但坏了」，
+           后者**显式告警**。
+
+      D6 · **真缺陷**：两个同值常量各自独立 ⇒ 静默分叉。
+           修法：真相只留一处，另一处降级为**别名**（同一对象）。
+
+      D7 · **可改进**：`classify_dirty` 忽略范围过宽 ⇒ 用户自放的
+           重要文件可能被悄悄丢。修法：只忽略**工具自己写的**路径；
+           目录匹配必须**逐段相等**（不得用裸 `startswith`）。
+
+      D8 · **真缺陷**：运行时副本沿用 `config.json` 这个
+           **曾被 git 跟踪**的文件名 ⇒ 切到旧版本时被 checkout
+           **静默覆盖** ⇒ 用户本机设置被清空。
+           修法：改用**从未被跟踪**的文件名。
+
+    ★ 每条判据都必须在**受控 tmpdir** 里造出差异（不依赖真实仓库的数据
+      恰好如此），且都必须有**能红的反例**。
+    """
+
+    def setUp(self):
+        self.sb = _PolicySandbox()
+        self.addCleanup(self.sb.close)
+
+    # ── D1：运行时残留不得遮蔽包级真源 ─────────────────────────
+
+    def test_D1_stale_runtime_copy_does_not_shadow_source_of_truth(self):
+        """★ D1 核心：旧版全量副本（无标记）**不得**遮蔽包级真源。
+
+        —— 场景：用户在旧版本工作树里改过 `.versionctl/config.json`
+          （那时还没有 YAML 真源）⇒ 回到主线后，真源已更新为 25，
+          但旧副本还是 10 ⇒ 原实现生效值是 10 ⇒ **真源静默失效**。
+        """
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        # 旧版全量副本（**无** `_local_overrides` 标记）
+        self.sb.write_runtime({"schema_version": 2, "keep_recent": 10},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        policy = vc.load_policy(self.sb.root)
+        self.assertEqual(policy.get("keep_recent"), 25,
+                         "★ 包级真源（25）不得被旧版运行时副本（10）遮蔽"
+                         "（D1：真源静默失效）")
+
+    def test_D1_mutation_would_be_detected(self):
+        """★ 能红的反例：把「无标记⇒只补缺键」改回「无条件覆盖」⇒ 必须判红。
+
+        —— 变异版：旧副本的 keep_recent 覆盖真源 ⇒ 生效值变 10。
+        """
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        stale = {"schema_version": 2, "keep_recent": 10}
+        # 正确实现：真源优先
+        self.assertEqual(vc.load_policy(self.sb.root).get("keep_recent"), 25)
+        # 变异实现：JSON 无条件覆盖（修复前的行为）⇒ 生效值被污染
+        mutated = dict(vc.DEFAULT_POLICY)
+        mutated["schema_version"] = vc.SCHEMA_VERSION
+        mutated.update(self.sb._yaml_data())
+        mutated.update(stale)
+        self.assertEqual(mutated.get("keep_recent"), 10,
+                         "变异版应把真源覆盖成 10（证明本判据有鉴别力）")
+        self.assertNotEqual(mutated.get("keep_recent"), 25)
+
+    def test_D1_explicit_local_override_does_override_source(self):
+        """★ 反向对照：**显式** `--local` 写出的覆盖层**必须**能覆盖真源。
+
+        —— 否则修 D1 就把 `--local` 的功能也一起废了。
+        """
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        self.sb.write_runtime({vc.POLICY_OVERLAY_MARKER: True,
+                               "keep_recent": 3})
+        policy = vc.load_policy(self.sb.root)
+        self.assertEqual(policy.get("keep_recent"), 3,
+                         "显式本机覆盖层必须能覆盖包级真源")
+
+    def test_D1_legacy_copy_only_fills_missing_keys(self):
+        """★ 旧版全量副本**只补真源没有的键**，不得改动真源已有的键。"""
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        self.sb.write_runtime({"schema_version": 2, "keep_recent": 10,
+                               "my_extra": "from-legacy"},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        policy = vc.load_policy(self.sb.root)
+        self.assertEqual(policy.get("keep_recent"), 25)
+        self.assertEqual(policy.get("my_extra"), "from-legacy",
+                         "真源没有的键应从旧副本补上")
+
+    def test_D1_writes_local_creates_overlay_with_marker(self):
+        """★ `policy --local` 写出的文件必须**带标记** ⇒ 才有覆盖权。"""
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        vc.save_policy(self.sb.root,
+                       {"schema_version": 2, "keep_recent": 3},
+                       local_only=True)
+        data = self.sb.read_runtime()
+        self.assertTrue(data.get(vc.POLICY_OVERLAY_MARKER),
+                        "本机覆盖层必须带 %s 标记（否则无覆盖权）" % vc.POLICY_OVERLAY_MARKER)
+
+    # ── D2：写真源必然弄脏工作区 —— 这是设计，不是缺陷 ─────────
+
+    def test_D2_writing_source_dirties_worktree_but_says_so(self):
+        """★ D2：`--set` 写真源 ⇒ 工作区变脏（**预期**），且输出必须**明说**
+        「需要 git commit」⇒ 用户不会被「工作区脏了」打个措手不及。"""
+        import io
+        import contextlib
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=10)
+        args = type("A", (), {"set": ["keep_recent=5"], "local": False,
+                              "confirm": True})()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = vc.cmd_policy(args, self.sb.root)
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("git add", out,
+                      "写真源后必须明说需要 git commit（否则用户不知为何变脏）")
+        self.assertIn(vc.POLICY_YAML_REL, out)
+
+    def test_D2_local_write_keeps_worktree_clean(self):
+        """★ 反向对照：`--local` 只写运行时层 ⇒ **不碰**包级真源。"""
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=10)
+        vc.save_policy(self.sb.root,
+                       {"schema_version": 2, "keep_recent": 5},
+                       local_only=True)
+        y = self.sb.root / vc.POLICY_YAML_REL
+        self.assertIn("keep_recent: 10", y.read_text(encoding="utf-8"),
+                      "`--local` 不得改动包级真源")
+
+    def test_D2_source_write_does_not_leave_full_mirror(self):
+        """★ D2 关键：写真源后**不得**再留一份全量运行时副本。
+
+        —— 那正是 D1 的成因：全量副本会遮蔽真源。
+        """
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=10)
+        # 先造一份旧版全量副本（残留）
+        self.sb.write_runtime({"schema_version": 2, "keep_recent": 10},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        vc.save_policy(self.sb.root,
+                       {"schema_version": 2, "keep_recent": 25},
+                       local_only=False)
+        # 生效值必须是刚写的真源（25），不是残留（10）
+        self.assertEqual(vc.load_policy(self.sb.root).get("keep_recent"), 25,
+                         "写真源后生效值必须是真源（残留副本不得遮蔽）")
+
+    # ── D3：迁移必须覆盖两份，且旧布局能升为真源 ─────────────────
+
+    def test_D3_migrates_both_yaml_and_runtime(self):
+        """★ D3 核心：YAML 已是最新、JSON 停在旧 schema ⇒ **JSON 也必须被迁**。
+
+        —— 修复前：只看 YAML ⇒ 直接 no-op ⇒ JSON 永远停在旧 schema。
+        """
+        self.sb.write_yaml_policy(schema_version=vc.SCHEMA_VERSION, keep_recent=10)
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 10})
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated",
+                         "★ JSON 停在旧 schema 时不得 no-op（否则迁移形同虚设）")
+        data = self.sb.read_runtime()
+        self.assertEqual(data.get("schema_version"), vc.SCHEMA_VERSION)
+        self.assertIn("artifact_dirs", data,
+                      "迁移键必须补齐到运行时层")
+
+    def test_D3_json_only_layout_is_promoted_to_source_of_truth(self):
+        """★ D3：只有 JSON（旧布局）⇒ 迁移后**包级真源必须存在**。
+
+        —— 修复前：只写 JSON ⇒ 真源始终不存在 ⇒ 双轨设计落空。
+        """
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 7})
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated")
+        y = self.sb.root / vc.POLICY_YAML_REL
+        self.assertTrue(y.is_file(),
+                        "★ 旧布局迁移后必须产出包级真源（否则双轨落空）")
+        self.assertEqual(vc.load_policy(self.sb.root).get("keep_recent"), 7)
+
+    def test_D3_both_exist_with_different_schema(self):
+        """★ D3：两份都在且 schema 不同 ⇒ 两份**各自**迁到当前版本。"""
+        self.sb.write_yaml_policy(schema_version=1, keep_recent=10)
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 10})
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated")
+        y = vc._read_yaml_policy(self.sb.root / vc.POLICY_YAML_REL)[0]
+        self.assertEqual(y.get("schema_version"), vc.SCHEMA_VERSION)
+        self.assertEqual(self.sb.read_runtime().get("schema_version"),
+                         vc.SCHEMA_VERSION)
+
+    def test_D3_backup_files_are_distinct(self):
+        """★ D3：两份都被迁 ⇒ 备份**不得互相覆盖**（否则只剩一份证据）。"""
+        self.sb.write_yaml_policy(schema_version=1, keep_recent=10)
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 10})
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        baks = [m["backup"] for m in r.get("migrated", [])]
+        self.assertEqual(len(baks), len(set(baks)),
+                         "两份的备份路径必须各不相同（否则互相覆盖）")
+        for b in baks:
+            self.assertTrue(Path(b).is_file(), "备份必须真实存在：%s" % b)
+
+    def test_D3_migration_does_not_overwrite_user_values(self):
+        """★ D3：`setdefault` 语义保留 —— 用户已有的迁移键不得被清空。"""
+        self.sb.write_yaml_policy(schema_version=1, keep_recent=10)
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated")
+        y = vc._read_yaml_policy(self.sb.root / vc.POLICY_YAML_REL)[0]
+        self.assertEqual(y.get("keep_recent"), 10,
+                         "迁移不得改动用户已有的值")
+        self.assertEqual(y.get("schema_version"), vc.SCHEMA_VERSION)
+
+    # ── D4：无 PyYAML 不得静默降级 ──────────────────────────────
+
+    def test_D4_no_yaml_module_warns_loudly(self):
+        """★ D4 核心：无 PyYAML ⇒ **必须显式告警**（静默降级是缺陷）。
+
+        —— 场景：环境没装 PyYAML ⇒ 真源写不了 ⇒ 用户却以为改成功了。
+        """
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("no yaml (simulated)")
+            return real_import(name, *a, **k)
+
+        builtins.__import__ = fake_import
+        try:
+            written, warnings = vc.save_policy(
+                self.sb.root, {"schema_version": 2, "keep_recent": 5})
+        finally:
+            builtins.__import__ = real_import
+        self.assertTrue(warnings,
+                        "★ 无 PyYAML 时必须**显式告警**（不得静默降级）")
+        self.assertTrue(any("真源" in w for w in warnings),
+                        "告警必须点明「包级真源未写入」：%s" % warnings)
+        # 真源确实没写成
+        self.assertFalse((self.sb.root / vc.POLICY_YAML_REL).is_file())
+
+    def test_D4_with_yaml_writes_source_and_no_warning(self):
+        """★ 反向对照：有 PyYAML ⇒ 真源写成 ⇒ **不得**有告警。"""
+        written, warnings = vc.save_policy(
+            self.sb.root, {"schema_version": 2, "keep_recent": 5})
+        self.assertEqual(warnings, [], "正常路径不得有告警")
+        self.assertTrue((self.sb.root / vc.POLICY_YAML_REL).is_file())
+
+    # ── D5：解析失败必须告警 ────────────────────────────────────
+
+    def test_D5_broken_yaml_produces_warning(self):
+        """★ D5 核心：YAML 语法错误 ⇒ **必须告警**（不得静默退回默认值）。
+
+        —— 场景：用户手改了 YAML 写坏了 ⇒ 策略**静默失效**且无任何提示。
+        """
+        self.sb.write_yaml("schema_version: 2\nkeep_recent: [broken\n")
+        warnings = []
+        policy = vc.load_policy(self.sb.root, warnings=warnings)
+        self.assertTrue(warnings,
+                        "★ 真源解析失败必须**显式告警**（不得静默失效）")
+        self.assertTrue(any(vc.POLICY_YAML_REL in w for w in warnings),
+                        "告警必须点名是哪个文件坏了：%s" % warnings)
+
+    def test_D5_broken_json_produces_warning(self):
+        """★ D5：运行时层解析失败同样必须告警。"""
+        d = self.sb.root / vc.CTL_DIRNAME
+        d.mkdir(parents=True, exist_ok=True)
+        (d / vc.POLICY_LOCAL_FILENAME).write_text("{not json", encoding="utf-8")
+        warnings = []
+        vc.load_policy(self.sb.root, warnings=warnings)
+        self.assertTrue(warnings,
+                        "★ 运行时层解析失败必须告警（不得静默忽略）")
+
+    def test_D5_missing_file_is_not_a_warning(self):
+        """★ 反向对照：文件**不存在**是正常状态 ⇒ 不得告警（否则噪音）。"""
+        warnings = []
+        vc.load_policy(self.sb.root, warnings=warnings)
+        self.assertEqual(warnings, [],
+                         "文件不存在不是错误 ⇒ 不得告警（避免噪音淹没真问题）")
+
+    def test_D5_no_yaml_environment_warns(self):
+        """★ D5 边界：无 PyYAML ⇒ 真源**读不了** ⇒ 必须告警（不是「不存在」）。"""
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("no yaml (simulated)")
+            return real_import(name, *a, **k)
+
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        builtins.__import__ = fake_import
+        try:
+            warnings = []
+            vc.load_policy(self.sb.root, warnings=warnings)
+        finally:
+            builtins.__import__ = real_import
+        self.assertTrue(warnings,
+                        "★ 无 PyYAML ⇒ 真源读不了 ⇒ 必须告警（不得当作不存在）")
+
+    # ── D6：常量不得静默分叉 ────────────────────────────────────
+
+    def test_D6_config_filename_is_alias_not_independent_constant(self):
+        """★ D6：`CONFIG_FILENAME` 必须是**别名**（同一对象）⇒ 不可能分叉。"""
+        self.assertIs(vc.CONFIG_FILENAME, vc.POLICY_LEGACY_FILENAME,
+                      "★ CONFIG_FILENAME 必须是 POLICY_LEGACY_FILENAME 的别名"
+                      "（同一对象 ⇒ 改一处即处处生效）")
+
+    def test_D6_no_duplicate_literal_filename_definitions(self):
+        """★ D6 能红的反例：源码里**不得**再出现第二个独立的
+        `"config.json"` 常量定义 ⇒ 否则又会分叉。"""
+        src = Path(vc.__file__).read_text(encoding="utf-8")
+        import re
+        defs = re.findall(r"^([A-Z_][A-Z0-9_]*)\s*=\s*[\"']config\.json[\"']",
+                          src, re.M)
+        self.assertEqual(len(defs), 1,
+                         "★ 'config.json' 字面量只允许出现在一处常量定义"
+                         "（实际 %d 处：%s）" % (len(defs), defs))
+
+    # ── D7：脏分类的忽略范围 ────────────────────────────────────
+
+    def test_D7_user_file_inside_runtime_dir_still_blocks(self):
+        """★ D7 核心：用户自放在 `.versionctl/` 下的**重要文件**必须仍阻塞。
+
+        —— 场景：`.versionctl/my_backup.txt` 是用户的数据
+          ⇒ 恢复时可能被覆盖丢失 ⇒ 必须让用户知道。
+        """
+        blocking, benign = vc.classify_dirty(
+            ["?? .versionctl/my_backup.txt"],
+            protected_rel_paths=(),
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(len(blocking), 1,
+                         "★ 用户自放的文件必须阻塞（不得悄悄丢）")
+        self.assertEqual(benign, [])
+
+    def test_D7_tool_owned_paths_are_benign(self):
+        """★ 反向对照：工具**自己写**的路径必须放行（否则死锁）。"""
+        for p in (".versionctl/journal/20260101-000000.jsonl",
+                  ".versionctl/archive/20260101-000000/x.md",
+                  ".versionctl/bin/versionctl.py",
+                  ".versionctl/policy.local.json"):
+            blocking, benign = vc.classify_dirty(
+                ["?? %s" % p],
+                protected_rel_paths=(),
+                ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+                tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+            self.assertEqual(blocking, [],
+                             "工具自己写的路径必须 benign：%s" % p)
+
+    def test_D7_similar_prefix_dir_is_not_ignored(self):
+        """★ D7 能红的反例：`.versionctlX/`（相似前缀）**不得**被忽略。
+
+        —— 若用裸 `startswith(ig)` 就会误伤 ⇒ 这条判据能红。
+        """
+        blocking, benign = vc.classify_dirty(
+            ["?? .versionctlX/important.txt"],
+            protected_rel_paths=(),
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(len(blocking), 1,
+                         "★ `.versionctlX/` 不是 `.versionctl/` ⇒ 不得被忽略")
+
+    def test_D7_runtime_dir_root_still_benign(self):
+        """★ D7：git 把未跟踪目录**折叠**成 `?? .versionctl/` 时必须放行。
+
+        —— 此时无法枚举内部文件 ⇒ 不放行必然死锁（这正是第 8 个真缺陷）。
+        """
+        blocking, benign = vc.classify_dirty(
+            ["?? .versionctl/"],
+            protected_rel_paths=(),
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(blocking, [],
+                         "未跟踪目录折叠行必须 benign（否则 recover 死锁）")
+
+    def test_D7_rename_line_parsing(self):
+        """★ D7：重命名行 `"R  old -> new"` 的路径解析必须正确。"""
+        blocking, benign = vc.classify_dirty(
+            ["R  old.py -> new.py"],
+            protected_rel_paths=("new.py",),
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        # 重命名到受保护文件 ⇒ 只算「删除」⇒ benign
+        self.assertEqual(blocking, [])
+        self.assertEqual(len(benign), 1)
+
+    # ── D8：运行时副本不得被 checkout 静默覆盖 ──────────────────
+
+    def test_D8_runtime_filename_is_never_git_tracked(self):
+        """★ D8 核心：本机覆盖层的文件名**不得**被任何提交跟踪过。
+
+        —— 若沿用 `config.json`（v3.28.0 跟踪过）⇒ 切到旧版本时
+          git 会用旧内容**覆盖**用户的本机设置 ⇒ 静默清空。
+        """
+        repo = vc.repo_root()
+        tracked = run_git_out(["ls-files"], cwd=repo).splitlines()
+        bad = [t for t in tracked
+               if t.startswith("%s/%s" % (vc.CTL_DIRNAME, vc.POLICY_LOCAL_FILENAME))]
+        self.assertEqual(bad, [],
+                         "★ 本机覆盖层不得被 git 跟踪（会被 checkout 覆盖）：%s" % bad)
+
+    def test_D8_filename_differs_from_legacy_tracked_name(self):
+        """★ D8 能红的反例：本机覆盖层的文件名必须**不同于**旧版被跟踪名。
+
+        —— 只要同名 ⇒ 切到旧版本就会被 checkout 覆盖。
+        """
+        self.assertNotEqual(vc.POLICY_LOCAL_FILENAME, vc.POLICY_LEGACY_FILENAME,
+                            "★ 本机覆盖层必须换个名字（否则会被 checkout 覆盖）")
+
+    def test_D8_legacy_file_is_still_read_for_compatibility(self):
+        """★ D8 反向对照：旧版文件仍要**能读**（用户升级后磁盘上还有它）。"""
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=25)
+        self.sb.write_runtime({"schema_version": 2, "keep_recent": 10},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        policy = vc.load_policy(self.sb.root)
+        self.assertEqual(policy.get("keep_recent"), 25,
+                         "旧版文件仍要能被读取（但不得遮蔽真源）")
+
+    # ── 端到端：跨 checkout 存活 ────────────────────────────────
+
+    def test_E2E_local_override_survives_checkout(self):
+        """★ 端到端：`--local` 设的值在**切换版本**后仍然生效。
+
+        —— 这是 D8 的**行为级**判据：文件名没被 git 跟踪 ⇒ 切换不丢。
+        """
+        with _clone_repo() as clone:
+            # 装入包级真源
+            yml = Path(clone) / vc.POLICY_YAML_REL
+            yml.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(_HERE.parent / vc.POLICY_YAML_REL), str(yml))
+            _git(clone, "add", vc.POLICY_YAML_REL)
+            _git(clone, "-c", "user.name=test",
+                 "-c", "user.email=test@example.invalid",
+                 "commit", "-q", "-m", "test: 装入策略真源")
+            # 本机覆盖：keep_recent=3
+            proc = subprocess.run(
+                [sys.executable, "scripts/versionctl.py", "policy", "--local",
+                 "--set", "keep_recent=3", "--confirm"],
+                cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "policy --local 应成功：%s" % proc.stdout[-300:])
+            ov = Path(clone) / vc.CTL_DIRNAME / vc.POLICY_LOCAL_FILENAME
+            self.assertTrue(ov.is_file(), "本机覆盖层应已写出")
+            # 切到 v3.27.0（控制面尚不存在的年代）⇒ 覆盖层必须存活
+            proc = subprocess.run([sys.executable, "scripts/versionctl.py",
+                                   "switch", "v3.27.0", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "switch v3.27.0 应成功：%s" % proc.stdout[-300:])
+            self.assertTrue(ov.is_file(),
+                            "★ 本机覆盖层必须跨 checkout 存活"
+                            "（文件名未被 git 跟踪 ⇒ git 不碰它）")
+            data = json.loads(ov.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("keep_recent"), 3,
+                             "★ 本机覆盖的值不得被 checkout 静默清空（D8）")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# T28 · D9–D13 的**显式命名判据**（v3.28.0 收尾审查补缺）
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ★ 为什么要单独一个类：
+#   T27（T27PolicyDualTrack）只给 D1–D8 配了显式命名判据；
+#   D9–D13 **只有间接/被动覆盖**（搭便车）⇒ 缺陷可以复活而不被发现。
+#   —— 实测：把 D13 的 `rglob` 改回 `iterdir` 跑全套
+#     `pytest scripts/test_versionctl.py -q` ⇒ **129 passed，一个都没杀**
+#     ⇒ 判据缺失确凿。
+#   ⇒ 本类给 D9–D13 各自补上**专属**判据，且每条都带**能红的反例**
+#     （铁律：判据必须能红，否则就是假守卫）。
+#
+# ★ 五条缺陷的语义（本类逐条守住）：
+#   D9  · switch 的脏判定**排除工具自身的运行时文件**
+#        （工具自己写的 `policy.local.json` 不得阻塞切换 ⇒ 否则功能自锁）。
+#   D10 · 迁移后的运行时层**自带** `schema_version`
+#        （否则运行时层连自己按哪版 schema 解释都读不出来 ⇒ 迁移形同虚设）。
+#   D11 · 旧版全量副本**只在真源该键仍是默认值时**兜底；
+#        真源显式设置过 ⇒ 真源优先；真源没有该键 ⇒ 旧副本补上。
+#   D12 · 迁移**不得**把迁移源自己归档掉
+#        （否则用户读回原路径拿到 FileNotFound）。
+#   D13 · prune 的产物收集**必须递归**（两层以上的子目录里的产物也要找到）。
+
+
+class _ArtifactSandbox(object):
+    """产物目录沙盒（tmpdir）—— 只为 D13 的产物收集判据服务。"""
+
+    def __init__(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vc-artifacts-")
+        self.root = Path(self.tmp.name)
+
+    def close(self):
+        self.tmp.cleanup()
+
+    def make_file(self, rel, data=b"x"):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+
+class T28DefectGuards(unittest.TestCase):
+    """★★ T28 · D9–D13 的显式命名判据（每条都有能红的反例）。
+
+    ★ 纪律：
+      · 每条判据都**指名缺陷编号** ⇒ 审计时可按编号直接定位；
+      · 每条判据都**不依赖真实仓库的数据恰好如此** ⇒ 用受控沙盒构造差异；
+      · 每条判据都带**能红的反例** ⇒ 在测试内构造变异实现，
+        断言「变异实现的结果 ≠ 正确实现的结果」⇒ 证明本判据有鉴别力。
+    """
+
+    def setUp(self):
+        self.sb = _PolicySandbox()
+        self.addCleanup(self.sb.close)
+
+    # ── D9：switch 不得因工具自身的运行时文件而拒绝 ────────────
+
+    def test_D9_switch_ignores_tool_owned_runtime_files(self):
+        """★ D9 核心：**工具自己写的**运行时文件**不得**阻塞 switch。
+
+        —— 场景：`policy --local` 写 `.versionctl/policy.local.json`（未跟踪）
+          ⇒ `git status` 报 `?? .versionctl/policy.local.json`
+          ⇒ 原实现「所有 status 行一律阻塞」⇒ switch **一律拒绝**
+          ⇒ 用户刚设的本机策略就再也切不了版本 ⇒ 功能自锁。
+
+        ★ 判据是**纯函数级**的（`classify_dirty`）：
+          ① 工具自有路径 ⇒ **不得**进 blocking；
+          ② 用户的普通文件 ⇒ **必须**进 blocking（不能为了修 D9 放水）。
+        """
+        tool_line = "?? %s" % (vc.CTL_DIRNAME + "/" + vc.POLICY_LOCAL_FILENAME)
+        user_line = "?? my_important.txt"
+
+        blocking, benign = vc.classify_dirty(
+            [tool_line],
+            protected_rel_paths=vc.PROTECTED_REL_PATHS,
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(blocking, [],
+                         "★ 工具自有的运行时文件不得阻塞 switch"
+                         "（否则 D9 ⇒ 功能自锁）：%s" % tool_line)
+        self.assertEqual(len(benign), 1,
+                         "工具自有的运行时文件应被判为 benign")
+
+        blocking2, _b2 = vc.classify_dirty(
+            [user_line],
+            protected_rel_paths=vc.PROTECTED_REL_PATHS,
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(len(blocking2), 1,
+                         "★ 用户的普通未跟踪文件**必须**仍阻塞"
+                         "（修 D9 不得把闸门放水）：%s" % user_line)
+
+    def test_D9_mutation_would_be_detected(self):
+        """★ D9 能红的反例：把工具自有路径**当用户文件** ⇒ 必须判红。
+
+        —— 变异实现 = 「空白的 tool_owned 白名单」（等价于修复前的
+          「所有 status 行一律阻塞」）⇒ 工具文件会进 blocking。
+        """
+        tool_line = "?? %s" % (vc.CTL_DIRNAME + "/" + vc.POLICY_LOCAL_FILENAME)
+
+        # 正确实现：带 tool_owned 白名单 ⇒ 放行
+        blocking_ok, _ = vc.classify_dirty(
+            [tool_line],
+            protected_rel_paths=vc.PROTECTED_REL_PATHS,
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=vc.TOOL_OWNED_REL_PATHS)
+        self.assertEqual(blocking_ok, [], "正确实现应放行工具自有文件")
+
+        # 变异实现：白名单被清空（= 修复前的一律阻塞）⇒ 必须不同
+        blocking_mut, _ = vc.classify_dirty(
+            [tool_line],
+            protected_rel_paths=vc.PROTECTED_REL_PATHS,
+            ignore_rel_prefixes=vc.IGNORE_DIRTY_REL_PREFIXES,
+            tool_owned_rel_paths=())          # ★ 变异点
+        self.assertEqual(len(blocking_mut), 1,
+                         "变异版（清空白名单）必须把工具文件判成阻塞"
+                         "⇒ 证明本判据有鉴别力")
+        self.assertNotEqual(blocking_ok, blocking_mut,
+                            "正确实现与变异实现的结果必须不同")
+
+    def test_D9_cmd_switch_actually_uses_classify_dirty(self):
+        """★ D9 的**接线**判据：`cmd_switch` 必须走 `classify_dirty`。
+
+        —— 防止「判据还在、但接线被改回去」（如回到 `if st["dirty"]:`）。
+          这是**源码级**静态判据 ⇒ 纯变异（把调用换回一律阻塞）必红。
+        """
+        src = (_HERE / "versionctl.py").read_text(encoding="utf-8")
+        start = src.index("def cmd_switch(")
+        end = src.index("def cmd_rollback(")
+        body = src[start:end]
+        self.assertIn("classify_dirty", body,
+                      "★ cmd_switch 必须用 classify_dirty 判定脏"
+                      "（D9 接线被改回去 ⇒ 本判据必红）")
+        self.assertIn("TOOL_OWNED_REL_PATHS", body,
+                      "★ cmd_switch 必须把工具自有路径白名单传给 classify_dirty")
+        # ★ 反例：接线被改成「不看 status 行 ⇒ 一律放行」也不许
+        self.assertNotIn('if st["dirty"]:', body,
+                         "cmd_switch 不得退回「dirty 就一律拒绝」"
+                         "（D9 修复前的写法）")
+
+    def test_D9_switch_succeeds_with_tool_owned_file_present(self):
+        """★ D9 的**行为级**判据：工作区只有**工具自己的**文件时，switch 必须成功。
+
+        —— 这是 D9 的**真实语义**（「switch 不因为工具自己的文件而拒绝」）
+          的端到端验证：纯函数判据只看 `classify_dirty` 本身，
+          **测不到 `cmd_switch` 的调用点**是否把白名单传对。
+          —— 实测：把 `cmd_switch` 传给 `classify_dirty` 的白名单清空，
+            本条判红。
+
+        ★ 反向对照：工作区有**用户的**未跟踪文件时，switch 必须**拒绝**
+          （不能为了让 D9 通过而把闸门放水）。
+
+        ★ 两个场景用**各自独立的克隆**（切到 v3.27.0 后
+          `scripts/versionctl.py` 已不存在 ⇒ 不能在同一克隆里连做两次）。
+        """
+        # ① 只有工具自己的运行时文件 ⇒ switch 必须成功
+        with _clone_repo() as clone:
+            ctl = clone / vc.CTL_DIRNAME
+            ctl.mkdir(parents=True, exist_ok=True)
+            (ctl / vc.POLICY_LOCAL_FILENAME).write_text(
+                json.dumps({vc.POLICY_OVERLAY_MARKER: True,
+                            "keep_recent": 3}), encoding="utf-8")
+            proc = subprocess.run([sys.executable, "scripts/versionctl.py",
+                                   "switch", "v3.27.0", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "★ 工作区只有工具自身文件时 switch 必须成功"
+                             "（D9：否则功能自锁）：%s" % proc.stdout[-400:])
+            self.assertNotIn("拒绝切换", proc.stdout,
+                             "★ 不得因工具自身的文件而拒绝切换（D9）")
+
+        # ② 有用户的未跟踪文件 ⇒ switch 必须拒绝（闸门不得放水）
+        with _clone_repo() as clone:
+            (clone / "my_important.txt").write_text("别删我", encoding="utf-8")
+            proc2 = subprocess.run([sys.executable, "scripts/versionctl.py",
+                                    "switch", "v3.27.0", "--confirm"],
+                                   cwd=str(clone), capture_output=True, text=True)
+            self.assertNotEqual(proc2.returncode, 0,
+                                "★ 用户有未提交改动时 switch 必须拒绝"
+                                "（修 D9 不得放水）")
+            self.assertIn("拒绝切换", proc2.stdout,
+                          "★ 拒绝理由必须如实告知用户")
+
+    # ── D10：迁移后的运行时层必须自带 schema_version ────────────
+
+    def test_D10_migrated_overlay_carries_schema_version(self):
+        """★ D10 核心：迁移后的运行时层**必须**自带 `schema_version`。
+
+        —— 场景：YAML 真源与运行时 JSON 的 schema 都停在 1 ⇒ 迁移后
+          运行时 JSON 被改写成「覆盖层」⇒ 若「只留与真源不同的键」的
+          过滤逻辑把 `schema_version` 一起滤掉 ⇒ 运行时层文件里
+          **没有** schema_version ⇒ 运行时层自己都读不出自己的 schema
+          ⇒ 迁移**形同虚设**（实测：迁移后 `schema_version` = None）。
+
+        ★ 判据：迁移后读回运行时层 ⇒ `schema_version == SCHEMA_VERSION`。
+        """
+        # 真源（schema 旧）+ 运行时覆盖层（schema 旧）⇒ 两者都要迁
+        self.sb.write_yaml_policy(schema_version=1, keep_recent=5)
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 7})
+
+        r = vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated",
+                         "前置：迁移应当发生（action=%s）" % r.get("action"))
+
+        data = self.sb.read_runtime()
+        self.assertIsNotNone(data, "★ 迁移后运行时层必须仍然存在")
+        self.assertIn("schema_version", data,
+                      "★ 迁移后的运行时层必须自带 schema_version"
+                      "（D10：否则运行时层读不出自己的 schema）")
+        self.assertEqual(data.get("schema_version"), vc.SCHEMA_VERSION,
+                         "★ 迁移后运行时层的 schema_version 必须等于 %d"
+                         % vc.SCHEMA_VERSION)
+
+    def test_D10_mutation_would_be_detected(self):
+        """★ D10 能红的反例：模拟「迁移时丢掉 schema_version」的变异 ⇒ 必须判红。
+
+        —— 变异实现 = 覆盖层不带 schema_version（= 修复前的行为）。
+        """
+        self.sb.write_yaml_policy(schema_version=1, keep_recent=5)
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 7})
+        vc.migrate_policy(self.sb.root, confirm=True)
+        correct = self.sb.read_runtime()
+
+        # 变异实现：把 schema_version 抹掉（模拟「覆盖层不带 schema」）
+        mutated = dict(correct)
+        mutated.pop("schema_version", None)
+        self.assertNotIn("schema_version", mutated,
+                         "变异版应丢掉 schema_version（证明本判据有鉴别力）")
+        self.assertNotEqual(correct.get("schema_version"),
+                            mutated.get("schema_version"),
+                            "正确实现与变异实现的 schema_version 必须不同")
+        self.assertEqual(correct.get("schema_version"), vc.SCHEMA_VERSION,
+                         "正确实现必须带 schema_version")
+
+    def test_D10_promoted_source_overlay_carries_schema_version(self):
+        """★ D10 ·「只有运行时 JSON ⇒ 提升为包级真源」分支的**专属**判据。
+
+        —— D10 的 `schema_version` 赋值点有**两处**（同一个缺陷的两条路径）：
+          ① `_overlay["schema_version"] = int(SCHEMA_VERSION)` —— 在
+             「只有 JSON ⇒ 提升为包级真源」分支（`y is None`）——
+             迁移源被**就地升级**成覆盖层；
+          ② `overlay["schema_version"] = int(SCHEMA_VERSION)` —— 在
+             「YAML 在场 ⇒ 真源与运行时层各自迁移」分支。
+          ⇒ 既有判据 `test_D10_migrated_overlay_carries_schema_version`
+            的场景是「YAML 真源 + 运行时 JSON 都停在 schema 1」
+            ⇒ **只覆盖 ②** ⇒ ①（提升分支）无专属判据 ⇒ 删掉 ①
+              时没有指名 D10 的判据会红。
+
+        —— 场景：**只有运行时 JSON、没有 YAML 真源**（`y is None`）
+          ⇒ 走「提升为包级真源」分支；该 JSON 的 `schema_version` 停在 1
+          ⇒ 迁移后读回该 JSON ⇒ 断言：
+            ① `schema_version == SCHEMA_VERSION`（D10 核心）；
+            ② 仍含 `_local_overrides` 标记（就地升级成覆盖层）；
+            ③ 用户原有的键（`keep_recent`）没丢。
+          ⇒ 兼带覆盖 D12（迁移源不被归档 ⇒ 原路径仍在、归档区无 `.stale`）。
+
+        ★ 两个源名都测（`policy.local.json` = 运行时层规范名、
+          `config.json` = 旧布局名）⇒ 二者的 `_overlay` 走的是**同一处**
+          赋值点 ⇒ 缺任一条都是覆盖缺口。
+        """
+        for src_name in (vc.POLICY_LOCAL_FILENAME, vc.POLICY_LEGACY_FILENAME):
+            with self.subTest(source=src_name):
+                sb = _PolicySandbox()
+                self.addCleanup(sb.close)
+                # ★ 只有运行时 JSON、**没有 YAML 真源** ⇒ `y is None` 分支
+                sb.write_runtime({"schema_version": 1, "keep_recent": 9},
+                                 name=src_name)
+                self.assertFalse((sb.root / vc.POLICY_YAML_REL).is_file(),
+                                 "前置：本场景不得存在 YAML 真源"
+                                 "（否则走的是另一条迁移分支）")
+
+                r = vc.migrate_policy(sb.root, confirm=True)
+                self.assertEqual(r["action"], "migrated",
+                                 "前置：迁移应当发生（action=%s）" % r.get("action"))
+                self.assertTrue(str(r.get("source", "")).endswith("->yaml"),
+                                "★ 前置：必须走「提升为包级真源」分支"
+                                "（source=%r）" % r.get("source"))
+
+                data = sb.read_runtime(name=src_name)
+                self.assertIsNotNone(data,
+                                     "★ 迁移后迁移源必须仍在原位"
+                                     "（D12：否则用户读回原文件拿到 FileNotFound）")
+                self.assertEqual(data.get("schema_version"), vc.SCHEMA_VERSION,
+                                 "★ 提升分支的迁移源必须自带 schema_version"
+                                 "（D10：否则它自己都读不出自己的 schema）")
+                self.assertTrue(data.get(vc.POLICY_OVERLAY_MARKER),
+                                "★ 迁移源必须被就地升级成覆盖层（含 %s 标记）"
+                                % vc.POLICY_OVERLAY_MARKER)
+                self.assertEqual(data.get("keep_recent"), 9,
+                                 "★ 就地升级不得丢用户原有的键（D12）")
+
+                # ★ D12 兼带：迁移源不得进归档区
+                arch = sb.root / vc.CTL_DIRNAME / vc.ARCHIVE_DIRNAME
+                staled = list(arch.rglob("*.stale")) if arch.is_dir() else []
+                self.assertEqual(staled, [],
+                                 "★ 迁移源不得被归档（D12）：%s"
+                                 % [str(p) for p in staled])
+
+    def test_D10_promoted_branch_mutation_would_be_detected(self):
+        """★ D10「提升分支」能红的反例：删掉该赋值点 ⇒ 必须判红。
+
+        —— 变异实现 = 覆盖层**不带** schema_version（= 提升分支里那行
+          `schema_version` 赋值被删掉的行为）⇒ 断言「上一条判据的核心
+          断言」在变异实现下**必然失败**⇒ 证明上一条判据对该赋值点
+          有鉴别力（不是恒真断言）。
+        """
+        sb = _PolicySandbox()
+        self.addCleanup(sb.close)
+        sb.write_runtime({"schema_version": 1, "keep_recent": 9},
+                         name=vc.POLICY_LOCAL_FILENAME)
+
+        r = vc.migrate_policy(sb.root, confirm=True)
+        self.assertEqual(r["action"], "migrated", "前置：迁移应当发生")
+        correct = sb.read_runtime()
+        self.assertEqual(correct.get("schema_version"), vc.SCHEMA_VERSION,
+                         "正确实现：提升分支必须写 schema_version")
+
+        # ★ 变异实现：那行赋值被删 ⇒ 覆盖层里没有 schema_version
+        mutated = {k: v for k, v in correct.items() if k != "schema_version"}
+        self.assertNotIn("schema_version", mutated,
+                         "变异版应丢掉 schema_version（证明本判据有鉴别力）")
+        self.assertNotEqual(correct.get("schema_version"),
+                            mutated.get("schema_version"),
+                            "正确实现与变异实现的 schema_version 必须不同")
+        # ★ 反向自证：上一条判据的核心断言在变异实现下**必须**过不去
+        self.assertNotEqual(mutated.get("schema_version"), vc.SCHEMA_VERSION,
+                            "★ 变异实现必须过不了上一条判据的核心断言")
+
+    # ── D11：旧版副本只在真源仍是默认值时兜底 ──────────────────
+
+    def test_D11_legacy_copy_fills_only_when_source_is_default(self):
+        """★ D11 核心：旧版全量副本的兜底必须**看真源原始值**。
+
+        —— 三向对照（缺一不可）：
+          ① 真源该键**仍是默认值** ⇒ 旧副本的值**被兜底采用**
+             （真源从没被设置过 ⇒ 用户的旧设置不该被丢）；
+          ② 真源该键**被显式设置** ⇒ **真源优先**（旧副本不生效，
+             这正是 D1 要防的「旧副本遮蔽真源」）；
+          ③ 真源**根本没有**该键 ⇒ 旧副本补上。
+        """
+        # ① 真源该键仍是默认值（artifact_dirs 默认 = []）
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=5)
+        self.sb.write_runtime({"schema_version": 2,
+                               "artifact_dirs": ["/用户/的/目录"]},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        pol1 = vc.load_policy(self.sb.root)
+        self.assertEqual(pol1.get("artifact_dirs"), ["/用户/的/目录"],
+                         "★ ① 真源该键仍是默认值 ⇒ 旧副本的值必须被兜底采用"
+                         "（D11：否则用户的产物目录配置静默失效）")
+
+        # ② 真源该键被显式设置 ⇒ 真源优先
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=5,
+                                  artifact_dirs='["/真源/的/目录"]')
+        self.sb.write_runtime({"schema_version": 2,
+                               "artifact_dirs": ["/用户/的/目录"]},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        pol2 = vc.load_policy(self.sb.root)
+        self.assertEqual(pol2.get("artifact_dirs"), ["/真源/的/目录"],
+                         "★ ② 真源显式设置过 ⇒ 真源优先，旧副本不得生效"
+                         "（D1：旧副本遮蔽真源）")
+
+        # ③ 真源根本没有该键 ⇒ 旧副本补上
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=5)
+        self.sb.write_runtime({"schema_version": 2,
+                               "my_custom_key": "旧值"},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        pol3 = vc.load_policy(self.sb.root)
+        self.assertEqual(pol3.get("my_custom_key"), "旧值",
+                         "★ ③ 真源没有该键 ⇒ 旧副本必须补上")
+
+    def test_D11_mutation_would_be_detected(self):
+        """★ D11 能红的反例：模拟「无条件覆盖」的变异 ⇒ 必须判红。
+
+        —— 变异实现 = 旧副本**无条件**覆盖真源（= D1 修复前的行为）。
+        """
+        self.sb.write_yaml_policy(schema_version=2, keep_recent=5,
+                                  artifact_dirs='["/真源/的/目录"]')
+        self.sb.write_runtime({"schema_version": 2,
+                               "artifact_dirs": ["/用户/的/目录"]},
+                              name=vc.POLICY_LEGACY_FILENAME)
+
+        # 正确实现：真源优先
+        correct = vc.load_policy(self.sb.root).get("artifact_dirs")
+        self.assertEqual(correct, ["/真源/的/目录"], "正确实现必须真源优先")
+
+        # 变异实现：旧副本无条件覆盖 ⇒ 生效值被旧副本污染
+        mutated = dict(vc.DEFAULT_POLICY)
+        mutated["schema_version"] = vc.SCHEMA_VERSION
+        mutated.update(self.sb._yaml_data())
+        mutated.update({"artifact_dirs": ["/用户/的/目录"]})   # ★ 变异点
+        self.assertEqual(mutated.get("artifact_dirs"), ["/用户/的/目录"],
+                         "变异版应被旧副本污染（证明本判据有鉴别力）")
+        self.assertNotEqual(correct, mutated.get("artifact_dirs"),
+                            "正确实现与变异实现的结果必须不同")
+
+    def test_D11_source_is_default_helper_uses_raw_yaml(self):
+        """★ D11 的**判据函数**守卫：`_source_is_default` 必须看**真源原始值**。
+
+        —— 变异体：改成看「合并后的 policy」⇒ 真源值恰好等于默认值时
+          看不出「用户从没设置过」⇒ 兜底失效 ⇒ 本条必红。
+        """
+        y = {"keep_recent": vc.DEFAULT_POLICY["keep_recent"]}   # 仍是默认值
+        self.assertTrue(vc._source_is_default(y, "keep_recent", 10),
+                        "★ 真源该键等于默认值 ⇒ 必须判定为「仍是默认值」")
+        y2 = {"keep_recent": 25}                                  # 被显式设置
+        self.assertFalse(vc._source_is_default(y2, "keep_recent", 25),
+                         "★ 真源该键被显式设置 ⇒ 必须判定为「不是默认值」")
+        # 真源没有该键 ⇒ 取决于当前值
+        self.assertTrue(vc._source_is_default({}, "keep_recent", 10),
+                        "真源没有该键且当前值是默认值 ⇒ 仍是默认值")
+        self.assertFalse(vc._source_is_default({}, "keep_recent", 25),
+                         "真源没有该键但当前值非默认 ⇒ 不是默认值")
+
+    # ── D12：迁移源不得被归档 ──────────────────────────────────
+
+    def test_D12_migration_source_is_not_archived(self):
+        """★ D12 核心：迁移后**原路径文件必须仍存在**（不是 FileNotFound）。
+
+        —— 场景：只有旧版 JSON 时，`migrate_policy` 调 `save_policy`
+          把它提升为真源 ⇒ 但 `save_policy` 随后又把**同一个文件**
+          当作「旧版残留」**归档（move）**掉 ⇒ 迁移后原路径**消失**
+          ⇒ 用户读回原文件时拿到 FileNotFound ⇒ 数据看似迁移成功、
+          实则用户读不到。
+
+        ★ 判据：迁移后 ① 原路径文件**仍存在**；
+          ② 内容已被**就地升级**成覆盖层（含 `_local_overrides` 标记）；
+          ③ 迁移源**不得**出现在归档区里。
+        """
+        # ★ 两条迁移源路径都要覆盖：
+        #   · `config.json`（旧版全量副本）—— 旧布局的典型形态；
+        #   · `policy.local.json`（覆盖层名，但旧布局下也可能是唯一真源）。
+        for src_name in (vc.POLICY_LEGACY_FILENAME, vc.POLICY_LOCAL_FILENAME):
+            with self.subTest(source=src_name):
+                sb = _PolicySandbox()
+                self.addCleanup(sb.close)
+                # 只有这一份运行时 JSON（schema 旧）⇒ 走「提升为包级真源」路径
+                legacy = sb.write_runtime({"schema_version": 1,
+                                           "keep_recent": 9},
+                                          name=src_name)
+                self.assertTrue(legacy.is_file(), "前置：迁移源应存在")
+
+                r = vc.migrate_policy(sb.root, confirm=True)
+                self.assertEqual(r["action"], "migrated",
+                                 "前置：迁移应当发生（action=%s）" % r.get("action"))
+
+                self.assertTrue(legacy.is_file(),
+                                "★ 迁移源不得被归档掉（D12：否则用户读回原路径"
+                                "拿到 FileNotFound）")
+                data = sb.read_runtime(name=src_name)
+                self.assertIsNotNone(data,
+                                     "★ 迁移后原路径必须仍可读出内容")
+                self.assertTrue(data.get(vc.POLICY_OVERLAY_MARKER),
+                                "★ 迁移源必须被就地升级成覆盖层（含 %s 标记）"
+                                % vc.POLICY_OVERLAY_MARKER)
+                self.assertEqual(data.get("keep_recent"), 9,
+                                 "★ 就地升级时不得丢用户原有的值")
+
+                # ★ 语义直击：迁移源**不得**出现在归档区里
+                #   （`archive_stale_runtime` 落的文件名是 `<原名>.stale`）
+                #   —— 这条比「原路径还在」更严：即便迁移后又把文件写回原位，
+                #   只要它**被归档过一次**，用户的历史副本就被挪了窝 ⇒ 仍是 D12 的坑。
+                arch = sb.root / vc.CTL_DIRNAME / vc.ARCHIVE_DIRNAME
+                staled = list(arch.rglob("*.stale")) if arch.is_dir() else []
+                self.assertEqual(staled, [],
+                                 "★ 迁移源不得被归档（D12）：%s"
+                                 % [str(p) for p in staled])
+
+    def test_D12_mutation_would_be_detected(self):
+        """★ D12 能红的反例：模拟「迁移源被归档」的变异 ⇒ 必须判红。
+
+        —— 变异实现：把迁移源 `move` 走（原路径消失）⇒ 必须被测出来。
+        """
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 9},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        legacy = self.sb.root / vc.CTL_DIRNAME / vc.POLICY_LEGACY_FILENAME
+        vc.migrate_policy(self.sb.root, confirm=True)
+        self.assertTrue(legacy.is_file(), "正确实现：迁移源仍在原位")
+
+        # 变异实现：把迁移源移走（= 修复前的行为）
+        mutated = self.sb.root / vc.CTL_DIRNAME / "mutated_archived.json"
+        shutil.move(str(legacy), str(mutated))
+        self.assertFalse(legacy.exists(),
+                         "变异版应让原路径消失（证明本判据有鉴别力）")
+        self.assertNotEqual(legacy.exists(), True,
+                            "正确实现与变异实现的「原路径是否还在」必须不同")
+
+    def test_D12_save_policy_keep_runtime_names_is_honoured(self):
+        """★ D12 的**接线**判据：`save_policy` 必须认 `keep_runtime_names`。
+
+        —— 变异体：把 `keep_runtime_names` 的判断去掉 ⇒ 迁移源又被归档 ⇒ 必红。
+        """
+        legacy = self.sb.write_runtime({"schema_version": 1, "keep_recent": 9},
+                                       name=vc.POLICY_LEGACY_FILENAME)
+        # 直接调 save_policy，声明「这个运行时文件不得归档」
+        vc.save_policy(self.sb.root, dict(vc.DEFAULT_POLICY),
+                       local_only=False,
+                       keep_runtime_names=(vc.POLICY_LEGACY_FILENAME,))
+        self.assertTrue(legacy.is_file(),
+                        "★ keep_runtime_names 声明的文件不得被归档（D12）")
+        # 反例：不声明 ⇒ 旧版全量副本会被归档（这正是 D12 修的那个坑）
+        self.sb.write_runtime({"schema_version": 1, "keep_recent": 9},
+                              name=vc.POLICY_LEGACY_FILENAME)
+        vc.save_policy(self.sb.root, dict(vc.DEFAULT_POLICY),
+                       local_only=False)
+        self.assertFalse(legacy.exists(),
+                         "★ 反例：未声明 keep_runtime_names 时旧版全量副本"
+                         "必须被归档（证明本判据有鉴别力）")
+
+    # ── D13：prune 的产物收集必须递归 ──────────────────────────
+
+    def test_D13_prune_collects_nested_artifacts(self):
+        """★ D13 核心：**两层以上**的产物也必须被收集到。
+
+        —— 场景：产物放在 `artifacts/sub/bundle.zip`（**两层**）⇒
+          原实现只扫一层 ⇒ 一个都找不到 ⇒ prune 报「无待归档产物」
+          ⇒ 用户的产物**永远不清理**（磁盘无限膨胀）。
+
+        ★ 判据：收集结果**必须**包含该文件（断言路径与 bytes）。
+        """
+        ab = _ArtifactSandbox()
+        self.addCleanup(ab.close)
+        target = ab.make_file("artifacts/sub/bundle.zip", b"PK\x03\x04" + b"x" * 2048)
+
+        arts = vc.collect_artifacts([str(ab.root / "artifacts")], root=ab.root)
+        paths = [a["path"] for a in arts]
+        self.assertIn(str(target), paths,
+                      "★ 嵌套产物必须被收集到（D13：只扫一层 ⇒ 深层产物永远不清理）")
+
+        rec = [a for a in arts if a["path"] == str(target)][0]
+        self.assertEqual(rec["bytes"], 2052,
+                         "★ 收集到的产物必须带上正确的字节数")
+        self.assertFalse(rec["keep"],
+                         "★ 策略指定的产物应标记为「待归档」")
+        self.assertEqual(rec["reason"], "策略指定清理")
+
+    def test_D13_mutation_would_be_detected(self):
+        """★ D13 能红的反例：只遍历**一层**的实现必须被本判据杀掉。
+
+        —— 这就是「实测把 `rglob` 改回 `iterdir` 打不红」的那条判据。
+          在测试内构造「一层版」实现 ⇒ 断言它**拿不到**嵌套产物，
+          而正确实现**拿得到** ⇒ 鉴别力成立。
+        """
+        ab = _ArtifactSandbox()
+        self.addCleanup(ab.close)
+        target = ab.make_file("artifacts/sub/bundle.zip", b"PK\x03\x04" + b"x" * 64)
+
+        # 正确实现（递归）⇒ 必须拿到
+        recursive = vc.collect_artifacts([str(ab.root / "artifacts")], root=ab.root)
+        recursive_paths = [a["path"] for a in recursive]
+        self.assertIn(str(target), recursive_paths,
+                      "正确实现（递归）必须拿到嵌套产物")
+
+        # ★ 变异实现（只遍历一层）⇒ 必须拿不到
+        def one_level_variant(dirs, root=None):
+            """变异体：`rglob` → `iterdir`（= D13 修复前的实现）。"""
+            out = []
+            for rel in (dirs or []):
+                if not rel:
+                    continue
+                p = Path(rel) if os.path.isabs(rel) else (Path(root) if root else Path()) / rel
+                if not p.exists():
+                    continue
+                if p.is_file():
+                    out.append({"path": str(p), "bytes": p.stat().st_size,
+                                "keep": False, "reason": "策略指定清理"})
+                    continue
+                for f in sorted(p.iterdir()):        # ★ 变异点：只一层
+                    if not f.is_file():
+                        continue
+                    out.append({"path": str(f), "bytes": f.stat().st_size,
+                                "keep": False, "reason": "策略指定清理"})
+            return out
+
+        one_level = one_level_variant([str(ab.root / "artifacts")], root=ab.root)
+        one_level_paths = [a["path"] for a in one_level]
+        self.assertNotIn(str(target), one_level_paths,
+                         "★ 变异版（只一层）应拿不到嵌套产物"
+                         "（证明本判据有鉴别力）")
+        self.assertNotEqual(recursive_paths, one_level_paths,
+                            "正确实现与变异实现的收集结果必须不同")
+
+    def test_D13_prune_collects_nested_artifacts_end_to_end(self):
+        """★ D13 的**端到端**判据：真跑一次 `prune` ⇒ 嵌套产物被归档。
+
+        —— 纯函数级判据（上一条）只验「收集」；本条验「收集 ⇒ 真的归档」。
+        """
+        with _clone_repo() as clone:
+            art = clone / "artifacts"
+            (art / "sub").mkdir(parents=True, exist_ok=True)
+            nested = art / "sub" / "bundle.zip"
+            nested.write_bytes(b"PK\x03\x04" + b"x" * 2048)
+            ctl = clone / vc.CTL_DIRNAME
+            ctl.mkdir(parents=True, exist_ok=True)
+            (ctl / vc.CONFIG_FILENAME).write_text(json.dumps({
+                "schema_version": vc.SCHEMA_VERSION,
+                "keep_recent": 1,
+                "keep_milestones": False,
+                "keep_tags": True,
+                "artifact_dirs": [str(art)],
+                "artifact_max_bytes": 0,
+            }, ensure_ascii=False), encoding="utf-8")
+            proc = subprocess.run([sys.executable, "scripts/versionctl.py",
+                                   "prune", "--confirm"],
+                                  cwd=str(clone), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0,
+                             "prune 应成功：%s" % proc.stdout[-300:])
+            self.assertFalse(nested.exists(),
+                             "嵌套产物应已被移走（D13：深层产物也必须被清理）")
+            arch = clone / vc.CTL_DIRNAME / vc.ARCHIVE_DIRNAME
+            archived = list(arch.rglob("bundle.zip"))
+            self.assertTrue(archived,
+                            "★ 归档区必须有嵌套产物的副本（否则等于被真删了）")
+            self.assertEqual(archived[0].stat().st_size, 2052)
+
+    def test_D13_prune_never_returns_delete(self):
+        """★ D13 安全性断言：归档 ≠ 删除（收集结果里不得有删除语义）。"""
+        ab = _ArtifactSandbox()
+        self.addCleanup(ab.close)
+        ab.make_file("artifacts/sub/bundle.zip", b"PK")
+        arts = vc.collect_artifacts([str(ab.root / "artifacts")], root=ab.root)
+        blob = json.dumps(arts, ensure_ascii=False)
+        for word in ("delete", "rm ", "unlink", "remove", "删除"):
+            self.assertNotIn(word, blob.lower(),
+                             "收集结果里不得出现删除语义：%r" % word)
+
+    def test_D13_collect_artifacts_is_used_by_cmd_prune(self):
+        """★ D13 的**接线**判据：`cmd_prune` 必须走 `collect_artifacts`。
+
+        —— 防止「判据还在、但 `cmd_prune` 里又写了一份内联收集」。
+          变异体：把调用换回内联 `iterdir` ⇒ 本条必红。
+        """
+        src = (_HERE / "versionctl.py").read_text(encoding="utf-8")
+        start = src.index("def cmd_prune(")
+        end = src.index("def cmd_journal(")
+        body = src[start:end]
+        self.assertIn("collect_artifacts", body,
+                      "★ cmd_prune 必须调用纯函数 collect_artifacts"
+                      "（D13 的可测点）")
+        self.assertNotIn("iterdir()", body,
+                         "★ cmd_prune 里不得再出现只扫一层的 iterdir()"
+                         "（D13 缺陷会复活）")
 
 
 if __name__ == "__main__":

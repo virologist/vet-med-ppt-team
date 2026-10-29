@@ -6,7 +6,10 @@ shared-core 分发与防漂移门禁（v3.4.2 P0-1 配套，2026-10-15 适配至
 目的：修复「R9 联邦下沉后 git clone 直跑 shim 退出码 3」的可安装性回归，
       同时用哈希比对防止 vendor 兜底副本与联邦真源产生漂移。
 适配：自 smart-textbook-team/tests/test_vendor_core.py 复制，仅改
-      _INSTALL_DIR / MEMBER_IDS / V6 临时目录名三处包耦合。
+      _PKG_NAME / MEMBER_IDS / V6 临时目录名三处包耦合。
+      ★ v3.4.2 P0-1 适配至本包：_PKG_NAME 原为 "triz-invention-team"
+        （从 triz 包复制过来忘了改）⇒ _INSTALL_DIR 指向**别的包**
+        ⇒ V4 防漂移比对的是别人的 vendor 副本 ⇒ 本包漂移**永远发现不了**。
 
 检查项：
   V1  vendor/shared-core/assemble_spawn_prompt.py 存在
@@ -32,7 +35,9 @@ import subprocess
 import sys
 import tempfile
 
-_PKG_NAME = "triz-invention-team"
+#: ★ 包名（本包，非 triz）——原先从 triz 包复制过来忘了改，导致 _INSTALL_DIR
+#:   指向别的包 ⇒ V4 防漂移比对的是**别人的** vendor 副本。
+_PKG_NAME = "vet-med-ppt-team"
 _INSTALL_DIR = os.path.expanduser(
     "~/.workbuddy/plugins/marketplaces/my-experts/plugins/" + _PKG_NAME
 )
@@ -146,7 +151,7 @@ def run_checks(expert_dir):
         r.add("V5", "安装态冒烟 --list-members 退出码 0 且含全部成员", "FAIL", str(e))
 
     # V6 git-clone 态冒烟：拷到临时目录（其父目录无 shared-core）→ 必须走 vendor 兜底
-    tmp_root = tempfile.mkdtemp(prefix="trot-clone-sim-")
+    tmp_root = tempfile.mkdtemp(prefix="vetmed-clone-sim-")
     try:
         tmp_pkg = os.path.join(tmp_root, _PKG_NAME)
         shutil.copytree(expert_dir, tmp_pkg,
@@ -192,7 +197,7 @@ def main():
                          ensure_ascii=False, indent=2))
     else:
         print("=" * 62)
-        print("shared-core 分发与防漂移门禁（triz-invention-team）")
+        print("shared-core 分发与防漂移门禁（vet-med-ppt-team）")
         print("=" * 62)
         for cid, desc, status, detail in r.items:
             mark = {"PASS": "✓", "FAIL": "✗", "SKIP": "-"}[status]
