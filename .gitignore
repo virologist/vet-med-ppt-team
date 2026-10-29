@@ -71,3 +71,13 @@ vetmed-iso*
 #   ⚠ 与 v3.26.0 的 `vetmed-iso*` 同型问题（残留物误入提交面）。
 packages/.mirror_backups/
 .mirror_backups/
+
+# versionctl 运行时状态（v3.28.0）
+#   `.versionctl/archive/`（归档区）与 `.versionctl/journal/`（操作日志）
+#   是版本迭代机制产生的**操作痕迹**，不是包内容 ⇒ 不入库。
+#   ★ 归档区里的东西另有去处：归档的是「已被 git 持有」或「另有副本」的产物
+#     ⇒ 权威副本在 git 对象库或对照目录里 ⇒ 这里不入库不会丢东西。
+#   ⚠ 但 `.versionctl/config.json`（保留/归档策略）是**配置真源** ⇒ 必须入库，
+#     否则策略会随机器丢失（`versionctl policy` 改了就白改）。
+.versionctl/archive/
+.versionctl/journal/

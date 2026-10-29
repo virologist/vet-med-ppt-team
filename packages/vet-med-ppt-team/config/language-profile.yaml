@@ -17,7 +17,7 @@
 #   · 每个键都**必须有代码消费者**（见下方「消费者」标注），无消费者即视为死配置；
 #   · 域级术语表（glossary）在 domain-profiles.yaml 各域内，本文件只定**规格**不列词条。
 
-version: "3.27.0"
+version: "3.28.0"
 # ── 交付默认语言 ────────────────────────────────────────────────
 # 消费者：harness.py _language_spec() → gate1-check 第 8 项「交付语言」
 default_language: "zh-CN"

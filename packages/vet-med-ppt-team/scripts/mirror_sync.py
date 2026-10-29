@@ -70,6 +70,24 @@ EXCLUDE_PATTERNS = (
     "vetmed-iso*",
 )
 
+#: ★ v3.28.0：版本迭代机制的**运行时状态**目录（相对包根）。
+#:
+#: ⚠ 为什么不能用 EXCLUDE_PATTERNS（那是 basename 匹配）：
+#:   `.versionctl` 整个排除会把 `.versionctl/config.json`（**策略真源**）也排掉
+#:   ⇒ 策略会随机器丢失，`versionctl policy` 改了就白改。
+#:
+#: ⇒ 故用**路径级**排除：只排 `archive/`（归档区）与 `journal/`（操作日志），
+#:   保留 `config.json`。
+#:
+#: ★ 与 .gitignore 的口径必须一致：
+#:   .gitignore 排 `.versionctl/archive/` + `.versionctl/journal/`
+#:   ⇒ 同步层与版本层看到的是同一批文件 ⇒ 不会出现「git 收了但镜像没有」
+#:      或「镜像有但 git 没有」的漂移。
+EXCLUDE_REL_PATHS = (
+    ".versionctl/archive",
+    ".versionctl/journal",
+)
+
 #: 镜像目录名（相对于包根）：`packages/<包名>/`。
 #: 默认与包根同名；可用 `--mirror-name` 覆盖。
 DEFAULT_MIRROR_NAME = "vet-med-ppt-team"
@@ -90,20 +108,50 @@ def is_excluded(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_PATTERNS)
 
 
+def is_excluded_rel(rel_path: str) -> bool:
+    """该**相对路径**是否命中路径级排除清单（v3.28.0）。
+
+    语义与 rsync `--exclude-from` 的路径规则一致：
+    目录前缀匹配 ⇒ 该目录**整棵**不进镜像。
+
+    ⚠ v3.28.0 实测踩坑：这里**不能用** `lstrip("./")` ——
+      `str.lstrip` 按**字符集**剥离，不是按前缀 ⇒ ".versionctl/archive"
+      会变成 "versionctl/archive"（**开头的点被吃掉**）
+      ⇒ 路径级排除静默失效 ⇒ 归档区照样进镜像。
+      ⇒ 必须用精确的「去 `./` 前缀」写法。
+    """
+    p = str(rel_path).replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    p = p.lstrip("/")
+    for pat in EXCLUDE_REL_PATHS:
+        if p == pat or p.startswith(pat + "/"):
+            return True
+    return False
+
+
 def iter_files(root: Path):
     """遍历 root 下所有「应同步」文件，返回 {相对路径: 绝对路径}。
 
-    排除清单在**任意层级**生效（目录剪枝 + 文件过滤）。
+    排除清单在**任意层级**生效（目录剪枝 + 文件过滤）；
+    路径级排除（v3.28.0）额外按**相对路径**剪枝。
     """
     out = {}
     for dirpath, dirnames, filenames in os.walk(root):
         # 目录剪枝：被排除的目录整棵不进（`.git`/`packages`/`__pycache__`…）
         dirnames[:] = [d for d in dirnames if not is_excluded(d)]
+        # ★ 路径级剪枝（v3.28.0）：`.versionctl/archive` / `.versionctl/journal`
+        for d in list(dirnames):
+            rel = str((Path(dirpath) / d).relative_to(root))
+            if is_excluded_rel(rel):
+                dirnames.remove(d)
         for fn in filenames:
             if is_excluded(fn):
                 continue
             full = Path(dirpath) / fn
             rel = full.relative_to(root)
+            if is_excluded_rel(str(rel)):
+                continue
             out[str(rel)] = full
     return out
 
@@ -117,6 +165,11 @@ def iter_dirs(root: Path):
     out = set()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not is_excluded(d)]
+        # ★ 路径级剪枝（v3.28.0）：与 iter_files 保持同一套规则
+        for d in list(dirnames):
+            rel = str((Path(dirpath) / d).relative_to(root))
+            if is_excluded_rel(rel):
+                dirnames.remove(d)
         rel = Path(dirpath).relative_to(root)
         if str(rel) != ".":
             out.add(str(rel))

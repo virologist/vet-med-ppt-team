@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "keep_recent": 10,
+  "keep_milestones": true,
+  "keep_tags": true,
+  "archive_dir": ".versionctl/archive",
+  "artifact_dirs": [],
+  "artifact_max_bytes": 0
+}

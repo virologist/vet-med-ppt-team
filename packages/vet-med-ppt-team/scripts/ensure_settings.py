@@ -854,7 +854,13 @@ def check_version_consistency(expert_dir):
                 #   config/language-profile.yaml（交付语言与术语表契约）
                 #   config/external-tools.yaml（外部工具/通道/知识库契约）
                 #   这两个文件是 v3.19.0 新增的，加进来时漏了巡检——不改巡检就会长期漏。
-                "config/language-profile.yaml", "config/external-tools.yaml"):
+                # v3.28.0 补：references/inspection-zones.yaml（免检区登记表）
+                #   —— 同型第 13 处：它**同样带 version 键**，同样**不在清单**里。
+                #   缘由（v3.28.0 实测）：本次收口做版本号全量同步时，
+                #   用 grep 全仓扫描发现它停在 3.27.0；若只改清单内 12 处，
+                #   它就会**静默漂移** ⇒ 又是「声明层≠执行层」。
+                "config/language-profile.yaml", "config/external-tools.yaml",
+                "references/inspection-zones.yaml"):
         p = os.path.join(expert_dir, *rel.split("/"))
         if not os.path.isfile(p):
             continue
@@ -3146,7 +3152,7 @@ def main():
         print("# 免检区（块级消费段）登记表骨架 —— 由 "
               "`python3 scripts/ensure_settings.py --dump-block-segments` 生成")
         print("# ⚠ key_count 与 keys_sha256 **不要手写**；消费方/处置规则需人工判断后填。")
-        print("version: \"3.27.0\"")
+        print("version: \"3.28.0\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")

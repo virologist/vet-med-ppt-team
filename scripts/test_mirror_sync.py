@@ -92,6 +92,18 @@ class MirrorSandbox:
         (self.mirror / "stale").mkdir()
         (self.mirror / "stale" / "old.txt").write_text("OLD\n", encoding="utf-8")
 
+        # ★ v3.28.0：版本迭代机制的运行时状态（.versionctl/）
+        #   · config.json   ← **策略真源** ⇒ 必须同步进镜像
+        #   · archive/      ← 归档区（运行时痕迹）⇒ 不得进镜像
+        #   · journal/      ← 操作日志（运行时痕迹）⇒ 不得进镜像
+        vc = self.root / ".versionctl"
+        vc.mkdir()
+        (vc / "config.json").write_text('{"schema_version": 2}\n', encoding="utf-8")
+        (vc / "archive" / "20260101-000000").mkdir(parents=True)
+        (vc / "archive" / "20260101-000000" / "x.md").write_text("X\n", encoding="utf-8")
+        (vc / "journal").mkdir()
+        (vc / "journal" / "20260101-000000.jsonl").write_text("{}\n", encoding="utf-8")
+
     def run(self, argv):
         """跑脚本，返回 (rc, 输出文本)。"""
         buf = io.StringIO()
@@ -364,6 +376,43 @@ class TestMirrorSyncDiscipline(unittest.TestCase):
             self.assertFalse(
                 p.is_dir() and p != self.s.mirror,
                 f"镜像下出现嵌套 packages 目录：{p}")
+
+    # ── D7：版本迭代机制的运行时状态不进镜像（v3.28.0 新增）─────
+    def test_D7_versionctl_runtime_state_not_mirrored(self):
+        """D7：`.versionctl/archive/` 与 `.versionctl/journal/` **不得**进镜像。
+
+        ★ 为什么必须有（v3.28.0 实测）：版本迭代机制会在包根下产生
+          `.versionctl/`（归档区 + 操作日志）。`mirror_sync` 原本按
+          **basename** 排除 ⇒ 若把 `.versionctl` 加进排除清单，
+          会连 **`.versionctl/config.json`（策略真源）** 一起排掉
+          ⇒ 策略随机器丢失 ⇒ `versionctl policy` 改了就白改。
+          ⇒ 故改为**路径级**排除：只排 archive/journal，留 config.json。
+
+        ★ **能红反例**：若把 `.versionctl` 整棵排除 ⇒ config.json 缺失 ⇒ 判红；
+          若不排除路径级 ⇒ archive/journal 进镜像 ⇒ 判红。
+        """
+        self.s.run(["--confirm"])
+        vc_mirror = self.s.mirror / ".versionctl"
+        # ① 运行时痕迹不得进镜像
+        self.assertFalse((vc_mirror / "archive").exists(),
+                         "归档区（运行时痕迹）不得同步进镜像")
+        self.assertFalse((vc_mirror / "journal").exists(),
+                         "操作日志（运行时痕迹）不得同步进镜像")
+        # ② 策略真源必须进镜像
+        self.assertTrue((vc_mirror / "config.json").is_file(),
+                        "策略真源 config.json 必须同步进镜像")
+
+    def test_D7b_root_side_runtime_state_untouched_by_sync(self):
+        """D7b：同步**不得动**根上的运行时状态（只读不写）。
+
+        —— 归档区里有真实产物；若同步把它清掉或搬走，就破坏了归档记录。
+        """
+        arch = self.s.root / ".versionctl" / "archive" / "20260101-000000" / "x.md"
+        before = arch.read_bytes()
+        self.s.run(["--confirm", "--prune"])
+        self.assertTrue(arch.exists(), "同步不得删除根上的归档产物")
+        self.assertEqual(arch.read_bytes(), before,
+                         "同步不得改写根上的归档产物")
 
     # ── 通用：脚本可注入包根 / --help / 退出码 ────────────────
     def test_T7_pkg_root_is_injectable(self):
