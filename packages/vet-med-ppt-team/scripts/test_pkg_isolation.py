@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_pkg_isolation.py — 隔离副本构造器 + 「测试不得原地改写生产 config」静态守卫（v3.25.0）
+"""test_pkg_isolation.py — 隔离副本构造器 + 「测试不得原地改写生产 config」静态守卫（v3.25.0 / v3.27.0 P0）
 
 ══════════════════════════════════════════════════════════════════════
 立项依据（真实缺陷，已实测复现）：
@@ -25,6 +25,26 @@
   · `scripts/assemble_domain_prompt.py` 经 shared-core 的 `load_plugin()` 读
     `.codebuddy-plugin/plugin.json`（或 `.claude-plugin/`）⇒ 必须一并拷贝。
   ⇒ 只拷 `config/` + `scripts/` 会让端到端用例假失败。
+
+──────────────────────────────────────────────────────────────────────
+v3.27.0（P0）**构造失败诊断化**——「前提被推翻」的历史留痕：
+  本构造器的旧**前提**是「`make_isolated_pkg()` 必然成功」（失败即抛裸异常）。
+  该前提于 **2026-10-28 晚**在 WorkBuddy 会话内被**推翻**：宿主 `sitecustomize.py`
+  的文件系统 broker 钩子拦下 `tempfile.mkdtemp` 的 mkdir ⇒
+  `PermissionError: Brokered mkdir refused by resolved path policy: deny`
+  ⇒ 反例类 `setUp` 抛异常 ⇒ 11 个反例全变 **ERROR**（不是 ok、也不是 skip）
+  ⇒ 整个 `test_arch_drift.py` rc≠0 ⇒ 体检第 7 项**假失败**；
+  更糟的是 **ERROR 与「断言真的不成立」在 pytest 输出里难以区分**，
+  排查者会误以为是包缺陷。
+  ⚠ 2026-10-29 复核实测：同一环境下 `make_isolated_pkg` **连续 3 次成功**，
+    并发 6×12=72 次 mkdir 也全成功 ⇒ broker 拦截属**会话特定状态**，
+    **非代码缺陷、非路径策略** ⇒ 但它既已出现，就必须让「环境导致构造失败」
+    这件事**可诊断**，而不是伪装成断言失败。
+  ⇒ 因此：构造失败统一抛 `IsolatedPkgBuildError`（带**失败阶段 / 原始类型 /
+    原始消息 / 归因 / 处置建议**），并在失败时**清理已创建的临时根目录**
+    （避免半成品残留）；上层据此把该批反例标记为 **SKIP**（可诊断的环境限制），
+    而**不是**裸 ERROR、更**不是**静默通过。
+  （同型历史：v3.25.0 的 ADR-7「fallback 多一个码」也是「前提被推翻」后改判据。）
 
 运行：
     python3 -m pytest scripts/test_pkg_isolation.py -q
@@ -80,6 +100,68 @@ def _find_shared_core() -> Path:
     )
 
 
+class IsolatedPkgBuildError(RuntimeError):
+    """隔离副本构造失败的**可诊断**异常。
+
+    ⚠ **为什么要有这个类型**（v3.27.0 P0 · 「前提被推翻」的历史）：
+      旧写法里 `make_isolated_pkg()` 失败就是裸抛底层异常（如 `PermissionError:
+      Brokered mkdir refused by resolved path policy: deny`）。裸异常有两个坏处：
+        ① **不可区分**：调用方分不清「环境临时限制（broker 拦 mkdir）」与
+           「包自身有 bug（复制逻辑写错）」——前者该 skip，后者该**判红**；
+        ② **不可诊断**：错误消息里没有「这是环境限制」这层归因，
+           排查者只能去翻源码猜。
+      ⇒ 这里统一包一层，把「**失败阶段 + 原始异常类型 + 原始消息 + 归因 +
+        处置建议**」写进消息本体，让上层可以**指名道姓**地 skip，
+        且不需要重新解析原始异常。
+
+    ⚠ **继承 `RuntimeError` 而非 `OSError`**：本异常表示「隔离副本**构造流程**
+      失败」，其根因可能是权限（OSError）也可能是布局缺失（RuntimeError）；
+      继承 `RuntimeError` 可与包内 `_find_shared_core()` 的既有异常语义对齐，
+      且**不会**被 `except OSError` 的宽泛捕获误吞（那正是要避免的静默化）。
+    """
+
+    def __init__(self, stage: str, original: BaseException, hints: str = ""):
+        self.stage = stage
+        self.original = original
+        self.hints = hints
+        orig_type = type(original).__name__
+        orig_msg = str(original)
+        msg = (
+            f"隔离副本构造失败（阶段：{stage}）\n"
+            f"  原始异常类型：{orig_type}\n"
+            f"  原始异常消息：{orig_msg}\n"
+            f"  归因：这是**环境限制**（非包缺陷、非断言失败）——"
+            f"隔离副本造不出来 ⇒ 依赖副本的断言**未执行**，无法据此判红/判绿。\n"
+        )
+        if hints:
+            msg += f"  处置建议：{hints}\n"
+        super().__init__(msg)
+
+
+#: 失败阶段的**中文名**（用于错误消息指名道姓，不含任何机器路径）。
+_STAGE_SHARED_CORE = "定位联邦共享件 shared-core"
+_STAGE_MKDIR = "创建临时根目录（tempfile.mkdtemp）"
+_STAGE_COPY = "拷贝包内容到隔离副本（shutil.copytree）"
+_STAGE_SYMLINK = "建立 shared-core 软链（os.symlink）"
+
+#: 各阶段的处置建议（环境限制的通用排查方向）。
+_HINT_SHARED_CORE = (
+    "共享件 shared-core/ 不随包分发（仅安装态/仓库结构下存在）；"
+    "确认包位于 marketplace 标准布局，或用环境变量 VETMED_SHARED_CORE 指定其路径。"
+)
+_HINT_TMPDIR = (
+    "检查 TMPDIR 指向的目录是否可写（构造器优先用 tempfile.gettempdir()）；"
+    "若报错含 'Brokered mkdir refused' / 'resolved path policy'，"
+    "说明宿主文件系统 broker 拒绝了 mkdir —— 属会话特定状态，"
+    "换个会话或显式设置 TMPDIR 到可写目录即可恢复，不必改包内代码。"
+)
+_HINT_COPY = (
+    "检查 TMPDIR 所在卷的剩余空间与 inode；"
+    "隔离副本需要完整拷贝包内 config/scripts/agents/references/docs。"
+)
+_HINT_SYMLINK = "检查目标卷是否支持符号链接（部分挂载/容器环境不支持）。"
+
+
 def make_isolated_pkg(prefix: str = "vetmed-iso-") -> Path:
     """构造隔离副本并返回其**包根**。
 
@@ -88,20 +170,44 @@ def make_isolated_pkg(prefix: str = "vetmed-iso-") -> Path:
 
     调用方负责清理（`cleanup_isolated_pkg(pkg)`）；最坏情况是临时目录残留，
     **绝不会**污染生产 config。
+
+    ⚠ **失败语义（v3.27.0 P0）**：任何阶段失败都抛 `IsolatedPkgBuildError`
+      （含阶段 / 原始类型 / 原始消息 / 归因 / 处置建议），**不再**裸抛底层异常。
+      理由见类 docstring：「前提被推翻」的历史留痕。
+      ⚠ 失败时**清理已创建的临时根目录**：否则 broker 反复拦截会留下
+        一堆半成品副本（每次约 29MB），把会话拖死。
     """
-    core = _find_shared_core()
-    root = Path(tempfile.mkdtemp(prefix=prefix))
-    plugins = root / "plugins"
-    plugins.mkdir(parents=True, exist_ok=True)
-    pkg = plugins / "vet-med-ppt-team"
-    shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
-    for d in COPY_MANIFEST_DIRS:
-        if not (pkg / d).is_dir():
-            continue
-    # shared-core 软链（副本同级）——shim 的搜索路径依赖它
-    link = plugins / "shared-core"
-    if not link.exists():
-        os.symlink(core, link)
+    try:
+        core = _find_shared_core()
+    except RuntimeError as exc:
+        # 布局缺失（shared-core 不在预期位置）⇒ 同样是「副本造不出来」，
+        # 统一成同一异常类型 ⇒ 上层只有**一条** skip 路径，无需分辨根因。
+        raise IsolatedPkgBuildError(_STAGE_SHARED_CORE, exc, _HINT_SHARED_CORE) from exc
+    try:
+        root = Path(tempfile.mkdtemp(prefix=prefix))
+    except OSError as exc:
+        # `tempfile.mkdtemp` 失败 ⇒ 临时目录不可创建（broker 拦截 / TMPDIR 不可写 / 空间满）
+        raise IsolatedPkgBuildError(_STAGE_MKDIR, exc, _HINT_TMPDIR) from exc
+    try:
+        plugins = root / "plugins"
+        plugins.mkdir(parents=True, exist_ok=True)
+        pkg = plugins / "vet-med-ppt-team"
+        shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
+        for d in COPY_MANIFEST_DIRS:
+            if not (pkg / d).is_dir():
+                continue
+    except OSError as exc:
+        # 拷贝阶段失败 ⇒ 清掉半成品（避免残留大量半拷贝副本），再抛可诊断异常
+        shutil.rmtree(root, ignore_errors=True)
+        raise IsolatedPkgBuildError(_STAGE_COPY, exc, _HINT_COPY) from exc
+    try:
+        # shared-core 软链（副本同级）——shim 的搜索路径依赖它
+        link = plugins / "shared-core"
+        if not link.exists():
+            os.symlink(core, link)
+    except OSError as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        raise IsolatedPkgBuildError(_STAGE_SYMLINK, exc, _HINT_SYMLINK) from exc
     return pkg
 
 
@@ -277,6 +383,71 @@ class TestIsolatedPkgBuilder(unittest.TestCase):
                 self.assertEqual(a, b, f"副本 config/{f.name} 与真包不一致")
         finally:
             cleanup_isolated_pkg(iso)
+
+
+class TestIsolatedPkgBuildError(unittest.TestCase):
+    """【v3.27.0 · P0】构造器失败时的错误消息必须**可诊断**。
+
+    ─────────────────────────────────────────────────────────────
+    背景（真实故障，2026-10-28 晚）：
+      WorkBuddy 会话内宿主 `sitecustomize.py` 的文件系统 broker 钩子拦截
+      `tempfile.mkdtemp` 的 mkdir ⇒ `PermissionError: Brokered mkdir refused
+      by resolved path policy: deny`。
+      旧写法把**裸异常**直接抛给调用方 ⇒ 上层分不清「环境临时限制」与
+      「包自身有 bug」⇒ 排查者误判为包缺陷。
+
+    本类要证明：构造失败抛出的异常**必须自带**下列可诊断信息：
+      ① **失败阶段**（哪一步炸的：建临时目录 / 拷内容 / 建软链）；
+      ② **原始异常类型**（PermissionError / OSError / …）；
+      ③ **原始异常消息**（原样保留，不吞）；
+      ④ **归因**（这是环境限制，不是包缺陷、不是断言失败）；
+      ⑤ **处置建议**（查 TMPDIR / broker 策略 / 磁盘空间）。
+
+    ⚠ **铁律：判据必须能红**。两层保证**假阳性为零**：
+      ① **正向断言**：构造器真的失败 ⇒ 抛出的异常含上述五项；
+      ② **反向对照**：一条**不含**这些信息的普通异常（如裸 `ValueError`）
+         ⇒ 必须**判红** ⇒ 证明判据不是「什么异常都能过」的恒真守卫。
+    """
+
+    #: broker 拦截时的**原始消息**（来自 2026-10-28 晚的真实故障）。
+    BROKER_MSG = "Brokered mkdir refused by resolved path policy: deny"
+
+    def _assert_diagnosable(self, exc: BaseException):
+        """**唯一的判据实现**（正向与反向对照共用 ⇒ 反向对照才有意义）。"""
+        msg = str(exc)
+        self.assertIn("PermissionError", msg,
+                      "错误消息必须点名**原始异常类型**")
+        self.assertIn(self.BROKER_MSG, msg,
+                      "错误消息必须**原样保留**原始异常消息（吞掉就无从排查）")
+        self.assertIn("阶段", msg,
+                      "错误消息必须指明**失败阶段**（建临时目录/拷内容/建软链）")
+        self.assertIn("环境限制", msg,
+                      "错误消息必须写明归因是**环境限制**（非包缺陷、非断言失败）")
+        self.assertIn("TMPDIR", msg,
+                      "错误消息必须给出**处置建议**（TMPDIR / broker 策略 / 磁盘空间）")
+
+    def test_T6_mkdtemp_failure_raises_diagnosable_error(self):
+        """T6（正向）：`mkdtemp` 失败 ⇒ 抛出的异常含阶段/类型/消息/归因/建议。"""
+        from unittest import mock
+
+        with mock.patch("tempfile.mkdtemp",
+                        side_effect=PermissionError(self.BROKER_MSG)):
+            with self.assertRaises(IsolatedPkgBuildError) as cm:
+                make_isolated_pkg(prefix="vetmed-iso-diag-")
+        self._assert_diagnosable(cm.exception)
+        # 原始异常必须挂在 `__cause__` 上（保留完整 traceback 链）
+        self.assertIsInstance(cm.exception.__cause__, PermissionError)
+        self.assertIn(self.BROKER_MSG, str(cm.exception.__cause__))
+
+    def test_T7_bare_exception_is_rejected_by_the_judgement(self):
+        """T7（反向对照）：**普通异常**（不含诊断信息）⇒ 判据必须判红。
+
+        ⚠ 这条是「判据能红」的关键：若 `_assert_diagnosable` 写成恒真
+          （如只断言 `str(exc)` 非空），本条会**误判为通过** ⇒ 假绿。
+          本条确保判据真的在检查**那五项信息**。
+        """
+        with self.assertRaises(AssertionError):
+            self._assert_diagnosable(ValueError("普通异常，无任何诊断信息"))
 
 
 if __name__ == "__main__":

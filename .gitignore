@@ -62,3 +62,12 @@ __pycache__/
 vetmed-iso-*/
 # 同理：包内可能出现的临时副本根（mkdtemp 前缀变体）
 vetmed-iso*
+
+# v3.27.0（L-7）：镜像同步器的**同步前备份**目录
+#   缘由：scripts/mirror_sync.py 每次 --confirm 同步前会把被覆盖文件备份到
+#   `packages/.mirror_backups/<时间戳>/`（同步失败可回滚）。
+#   ⚠ 这些备份是**中间产物**（一次同步可能产生数十 MB），不属于分发内容
+#     ⇒ 必须挡在版本库外，否则 `git add .` 会把它们整批提交进去。
+#   ⚠ 与 v3.26.0 的 `vetmed-iso*` 同型问题（残留物误入提交面）。
+packages/.mirror_backups/
+.mirror_backups/

@@ -40,6 +40,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
   21 三源阈值双重声明防线（v3.16.0）                  → harness.yaml#budgets 重复声明 + budget check 运行时值 ≠ domain_config【只读】★新
   22 闸3 交叉复检领域映射（v3.17.0）                  → sop-stages.md 实际写法 ≠ config/guard.yaml 登记值【只读·阻断】★新
  23 域绑定残留巡检（v3.17.0）                       → agents/references 里的学科专有词应下沉到域档案【提示·不阻断】★新
+ 26 根⇄镜像提交态一致性（v3.27.0 L-7）            → 提交态漂移则告警【只读·阻断】★new
 
 用法：
     python3 scripts/ensure_settings.py [专家包路径]     # 0=全通过  1=有告警
@@ -112,7 +113,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 25  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对）
+N = 26  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对；v3.27.0 L-7：26 根⇄镜像提交态一致性）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -344,24 +345,257 @@ def check_single_judge(expert_dir):
 
 
 # ── 7. 回归测试自跑 ★新 ─────────────────────────────────────
+#: 反例批次因**环境限制**被跳过时，套件 stdout 里出现的**专属**标记。
+#:
+#: ⚠ 刻意**复制**而非 `import scripts/test_arch_drift`：import 该文件会把整个
+#:   测试模块拉进体检进程（重 + 有副作用），体检器不该为此付费。
+#:   漂移风险由 `scripts/test_regression_skip_report.py` 的 T5 锁死
+#:   （两处字面量必须逐字一致，不一致即判红）。
+ANTIEXAMPLE_SKIP_MARKER = "[WARN][vet-med-ppt-team] 反例批次因环境限制被跳过"
+
+#: 第 7 项检出「因环境限制被跳过」时是否**阻断**发布（v3.27.0 P0 收尾）。
+#:
+#: ⚠ 默认 False（**不阻断**）—— 理由见 `check_regression` 的 docstring。
+#: ⚠ **双向可查**：若将来决定改为阻断，把这里改成 True 即可；
+#:   判定逻辑（`has_env_skip`）与报告文案都不必动。
+REGRESSION_SKIP_BLOCKS_RELEASE = False
+
+#: 第 7 项最近一次运行的「未验证」留痕（供 `main()` 汇总结论时区分
+#: 「真全绿」与「全绿但有跳过」）。
+#:
+#: ⚠ 为何用模块级而非返回值：`main()` 用 `rc |= check_regression(...)` 聚合，
+#:   返值通道已被 rc 占用；而「是否阻断」与「是否未验证」是**两个维度**，
+#:   挤进一个 int 会丢掉后者 ⇒ 就会留下"结论写着『全部通过』、实际有跳过"
+#:   的假绿形态 —— 那正是本项要消灭的东西。
+REGRESSION_UNVERIFIED = {"suites": [], "cases": 0}
+
+#: 套件级状态常量（三态，供分级报告使用）
+REG_PASS = "pass"                          # 真通过：rc=0 且未检出跳过
+REG_PASS_WITH_SKIPS = "pass_with_skips"   # rc=0 但检出「因环境限制被跳过」
+REG_FAIL = "fail"                          # rc≠0（**语义沿用** v3.9.0 起的行为，不变）
+
+
+def count_suite_skips(stdout, stderr=""):
+    """统计单个回归套件输出里的「跳过」信号（**纯函数**）。
+
+    返回 dict：
+      marker_hit    : bool —— stdout 是否出现 `ANTIEXAMPLE_SKIP_MARKER`
+      skipped_cases : int  —— unittest 摘要里的 `skipped=N`
+      anti_skips    : int  —— stderr 逐项输出里属于反例类（TestGuardAntiExamples）
+                             的 skip 条数（**诊断增强**，不参与判定）
+      text          : str  —— 人可读的一行摘要
+    """
+    out = stdout or ""
+    err = stderr or ""
+    marker_hit = ANTIEXAMPLE_SKIP_MARKER in out
+    # ⚠ unittest 的 summary（`OK (skipped=N)`）默认写 **stderr**
+    #   （TextTestRunner 的默认 stream 是 sys.stderr）—— 实测确认。
+    #   体检第 7 项此前只读 stdout，所以"被跳过多少"一直是**看不见**的；
+    #   两个流都扫，兼容 pytest 风格（summary 落 stdout）。
+    counts = [int(x) for x in re.findall(r"skipped=(\d+)", err + "\n" + out)]
+    skipped_cases = max(counts) if counts else 0
+    anti_skips = _count_anti_example_skips(err)
+    return {
+        "marker_hit": marker_hit,
+        "skipped_cases": skipped_cases,
+        "anti_skips": anti_skips,
+        "text": f"rc=0",
+    }
+
+
+def _count_anti_example_skips(stderr):
+    """数 stderr 里属于**反例类**的 skip 条数（诊断增强，纯函数）。
+
+    ⚠ unittest 的 verbose 输出可能把「用例 id 行」与「结果行」拆成两行
+      （用例有 docstring 时会拆），也可能合成一行 ⇒ 两种形态都要认。
+    ⚠ 这是**诊断信息**，不是判据：它依赖 unittest 的输出格式，
+      格式一变就数不到 ⇒ 不能拿它当"能不能检出"的依据。
+    """
+    lines = (stderr or "").splitlines()
+    n = 0
+    for i, ln in enumerate(lines):
+        if "skipped '" in ln:
+            if "TestGuardAntiExamples" in ln:
+                n += 1
+            elif i > 0 and "TestGuardAntiExamples" in lines[i - 1]:
+                n += 1
+        elif "TestGuardAntiExamples" in ln and i + 1 < len(lines) \
+                and "skipped '" in lines[i + 1]:
+            n += 1
+    return n
+
+
+def has_env_skip(stdout, stderr=""):
+    """判定某套件输出是否表明「反例批次因环境限制被跳过」（**纯函数**）。
+
+    ⚠ **为何必须两个信号合取**（任一单独用都不成立——v3.27.0 P0 收尾实测）：
+
+      ① 只看 marker（专属标记）⇒ **恒真误报**：反例类的**受控自测**
+         `scripts/test_arch_drift.py::TestAntiExampleSkipSemantics` 会**故意**
+         触发 `setUp` 的「环境限制 ⇒ skip」分支，用来证明"跳过语义"本身没坏；
+         它每次运行都会往 stdout 打**同样**的 marker（实测：11 个反例全部
+         通过的健康环境下，stdout 里仍有 2 处 marker）。⇒ 单看 marker 等于
+         每次体检都误报"反例未验证"，那是另一种假绿。
+      ② 只看 `skipped=N` ⇒ 把「与反例无关的 skip」误报成「反例未验证」
+         （例：`test_three_source_online.py` 的「外网不可达」、
+         `test_ooxml_lint.py` 的 `skipUnless(python-pptx)`）。
+      ⇒ **合取**：marker 说明**反例批次**走进了环境限制分支；
+        `skipped=N` 说明这些用例**真的没被执行**（受控自测的手工记账
+        不进外层 summary ⇒ 不会把受控自测算进来）。
+    """
+    sig = count_suite_skips(stdout, stderr)
+    return bool(sig["marker_hit"] and sig["skipped_cases"] > 0)  # MUT_POINT:SKIP_VERDICT
+
+
+def analyze_suite_output(name, rc, stdout, stderr=""):
+    """判定单个回归套件的输出 ⇒ (status, detail)（**纯函数**）。
+
+    status ∈ {REG_PASS, REG_PASS_WITH_SKIPS, REG_FAIL}
+    detail: dict（见 `count_suite_skips` 的返回结构 + `fail_tail`）
+
+    ⚠ 纯函数：不碰文件系统、不起子进程 ⇒ 测试可直接调用，
+      无需真跑全量回归（真跑一次约 2 分钟，且在本机会因宿主 broker 拦 mkdir
+      而产生「因环境限制跳过」的真实现象，反而污染判据本身）。
+    """
+    sig = count_suite_skips(stdout or "", stderr or "")
+    detail = {
+        "marker_hit": sig["marker_hit"],
+        "skipped_cases": sig["skipped_cases"],
+        "anti_skips": sig["anti_skips"],
+        "text": f"rc={rc}",
+    }
+    if rc != 0:
+        # ⚠ 失败语义**优先**：rc≠0 一律判失败，跳过信号不得掩盖失败。
+        return REG_FAIL, detail
+    if has_env_skip(stdout, stderr):
+        extra = (f"，其中反例用例 {sig['anti_skips']} 个"
+                 if sig["anti_skips"] else "")
+        detail["text"] = (f"rc=0 / 检出「反例批次因环境限制跳过」"
+                          f"（跳过用例 {sig['skipped_cases']} 个{extra}）")
+        return REG_PASS_WITH_SKIPS, detail
+    return REG_PASS, detail
+
+
+def format_regression_report(results, total_suites):
+    """把各套件的判定结果汇成体检第 7 项的报告行（**纯函数**）。
+
+    results: [(name, status, detail), ...]
+    返回 (lines, rc)：
+      lines —— 报告行（list[str]，不带换行）
+      rc    —— 是否**阻断**（0/1）
+    """
+    failed = [(n, d) for (n, s, d) in results if s == REG_FAIL]
+    skipped = [(n, d) for (n, s, d) in results if s == REG_PASS_WITH_SKIPS]
+    lines = []
+    if failed:
+        lines.append(f"[7/{N}] 🔴 回归测试失败：{len(failed)}/{total_suites} 个套件不通过")
+        for name, d in failed:
+            lines.append(f"     {name}  → {(d.get('fail_tail') or d['text'])[:120]}")
+        lines.append("     → 处置：先修失败套件再发布；单套件调试：python3 scripts/<套件>.py")
+        return lines, 1
+    if skipped:
+        total_cases = sum(d["skipped_cases"] for _, d in skipped)
+        lines.append(f"[7/{N}] ⚠ 回归测试通过但有 {len(skipped)} 个套件因环境限制跳过"
+                     f"（反例批次未验证）")
+        for name, d in skipped:
+            lines.append(f"     {name} → {d['text']}")
+        lines.append(f"     → 合计 {total_cases} 个用例未执行 ⇒ 守卫的「能红」属性本轮"
+                     f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
+        lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写），"
+                     "**不是包缺陷**；换个会话或另设 TMPDIR 后重跑本套件再判")
+        return lines, (1 if REGRESSION_SKIP_BLOCKS_RELEASE else 0)
+    tails = " ".join(f"{n}={d['text']}" for (n, _s, d) in results)
+    lines.append(f"[7/{N}] ✓ 回归测试通过（{len(results)}/{total_suites} 套件：{tails}）")
+    return lines, 0
+
+
+def format_final_conclusion(rc, unverified):
+    """渲染体检最终结论（**纯函数**，v3.27.0 P0 收尾）。
+
+    参数：
+      rc        : int —— 体检聚合退出码
+      unverified: dict —— 「未验证」累加器（`REGRESSION_UNVERIFIED` 同构）
+
+    返回：list[str]（待打印的行，不带换行）
+
+    ⚠ **为何必须抽成纯函数**（本轮实测踩到的坑）：
+      首版把这段逻辑**内联**在 `main()` 里 ⇒ 判据只能做**静态源码检查**
+      （AST 查「有没有引用 `REGRESSION_UNVERIFIED`」）⇒ 实测**反向对照失败**：
+      把 `REGRESSION_UNVERIFIED.get("suites")` 改成 `[]`，
+      而 `.get("cases")` 那行**仍引用着它** ⇒ 静态检查照样通过 ⇒
+      **判据红了假绿**（变异后 8 passed，判据没抓住）。
+      ⇒ 抽成纯函数后，判据可**真正执行**并断言输出内容 ⇒ 变异必红。
+
+    ⚠ 三档语义（与 `check_regression` 的返值语义一致）：
+      · rc=0 且无未验证项 ⇒ 「✅ 全部通过，可发布」
+      · rc=0 但有未验证项 ⇒ 「⚠️ 存在**未验证项**」——**降级但不阻断**
+        （环境问题不阻断发布；理由见 `check_regression` docstring）
+      · rc≠0 ⇒ 「⚠️ 存在告警，处理后再发布」
+    """
+    suites = (unverified or {}).get("suites") or []
+    cases = (unverified or {}).get("cases") or 0
+    if rc == 0 and suites:
+        lines = [
+            f"结论：⚠️ 存在**未验证项**（{len(suites)} 个套件 / {cases} 个用例"
+            f"因环境限制被跳过）——**未验 ≠ 已验**，"
+            f"勿据此认为相关守卫的『能红』属性有效",
+        ]
+        for s in suites:
+            lines.append(f"     未验证套件：{s}")
+        lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写），"
+                     "**不是包缺陷**；解除后重跑该套件再判")
+        return lines
+    if rc == 0:
+        return ["结论：✅ 全部通过，可发布 / 可运行 validate_expert.py"]
+    return ["结论：⚠️ 存在告警，处理后再发布（settings.json 已自愈）"]
+
+
 def check_regression(expert_dir):
     """v3.9.0 扩：此前只跑 test_harness.py，新增套件（如 v3.8.2 的 test_fix_md_image_refs、
     v3.9.0 的 test_loop_state）失败**体检完全看不见**——第 7 项形同虚设。
     现改为跑 scripts/ 下全部 test_*.py，逐个报码，任一失败即告警。
+
+    ⚠ **v3.27.0 P0 收尾：检出「因环境限制被跳过」**。
+    旧前提被推翻：旧实现**只看 rc** ⇒ unittest 的 skip **不改变 rc**
+    ⇒ 11 个反例全被跳过时，本项仍显示「✓ 回归测试通过 … rc=0」
+    ⇒ "这批守卫的『能红』属性根本没验证"这件事在体检汇总里**完全看不见**
+    ⇒ 排查者会把"反例全跳过"误读成"守卫没问题" ⇒ **假绿**。
+    ⇒ 现按三态分级报告（真通过 / 通过但有跳过 / 失败），并把"未验证"
+      显式透传到最终结论（`REGRESSION_UNVERIFIED`）。
+
+    ⚠ **返值语义（本项最关键的决策）**：
+      · rc≠0（套件失败）⇒ return 1（**沿用** v3.9.0 起的行为，不变）
+      · rc=0 但检出「因环境限制被跳过」⇒ **return 0（不阻断）**，理由三条：
+        ① 跳过源于**环境**（宿主 broker 拦 mkdir / TMPDIR 不可写），不是包缺陷；
+           拿环境问题阻断发布属误伤。
+        ② 本包既有惯例：第 23 项（域绑定残留）= 提示级·**不阻断**，
+           第 11/22 项才阻断；"证据不足/环境受限"更近第 23 项的性质。
+        ③ **告警疲劳**：某些会话里宿主 broker 会持续拦截 ⇒ 若阻断，体检
+           **恒红** ⇒ 用户学会忽略体检输出 ⇒ 后续真告警全部失效。
+      · ⚠ 但"不阻断"**不等于**"看不见"：跳过必须**显式打印**（⚠ 行），
+        且最终结论要**降级**为「有未验证项」⇒ 绝不让"未验"显示成"已验"。
+      · ⚠ 若将来决定改为阻断：把 `REGRESSION_SKIP_BLOCKS_RELEASE` 改成 True
+        即可（**双向可查**：判定逻辑与文案都不必动）。
     """
     import glob as _glob
     suites = sorted(_glob.glob(os.path.join(expert_dir, "scripts", "test_*.py")))
     if not suites:
         print(f"[7/{N}] ⚠ 未找到任何 test_*.py，跳过")
         return 1
-    failed, tails = [], []
+    REGRESSION_UNVERIFIED["suites"] = []
+    REGRESSION_UNVERIFIED["cases"] = 0
+    results = []
     for t in suites:
         name = os.path.basename(t)
         try:
             p = subprocess.run([sys.executable, t], capture_output=True, text=True,
                                timeout=180)
         except subprocess.TimeoutExpired:
-            failed.append((name, "超时 >180s"))
+            results.append((name, REG_FAIL, {"text": "超时 >180s",
+                                             "fail_tail": "超时 >180s",
+                                             "marker_hit": False,
+                                             "skipped_cases": 0,
+                                             "anti_skips": 0}))
             continue
         last = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
         # v3.16.0 修：此前优先显示 stdout 末行文本，而部分套件的末行是 JSON 的收尾大括号，
@@ -370,17 +604,18 @@ def check_regression(expert_dir):
         tail = f"rc={p.returncode}"
         if p.returncode and last:
             tail += f" / {last[-1][:20]}"
-        tails.append(f"{name}={tail}")
-        if p.returncode != 0:
-            failed.append((name, tail))
-    if failed:
-        print(f"[7/{N}] 🔴 回归测试失败：{len(failed)}/{len(suites)} 个套件不通过")
-        for name, tail in failed:
-            print(f"     {name}  → {tail[:120]}")
-        print(f"     → 处置：先修失败套件再发布；单套件调试：python3 scripts/<套件>.py")
-        return 1
-    print(f"[7/{N}] ✓ 回归测试通过（{len(suites)}/{len(suites)} 套件：{' '.join(tails)}）")
-    return 0
+        status, detail = analyze_suite_output(name, p.returncode, p.stdout, p.stderr)
+        if status == REG_FAIL:
+            detail["fail_tail"] = tail
+        results.append((name, status, detail))
+    lines, rc = format_regression_report(results, len(suites))
+    for ln in lines:
+        print(ln)
+    skipped = [(n, d) for (n, s, d) in results if s == REG_PASS_WITH_SKIPS]
+    if skipped:
+        REGRESSION_UNVERIFIED["suites"] = [n for n, _ in skipped]
+        REGRESSION_UNVERIFIED["cases"] = sum(d["skipped_cases"] for _, d in skipped)
+    return rc
 
 
 # ── 11. 工作区旁路版本检查（v3.3.1 治理批）──────────────────
@@ -1975,6 +2210,71 @@ def judge_threshold_runtime(kind, key, val, want, src):
     return None
 
 
+#: 三源阈值的**决策键**（唯一源 = config/domain_config.yaml#three_source_check）。
+#: ⚠ 口径与 `scripts/harness.py#_DECISION_KEYS` 对齐——改了这里要同步改那边。
+THREE_SOURCE_DECISION_KEYS = ("sample_rate", "pass_threshold")
+
+
+def find_three_source_hardcoded_literals(src, decision_keys=THREE_SOURCE_DECISION_KEYS):
+    """扫出「三源阈值判定点里硬编码了字面量」的位置（**纯函数**，v3.27.0 L-5）。
+
+    背景（来自包外脚本 `verify_three_source_config.py` 的判据 ③）：
+      v3.12.0 把三处硬编码 0.8/0.1 改成读配置，但**没有留下防线** ⇒
+      以后有人「顺手写回」`float(tsc.get("sample_rate", 0.1))` 这种形态，
+      改 yaml 又会**静默失效**（默认值被静默消费）⇒ 同型复发。
+
+    ⚠ **为何本判据比包外脚本的原始正则更准**（实测）：
+      包外脚本的正则是 `sample_n\\s*=.*\\*\\s*0\\.1` / `threshold\\s*=\\s*0\\.8` /
+      `"threshold":\\s*0\\.8` ⇒ 只认**三种字面写法**，
+      实测当前 `verify_deck.py` 命中 **0** 处 ⇒ 但代码里**确实有**字面量：
+        · `verify_deck.py:1597` `float(tsc.get("sample_rate", 0.1))`
+        · `verify_deck.py:1632` `float(tsc.get("pass_threshold", 0.8))`
+      这两处是「**内联默认字面量**」形态 ⇒ 包外正则**抓不到** ⇒ 假绿。
+      ⇒ 本判据改用 **AST**：找「读决策键的同时又带了字面量默认值」的 `.get()` 调用。
+
+    ⚠ **豁免**（这三类是**合法**的，不该判红）：
+      · `harness.py` 的 `defaults` 字典（**兜底集**，缺键时显式告警，属设计内）
+      · `verify_deck.py` 的 `fallback` 字典（同上，且有 `VERIFY_ALLOW_FALLBACK` 门）
+      · 纯注释行、docstring、告警文案里的 "0.1/0.8" 字样
+
+    参数：
+      src          : str —— 被扫源码（verify_deck.py 全文）
+      decision_keys: tuple —— 决策键名集合
+    返回：list[str] —— 命中位置描述（形如 "第 1597 行：sample_rate 读了字面量默认值 0.1"）
+    """
+    import ast as _ast
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError as e:
+        return [f"__PARSE_ERROR__:{e}"]
+
+    hits = []
+
+    class _V(_ast.NodeVisitor):
+        """找 `X.get(<决策键>, <字面量>)` 形态的调用。"""
+
+        def visit_Call(self, node):
+            fn = node.func
+            is_get = False
+            if isinstance(fn, _ast.Attribute) and fn.attr == "get":
+                is_get = True
+            if is_get and len(node.args) >= 2:
+                key = node.args[0]
+                if isinstance(key, _ast.Constant) and isinstance(key.value, str) \
+                        and key.value in decision_keys:
+                    default = node.args[1]
+                    if isinstance(default, _ast.Constant) and \
+                            isinstance(default.value, (int, float)) and \
+                            not isinstance(default.value, bool):
+                        hits.append(
+                            f"第 {node.lineno} 行：决策键 `{key.value}` 带了"
+                            f"字面量默认值 {default.value}（改 yaml 会被静默忽略）")
+            self.generic_visit(node)
+
+    _V().visit(tree)
+    return hits
+
+
 def check_three_source_single_source(expert_dir):
     """v3.16.0：第 21 项 —— 三源阈值「双重声明」防线（防复发）。
 
@@ -2033,6 +2333,35 @@ def check_three_source_single_source(expert_dir):
             print(f"     {p_}")
         print("     → 处置：删掉 harness.yaml#budgets 里的 three_source_* 键；"
               "值要改就改 config/domain_config.yaml#three_source_check（并由 verify_deck 消费）")
+        return 1
+
+    # ③ 静态：判定点不得带**内联字面量默认值**（v3.27.0 L-5 收口）
+    #   来源：包外脚本 verify_three_source_config.py 的判据 ③ —— 该判据包内原本**没有**，
+    #   按「归档前先补齐真源」的纪律，先补进来再归档包外脚本。
+    #   ⚠ 包外脚本的原始正则只认三种字面写法，实测命中 0 处 ⇒ 假绿；
+    #     本处改用 AST（见 find_three_source_hardcoded_literals 的说明）。
+    vd = os.path.join(expert_dir, "scripts", "verify_deck.py")
+    if not os.path.exists(vd):
+        print(f"[21/{N}] ⚠ 静态比对通过，但缺 scripts/verify_deck.py，"
+              f"无法做判定点字面量检查")
+        return 1
+    try:
+        vd_src = open(vd, encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        print(f"[21/{N}] ⚠ 读 verify_deck.py 失败：{e}")
+        return 1
+    literals = find_three_source_hardcoded_literals(vd_src)
+    if literals and literals[0].startswith("__PARSE_ERROR__"):
+        print(f"[21/{N}] ⚠ verify_deck.py 解析失败，未判（探测受阻，非漂移）：{literals[0]}")
+        literals = []
+    if literals:
+        print(f"[21/{N}] 🔴 三源阈值判定点有 {len(literals)} 处内联字面量默认值"
+              f"——改 yaml 会被静默忽略")
+        for l_ in literals:
+            print(f"     {l_}")
+        print("     → 处置：删掉 .get(<决策键>, <字面量>) 的第二个参数；"
+              "缺键策略统一由 harness.py#load_three_source_config() 负责"
+              "（决策键缺 → 置 None + 显式告警 + fail-closed）")
         return 1
 
     # ② 运行时断言：configuration 值必须真的从 domain_config 取出来
@@ -2721,6 +3050,87 @@ def check_harness_fallback_structure(expert_dir):
     return 0
 
 
+# ── 26. 根 ⇄ 镜像 提交态一致性（v3.27.0 L-7）─────────────────
+def check_mirror_committed_parity(expert_dir):
+    """v3.27.0（L-7）：第 26 项 —— 仓库根与**分发镜像**的**提交态**一致性（阻断）。
+
+    背景（本项要治的事故）：本包在 marketplace 里以**两份**形式存在——
+      · 仓库根（本目录）= 开发/编辑面
+      · `packages/vet-med-ppt-team/` = 分发面（**实际被加载的就是它**）
+    历史上出过三类事故：① `rsync --delete` 把根的删除传播到镜像
+    （`settings.json` 丢失）；② 忘了排除 `packages` ⇒ rsync 自复制
+    （嵌套 `packages/packages/`，5.6MB 污染）；③ 改完忘同步 ⇒ 根与镜像漂移。
+
+    ⚠ **为何比「提交态」而不是「工作区」**（这是本项零假红的关键）：
+      工作区在「改包但还没同步镜像」的**正常开发中间态**里必然有差异
+      （根侧改了、镜像还没跟上）⇒ 用工作区比对会**常态性假红**
+      （每次编辑都报 ⇒ 警报警常态化 ⇒ 等于没警）。
+      而**提交态**是**发布单元**：提交了就说明那个提交要被发布出去；
+      若提交里两侧不一致 ⇒ 那次发布就带上了漂移 ⇒ 正是要抓的。
+      实测：最近 7 个提交里有 **3 个**存在提交态漂移（真事故，不是假警）。
+
+    ⚠ **只读**：本项只调 `git ls-tree` 读提交树，**不写任何文件**。
+    ⚠ **非 git 仓库 / 无 HEAD ⇒ 不判定**（返回 0，不阻断）——探测受阻 ≠ 实现缺陷。
+    ⚠ 「镜像多出」（镜像有、根无）**只报告不阻断**：那多半是镜像里的历史残留，
+      删不删是**人的决定**（默认的 `mirror_sync.py` 也不做删除传播）。
+    """
+    # 仓库根 = 含 .git 的那一层（镜像目录自己也会带一份 scripts/，需认准真根）
+    repo_root = os.path.abspath(expert_dir)
+    try:
+        r = subprocess.run(["git", "-C", repo_root, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            repo_root = r.stdout.strip()
+    except Exception:
+        pass
+
+    try:
+        import importlib.util as _ilu
+        _ms_path = os.path.join(repo_root, "scripts", "mirror_sync.py")
+        _spec = _ilu.spec_from_file_location("_mirror_sync_probe", _ms_path)
+        _ms = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_ms)
+        res = _ms.git_committed_parity(__import__("pathlib").Path(repo_root))
+    except Exception as e:
+        print(f"[26/{N}] – 无法加载 mirror_sync.py 取提交态（{type(e).__name__}），跳过")
+        return 0
+    if res is None:
+        print(f"[26/{N}] – 非 git 仓库或无 HEAD，提交态比对不适用，跳过")
+        return 0
+    if not res:
+        print(f"[26/{N}] – 提交树里没有 packages/ 下的镜像目录，无需比对，跳过")
+        return 0
+
+    bad = []
+    extras = []
+    for name, (missing, differing, extra) in sorted(res.items()):
+        bad.append((name, missing, differing))
+        extras.append((name, extra))
+
+    must_fix_total = sum(len(m) + len(d) for _, m, d in bad)
+    if must_fix_total:
+        print(f"[26/{N}] ✗ 根与镜像**提交态**漂移 {must_fix_total} 处：")
+        for name, missing, differing in bad:
+            if not (missing or differing):
+                continue
+            print(f"     · 镜像 {name}/：")
+            for p in missing[:10]:
+                print(f"         根有镜像无：{p}")
+            for p in differing[:10]:
+                print(f"         内容不同：{p}")
+        print("     → 该提交若发布出去，镜像（实际被加载的那份）内容与根不一致。")
+        print("     → 修法：python3 scripts/mirror_sync.py --confirm（预览差异后）再提交。")
+        return 1
+
+    names = "、".join(n for n, _, _ in bad)
+    msg = f"[26/{N}] ✓ 根与镜像提交态一致（镜像 {names}/ 与根逐 blob 相同）"
+    extra_total = sum(len(e) for _, e in extras)
+    if extra_total:
+        msg += f"；⚠ 镜像多出 {extra_total} 个文件（历史残留，只报告不删）"
+    print(msg)
+    return 0
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     quick = "--quick" in sys.argv
@@ -2736,7 +3146,7 @@ def main():
         print("# 免检区（块级消费段）登记表骨架 —— 由 "
               "`python3 scripts/ensure_settings.py --dump-block-segments` 生成")
         print("# ⚠ key_count 与 keys_sha256 **不要手写**；消费方/处置规则需人工判断后填。")
-        print("version: \"3.26.0\"")
+        print("version: \"3.27.0\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")
@@ -2814,12 +3224,22 @@ def main():
     rc |= check_stage_order_drift(path)
     # v3.25.0：harness.py#_FALLBACK ↔ harness.yaml 结构比对（阻断；防降级副本结构漂移）
     rc |= check_harness_fallback_structure(path)
+    # v3.27.0（L-7）：根 ⇄ 分发镜像 提交态一致性（阻断；防镜像漂移进入发布）
+    rc |= check_mirror_committed_parity(path)
 
     print()
-    if rc == 0:
-        print("结论：✅ 全部通过，可发布 / 可运行 validate_expert.py")
-    else:
-        print("结论：⚠️ 存在告警，处理后再发布（settings.json 已自愈）")
+    #: ⚠ **v3.27.0 收尾：把「未验证」透传到最终结论**。
+    #:   此前 `REGRESSION_UNVERIFIED` 被 `check_regression()` 填充，却**从未被读取**
+    #:   ⇒ 文档声称的「把『未验』显式透传到最终结论」**根本没实现** ⇒
+    #:   即便第 7 项打出「⚠ 回归测试通过但有 N 个套件因环境限制跳过」，
+    #:   最终结论仍会写「✅ 全部通过，可发布」⇒ **假绿残留**（未验被显示成已验）。
+    #:   ⇒ 渲染抽到纯函数 `format_final_conclusion()`（**可测**）：
+    #:     · rc=0 且无未验证项 ⇒ ✅ 全部通过（沿用 v3.26.0 字面，避免破坏既有日志对照）
+    #:     · rc=0 但有未验证项 ⇒ ⚠️ **未验≠已验**：结论**降级**，但 rc 仍为 0
+    #:       （返值语义见 `check_regression` docstring：环境问题不阻断发布）
+    #:     · rc≠0 ⇒ ⚠️ 存在告警（沿用）
+    for _ln in format_final_conclusion(rc, REGRESSION_UNVERIFIED):
+        print(_ln)
     return rc
 
 

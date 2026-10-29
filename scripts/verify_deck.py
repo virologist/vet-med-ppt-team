@@ -1594,7 +1594,19 @@ def three_source_check(workspace: str, deck: str = "", scan_all: bool = False) -
     # 3. 抽检（读 domain_config.yaml#three_source_check.sample_rate；可复现种子可选）
     #    ⚠ --scan-all（存量核验清单）走**全量**：清单的目的是摸清存量规模，
     #    抽样估不出规模；闸4.5 判定的抽样语义不变。
-    sample_rate = float(tsc.get("sample_rate", 0.1))
+    # v3.27.0（L-5）：删掉内联字面量默认值 0.1。
+    #   ⚠ 原写法 `float(tsc.get("sample_rate", 0.1))` 的 default **不可达**：
+    #     `harness.load_three_source_config()` 保证 `out = dict(defaults)` 后再被 yaml 覆盖
+    #     ⇒ `sample_rate` 键**永远存在** ⇒ `.get()` 的 default 分支永不触发。
+    #   ⚠ 而它**看起来**像"yaml 缺了就退回 0.1" ⇒ 改配置的人会误以为
+    #     "这个 0.1 是兜底值，改 yaml 不影响它" ⇒ **误导性死代码**。
+    #   ⚠ 更糟的一层：若 yaml 缺该键，`harness` 按 v3.17.0 口径把**决策键置 None**
+    #     （不补内置值，fail-closed）⇒ `tsc["sample_rate"] is None`
+    #     ⇒ `.get(key, 0.1)` 返回 **None**（default 同样不生效）
+    #     ⇒ `float(None)` 抛 TypeError ⇒ 崩在算式里，而不是给出可读报错。
+    #   ⇒ 缺键策略统一由 harness 负责（置 None + 显式告警 + fail-closed）；
+    #     判定点只读，不自带字面量（体检第 21 项判据③会扫）。
+    sample_rate = float(tsc["sample_rate"])
     if scan_all:
         sample_n = len(unverified)
         sampling = "all"
@@ -1629,7 +1641,9 @@ def three_source_check(workspace: str, deck: str = "", scan_all: bool = False) -
     # 6. 聚合
     verified = sum(1 for r in case_results if r["verdict"] == "pass")
     pass_rate = verified / max(len(sampled), 1)
-    threshold = float(tsc.get("pass_threshold", 0.8))
+    # v3.27.0（L-5）：同 sample_rate —— 删掉不可达的 default 0.8，
+    #   缺键策略统一由 harness.load_three_source_config() 负责（置 None + 告警）。
+    threshold = float(tsc["pass_threshold"])
     policy = str(tsc.get("network_failure_policy") or "block")
     net_err = sum(r["network_error"] for r in case_results)
     refuted = sum(r["refuted"] for r in case_results)

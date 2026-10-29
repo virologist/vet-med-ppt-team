@@ -78,6 +78,14 @@ END = "<!-- STAGE_MIRROR_END -->"
 GATE_EXIT_BEGIN = "<!-- GATE_EXIT_MIRROR_BEGIN -->"
 GATE_EXIT_END = "<!-- GATE_EXIT_MIRROR_END -->"
 HISTORY_HEADING = "## 历史沿革"
+
+#: 【可观测标记·v3.27.0 P0】反例批次因**环境限制**被跳过时写 stdout 的 WARN 标记。
+#:
+#: 为何要一个固定标记：体检第 7 项跑法（`python3 scripts/test_arch_drift.py`）
+#: 会把 stdout 收进日志；而「这批反例没跑」这件事**必须**能一眼看到，
+#: 否则 skip 会被误读成「守卫没问题」⇒ 造出**假绿**。
+#: 固定标记 ⇒ 排查者 `grep` 一个串即可确认，不必翻完整输出。
+ANTIEXAMPLE_SKIP_MARKER = "[WARN][vet-med-ppt-team] 反例批次因环境限制被跳过"
 LEGACY_BEGIN = "<!-- LEGACY_HISTORY_BEGIN -->"     # v3.17.0：历史区哨兵
 LEGACY_END = "<!-- LEGACY_HISTORY_END -->"
 LEGACY_TERM = "六阶段"
@@ -1039,18 +1047,101 @@ class TestGuardAntiExamples(unittest.TestCase):
       ② **子进程只跑守卫类，不跑反例类**——若子进程跑整个文件，
         反例会再次自举（子进程里的反例又起子进程…）⇒ 指数膨胀 + 死循环。
         故子进程用 unittest 的**类名选择**参数精确指定。
+
+    ─────────────────────────────────────────────────────────────
+    ⚠ **v3.27.0（P0）副本构造失败 ⇒ SKIP 而非 ERROR**（「前提被推翻」）：
+      本类的旧**前提**是「隔离副本必然造得出来」——**2026-10-28 晚**被推翻：
+      宿主 `sitecustomize.py` 的文件系统 broker 钩子拦下 `tempfile.mkdtemp`
+      的 mkdir ⇒ `PermissionError: Brokered mkdir refused by resolved path
+      policy: deny` ⇒ `setUp` 抛异常 ⇒ 本类 11 个反例**全部变成 ERROR**
+      （既不是 ok、也不是 skip）⇒ 整个文件 rc≠0 ⇒ 体检第 7 项**假失败**；
+      更糟的是 **ERROR 与「断言真的不成立」在 pytest 输出里难以区分**，
+      排查者会误以为是包缺陷。
+      ⚠ 2026-10-29 复核实测：同一环境下构造器**连续 3 次成功**，
+        并发 6×12=72 次 mkdir 也全成功 ⇒ broker 拦截属**会话特定状态**，
+        **非代码缺陷、非路径策略**。但它既已出现，就必须让「环境导致副本
+        构造失败」这件事**可诊断**，而不是伪装成断言失败。
+      ⇒ 因此 `setUp` 捕获构造失败 ⇒ **SKIP**（附指名道姓的原因），
+        并留下**类级可观测痕迹** `SKIP_TRACE` + stdout WARN。
+      ⚠ **但绝不等于「通过」**：反例的存在意义是证明守卫**能红**；
+        副本没造出来 ⇒ 这批反例**根本没跑** ⇒ 属「未验」而非「已验」。
+        故痕迹里记录**跳过条数**与原因，由 `TestAntiExampleSkipGuard`
+        断言「跳过 ≠ 通过」（见该类 docstring）。
     """
 
     #: 子进程里要跑的守卫类（**不含**本反例类，防自举）
     GUARD_CLASSES = ("TestGateExitMirror", "TestHumanReadStageTable",
                      "TestTeamLeadExitCodePointer")
 
+    #: 【类级可观测痕迹·v3.27.0 P0】本批反例因**环境限制**被跳过的事实。
+    #:
+    #: 为何放在**类级**而不是局部变量：局部变量随用例实例消亡 ⇒ pytest 汇总
+    #: 之后没人知道「这批反例被跳过了」。放在类属性上 ⇒
+    #:   ① 同一进程内后续用例可读（`TestAntiExampleSkipGuard` 就靠它断言）；
+    #:   ② 排查者可直接 `python3 -c "import test_arch_drift as m; print(m.TestGuardAntiExamples.SKIP_TRACE)"`。
+    #:
+    #: ⚠ 结构：每条 = {"reason": 跳过原因, "exc_type": 异常类型名, "exc_msg": 原始消息}。
+    #:   用**列表**而非单个变量：多个用例各自 setUp 失败时须**逐条**留痕，
+    #:   否则只剩最后一条，前面的失败被吞掉（与本类纪律①同源的问题）。
+    SKIP_TRACE: list = []
+
+    #: 【类级可观测痕迹·v3.27.0 P0】本批反例因环境限制被跳过的**条数**。
+    #: 单独计数而非 `len(SKIP_TRACE)`：SKIP_TRACE 会被用例清理（见
+    #: `TestAntiExampleSkipGuard` 的隔离运行），计数才是「本批真实跳过数」。
+    SKIP_COUNT: int = 0
+
     def setUp(self):
         sys.path.insert(0, str(HERE))
-        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
-        self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
+        from test_pkg_isolation import (IsolatedPkgBuildError,
+                                       cleanup_isolated_pkg, make_isolated_pkg)
+        try:
+            self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
+        except (IsolatedPkgBuildError, OSError) as exc:
+            # ⚠ **只捕获「副本构造失败」，不捕获裸 `Exception`**——这是本包的
+            #   「假绿必须为零」铁律在本处的落点：
+            #   若写成 `except Exception`，构造器里的**真缺陷**（如打错属性名
+            #   抛的 AttributeError）也会被降级成 skip ⇒ 守卫的「能红」属性
+            #   被无声放弃 ⇒ 恰是本类存在的意义被摧毁。
+            #   ⇒ 只有**构造类**失败（IsolatedPkgBuildError / OSError 家族）
+            #     才 skip；其余异常照常 ERROR（= 真的该报错）。
+            #
+            #   reason 必须**指名道姓**（失败类型 + 原始消息 + 这是环境限制），
+            #   否则 skip 会被误读成「守卫没发现问题」⇒ 而守卫恰恰没被验证过。
+            reason = self._skip_reason(exc)
+            TestGuardAntiExamples.SKIP_TRACE.append({
+                "reason": reason,
+                "exc_type": type(exc).__name__,
+                "exc_msg": str(exc),
+            })
+            TestGuardAntiExamples.SKIP_COUNT += 1
+            # ⚠ 写 stdout（不是 stderr）：体检第 7 项跑法
+            #   （`python3 scripts/test_arch_drift.py`）把 stdout 汇进日志，
+            #   WARN 混在 unittest 输出里，**人眼可见**「这批被跳过了」。
+            print(f"{ANTIEXAMPLE_SKIP_MARKER}：{reason}", flush=True)
+            self.skipTest(reason)
         self._cleanup = cleanup_isolated_pkg
         self.addCleanup(self._cleanup, self._iso)
+
+    @staticmethod
+    def _skip_reason(exc: BaseException) -> str:
+        """构造**指名道姓**的 skip 原因（失败类型 + 原始消息 + 这是环境限制）。
+
+        ⚠ 为什么要这么写（三条硬要求）：
+          ① **失败类型**：光说「失败了」排查者无法判断是环境还是包缺陷；
+          ② **原始消息**：broker 的原始串（"Brokered mkdir refused by
+             resolved path policy: deny"）是定位「会话特定状态」的唯一线索；
+          ③ **这是环境限制而非断言失败**：否则 skip 会被误读成「守卫没发现问题」
+             ⇒ 而守卫恰恰**没被验证过**。
+        """
+        return (
+            f"隔离副本构造失败（环境限制，非断言失败）："
+            f"异常类型={type(exc).__name__}；原始消息={exc}。"
+            f"⇒ 本反例**未执行**，本批守卫的『能红』属性本轮**未验证**"
+            f"（既不是通过，也不是失败；请勿据此认为守卫有效）。"
+            f"若原始消息含 'Brokered mkdir refused'，"
+            f"则为宿主文件系统 broker 的路径策略拦截（会话特定状态），"
+            f"换个会话或另设 TMPDIR 即可恢复。"
+        )
 
     def _run_guard(self, pkg_root: Path):
         """在副本里**只**跑守卫类，返回 (rc, 输出)。"""
@@ -1234,6 +1325,310 @@ class TestGuardAntiExamples(unittest.TestCase):
             p.write_text(t.replace(old, "退出码语义唯一源 `references/harness-engine.md#6`；"),
                          encoding="utf-8")
         self._fail_case("反例 J（指针错位）", mutate, "gate_exit_codes")
+
+
+class _OutcomeRecorder(unittest.TestResult):
+    """记录 unittest 结果的**四类结局**（skip / error / failure / success）。
+
+    ⚠ 为何必须自定义：`unittest.TestResult` **只**有 `skipped`/`errors`/
+      `failures` 三个列表，**没有** `successes`（`addSuccess` 是空实现）。
+      ⇒ 若用 `getattr(result, "successes", [])` 断言「没有被记为通过」，
+      该断言**永远为真**（恒真守卫 = 假绿）⇒ 本包铁律禁止。
+      故此处显式记录 `successes`，让「非 pass」这条判据**真的能红**。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.successes: list = []
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self.successes.append(test.id())
+
+
+class TestAntiExampleSkipSemantics(unittest.TestCase):
+    """【v3.27.0 · P0】反例批次「跳过语义」的**可证伪**判据。
+
+    ─────────────────────────────────────────────────────────────
+    背景（真实故障，2026-10-28 晚）：
+      WorkBuddy 会话内宿主 `sitecustomize.py` 的文件系统 broker 拦截
+      `tempfile.mkdtemp` 的 mkdir ⇒ `PermissionError: Brokered mkdir refused
+      by resolved path policy: deny` ⇒ `TestGuardAntiExamples.setUp` 抛异常
+      ⇒ 11 个反例全部变成 **ERROR**（既不是 ok、也不是 skip）⇒ rc≠0 ⇒
+      体检第 7 项假失败；且 ERROR 与「断言真的不成立」在 pytest 输出里
+      **难以区分**，排查者会误以为是包缺陷。
+
+    本类要证明的那件事（**不是**「跑通了就算数」）：
+      「当副本构造失败时，该反例被标记为 **skip**（而非 ERROR / 而非 pass）」。
+
+    ⚠ **铁律：判据必须能红**。本类用三层设计保证**假阳性为零**：
+      ① **正向断言**（T1）：构造失败 ⇒ 用例被记为 **skipped**，
+         且 `errors`/`failures`/`successes` 均为空
+         （⇒ 不是 ERROR、不是 FAIL、不是 pass）；
+      ② **反向对照**（T2）：构造**成功** ⇒ 用例**不得**被记为 skipped
+         （⇒ 判据能区分「skip 被正确触发」与「skip 未触发」，
+         杜绝「恒真守卫」）；
+      ③ **突变检验**（T3）：把 setUp 的跳过分支**人为拆掉**
+         （模拟「改造前的裸 ERROR」），**同一套判据**必须**判红**
+         ⇒ 证明判据确实在检验「跳过语义」，而非自说自话。
+
+    ⚠ **为何要「真的」跑一个反例用例，而不是直接断言 `setUp` 抛 `SkipTest`**：
+      后者只能证明「代码路径被走到」，证明不了「unittest 真的把它记成 skipped」。
+      故本类**真的**跑一个真实反例用例（用替身构造器），
+      用 `_OutcomeRecorder` 采集**真实**的 skipped/errors/failures/successes。
+    """
+
+    #: 被观测的反例（只取**一个**代表性用例即可：判据针对的是 setUp 语义，
+    #: 与具体哪条反例无关 ⇒ 跑全批 11 条只会白等 11 次副本构造）。
+    OBSERVED_TEST = "test_anti_A_parallel_flag_regression"
+
+    def _run_observed(self, builder, cls=None):
+        """用**替身构造器**跑一个真实反例用例，返回 `_OutcomeRecorder`。
+
+        ⚠ 为何替身必须「真的抛异常」而不是「返回假路径」：
+          返回假路径 ⇒ 用例会因「副本内容不对」而 FAILURE ⇒
+          判据测的就不再是「构造失败 ⇒ skip」⇒ 判据失焦。
+        """
+        sys.path.insert(0, str(HERE))
+        import test_pkg_isolation
+        from unittest import mock
+
+        observed_cls = cls or TestGuardAntiExamples
+        observed = observed_cls(self.OBSERVED_TEST)
+        # ⚠ 用 `mock.patch.object` 换掉**模块属性**：`setUp` 里是
+        #   `from test_pkg_isolation import ... make_isolated_pkg`，
+        #   每次调用都会重新查模块属性 ⇒ 换模块属性即可生效。
+        #
+        # ⚠ 同时**快照/还原**类级痕迹（SKIP_TRACE / SKIP_COUNT）：
+        #   本类会**故意**触发跳过 ⇒ 若不还原，会把「模拟失败」的痕迹
+        #   混进真实运行的类级痕迹里 ⇒ 体检看到的跳过数**虚高** ⇒ 假绿。
+        saved_trace = list(TestGuardAntiExamples.SKIP_TRACE)
+        saved_count = TestGuardAntiExamples.SKIP_COUNT
+        try:
+            with mock.patch.object(test_pkg_isolation, "make_isolated_pkg", builder):
+                result = _OutcomeRecorder()
+                observed.run(result)
+        finally:
+            TestGuardAntiExamples.SKIP_TRACE[:] = saved_trace
+            TestGuardAntiExamples.SKIP_COUNT = saved_count
+        return result
+
+    def _run_observed_real_chain(self):
+        """跑**未经替换**的真实生产链：构造器 → setUp 捕获 → skip。
+
+        ⚠ 为何必须单独覆盖这条链：T1 只把 `make_isolated_pkg` 整个换成
+          「抛异常的替身」⇒ 跳过了 `test_pkg_isolation` 里**新增的**
+          `IsolatedPkgBuildError` 包装层 ⇒ 若那层有 bug（异常类型不对、
+          包装时丢了原始消息），T1 **测不出来**。
+          本方法改为替换**最底层的 `tempfile.mkdtemp`** ⇒
+          真实构造器真的跑一遍 → 真的抛 `IsolatedPkgBuildError`
+          → 真实 setUp 真的捕获 → 真的 skip ⇒ **整条链**都被验证。
+        """
+        sys.path.insert(0, str(HERE))
+        import test_pkg_isolation
+        from unittest import mock
+
+        observed = TestGuardAntiExamples(self.OBSERVED_TEST)
+        saved_trace = list(TestGuardAntiExamples.SKIP_TRACE)
+        saved_count = TestGuardAntiExamples.SKIP_COUNT
+        try:
+            # ⚠ 替换 `tempfile.mkdtemp`（**最底层**的 mkdir 调用）——
+            #   这正是 2026-10-28 晚宿主 broker 拦截的那一步。
+            with mock.patch("tempfile.mkdtemp",
+                            side_effect=PermissionError(self.BROKER_MSG)):
+                result = _OutcomeRecorder()
+                observed.run(result)
+        finally:
+            TestGuardAntiExamples.SKIP_TRACE[:] = saved_trace
+            TestGuardAntiExamples.SKIP_COUNT = saved_count
+        return result
+
+    #: broker 拦截时的**原始消息**（来自 2026-10-28 晚的真实故障）。
+    BROKER_MSG = "Brokered mkdir refused by resolved path policy: deny"
+
+    @staticmethod
+    def _boom_builder(prefix="vetmed-iso-archdrift-"):
+        """构造一个「必然因环境限制失败」的副本构造器替身。
+
+        ⚠ 错误消息刻意复刻宿主 broker 的**原始串**
+          （"Brokered mkdir refused by resolved path policy: deny"）——
+          判据要证明 skip 原因**原样保留**了这个串（否则排查者无从下手）。
+        """
+        def _builder(*_args, **_kwargs):
+            raise PermissionError(
+                TestAntiExampleSkipSemantics.BROKER_MSG)
+        return _builder
+
+    def _assert_skip_semantics(self, result):
+        """**唯一的判据实现**（T1 与 T3 共用 ⇒ 突变检验才有意义）。
+
+        ⚠ T3 复用本方法 ⇒ 「判据能红」不是修辞，而是**同一段代码**
+          在退化实现上确实抛 AssertionError。
+        """
+        # ① 不是 ERROR：errors 为空（改造前这里会有 1 条 ⇒ 判据能红）
+        self.assertEqual(
+            [], [e[0] for e in result.errors],
+            "副本构造失败必须表现为 skip（skipped），而不是 ERROR（errors）——"
+            "ERROR 与「断言真的不成立」难以区分，正是本次要消灭的病灶")
+        # ② 不是 FAIL：failures 为空
+        self.assertEqual(
+            [], [f[0] for f in result.failures],
+            "副本构造失败不是断言不成立 ⇒ 不应产生 failure")
+        # ③ 不是 pass：`_OutcomeRecorder.successes` 必须为空。
+        #    ⚠ 跳过时 unittest **不会**调 addSuccess ⇒ successes 必为空；
+        #      若实现退化成「吞掉异常当通过」，successes 会非空 ⇒ 这里判红。
+        self.assertEqual(
+            [], list(result.successes),
+            "副本构造失败**不得**被记为通过（successes 必须为空）——"
+            "否则就是「静默通过」：守卫的『能红』属性被无声放弃")
+        # ④ 被记为 skipped（恰好 1 条）
+        self.assertEqual(
+            1, len(result.skipped),
+            "副本构造失败 ⇒ 该反例必须被记为 skipped（1 条）")
+        # ⑤ skip 原因必须**指名道姓**：失败类型 + 原始消息 + 这是环境限制。
+        #    这是「可诊断」的落点：只有「skip 了」而没说清「为什么」，
+        #    排查者仍会误判为包缺陷。
+        reason = result.skipped[0][1]
+        self.assertIn("PermissionError", reason,
+                      "skip 原因必须点名**失败类型**，否则无法区分环境限制与包缺陷")
+        self.assertIn(self.BROKER_MSG, reason,
+                      "skip 原因必须保留**原始错误消息**，"
+                      "它是定位『会话特定状态』的唯一线索")
+        self.assertIn("环境限制", reason,
+                      "skip 原因必须写明这是**环境限制**（非断言失败），"
+                      "否则 skip 会被误读成『守卫没发现问题』")
+        self.assertIn("未验证", reason,
+                      "skip 原因必须写明本轮**未验证**守卫的『能红』属性，"
+                      "杜绝「跳过 = 通过」的误读")
+
+    def test_T1_copy_failure_is_recorded_as_skip_not_error_not_pass(self):
+        """T1（正向）：副本构造失败 ⇒ 该反例被标记为 **skip**（非 ERROR / 非 pass）。"""
+        result = self._run_observed(self._boom_builder())
+        self._assert_skip_semantics(result)
+
+    def test_T2_successful_build_is_not_skipped(self):
+        """T2（反向对照）：副本构造**成功** ⇒ **不得**被记为 skipped。
+
+        ⚠ 这条是「判据能红」的关键一半：若只有 T1，判据可能恒真
+          （例如实现写成「无条件 skip」也照样通过 T1）。
+          T2 要求判据**能区分**「skip 被正确触发」与「skip 未触发」。
+        """
+        # ⚠ 构造一个**刻意不存在**的假副本路径（**不创建任何目录**）。
+        #   为何不真建目录：broker 拦截的正是 mkdir ⇒ 本用例必须在
+        #   「mkdir 被拦」的环境下也能跑（否则它自己会 ERROR ⇒ 掩盖判据）。
+        #   为何仍能让用例体失败：副本内容不存在 ⇒ 用例体读
+        #   `docs/architecture.md` 必然 FileNotFoundError ⇒ errors=1
+        #   ⇒ 证明「用例确实跑了」，从而「skipped 为空」不是因压根没跑。
+        #
+        # ⚠ 路径布局刻意做成 `<tmp>/<假名>/plugins/vet-med-ppt-team`：
+        #   `cleanup_isolated_pkg` 见到 `pkg.parent.name == "plugins"` 才会
+        #   只删 `<tmp>/<假名>`；否则它会把 `<tmp>` **整个删掉**！
+        #   ⇒ 布局错了会误删临时目录，这里严格对齐真副本布局。
+        import tempfile
+        fake = (Path(tempfile.gettempdir()) / "vetmed-fake-no-such-pkg"
+                / "plugins" / "vet-med-ppt-team")
+
+        def _builder(*_args, **_kwargs):
+            return fake
+        result = self._run_observed(_builder)
+
+        self.assertEqual(
+            [], list(result.skipped),
+            "副本构造成功 ⇒ 用例**不得**被跳过（skipped 必须为空）——"
+            "否则说明跳过是无条件触发的，判据恒真")
+        # ⚠ 同时证明「用例确实跑了」（否则 skipped 为空也可能是因为压根没跑）：
+        self.assertEqual(
+            1, result.testsRun,
+            "反向对照前提不成立：用例应确实被运行过（testsRun=1）")
+        self.assertEqual(
+            1, len(result.errors),
+            "反向对照前提不成立：副本内容不存在 ⇒ 用例体应失败（errors=1）；"
+            "若为 0，说明用例压根没跑 ⇒ 「skipped 为空」就毫无意义")
+
+    def test_T3_mutation_removing_skip_branch_turns_this_judgement_red(self):
+        """T3（突变检验）：把 setUp 的跳过分支**拆掉** ⇒ **同一套判据**必须判红。
+
+        ⚠ 这是本包铁律「判据必须能红」的**直接证据**，不是修辞：
+          这里构造一个「改造前的 setUp」（不捕获构造异常 ⇒ 裸 ERROR），
+          再用**与 T1 完全相同**的 `_assert_skip_semantics` 去测它
+          ⇒ 必须观察到 AssertionError（判红），
+          ⇒ 证明该判据确实在检验「跳过语义」，而不是恒真。
+
+        ⚠ 为何不直接改生产代码再改回（危险 + 会污染真实文件）：
+          这里用**继承 + 覆写**造一个「退化版」反例类，
+          行为上等价于「setUp 不捕获异常」，但**零生产代码改动**。
+        """
+        import unittest
+        sys.path.insert(0, str(HERE))
+        import test_pkg_isolation
+        from unittest import mock
+
+        class _DegradedAntiExample(TestGuardAntiExamples):
+            """退化版 setUp：**不**捕获构造异常 ⇒ 裸 ERROR（= 改造前的行为）。"""
+
+            def setUp(self):
+                sys.path.insert(0, str(HERE))
+                from test_pkg_isolation import make_isolated_pkg
+                self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
+
+        result = self._run_observed(self._boom_builder(),
+                                    cls=_DegradedAntiExample)
+
+        # 退化版必须表现为 ERROR（errors=1、skipped=0）
+        # ⇒ 由此**反证** T1 的判据在 T1 场景下量到的确实是「skip 而非 error」，
+        #    且该判据**不是恒真**（退化即判红）。
+        self.assertEqual(
+            1, len(result.errors),
+            "突变检验前提不成立：退化版 setUp 应当表现为 ERROR（errors=1）")
+        self.assertEqual(
+            [], list(result.skipped),
+            "突变检验前提不成立：退化版 setUp 不应产生 skipped")
+
+        # ⚠ **关键一步**：用**与 T1 相同**的判据去测退化结果 ⇒ 必须判红。
+        with self.assertRaises(AssertionError) as cm:
+            self._assert_skip_semantics(result)
+        self.assertIn(
+            "skip", str(cm.exception),
+            "判据应因『没被记为 skipped』而红；实际红因不符 ⇒ 判据可能测错了东西")
+
+    def test_T4_real_production_chain_also_yields_skip(self):
+        """T4：走**未经替换的真实生产链**（构造器 → 包装 → setUp 捕获）⇒ 同样 skip。
+
+        ⚠ 为何 T1 之外还要这条：T1 把 `make_isolated_pkg` **整个**换成替身
+          ⇒ 绕过了 `test_pkg_isolation` 里新增的 `IsolatedPkgBuildError`
+          包装层 ⇒ 若那层有 bug（类型不对 / 包装时丢了原始消息），
+          T1 **测不出来**。
+          本条改为替换**最底层的 `tempfile.mkdtemp`**（= broker 真正拦截的那一步）
+          ⇒ 真实构造器 → 真实包装 → 真实 setUp 捕获 → 真实 skip
+          ⇒ **整条链**被验证，而不只是接缝。
+        """
+        result = self._run_observed_real_chain()
+        # 整条链的结局：skip（不是 error、不是 failure、不是 pass）
+        self.assertEqual(
+            [], [e[0] for e in result.errors],
+            "真实生产链（构造器→包装→setUp）下，副本构造失败必须是 skip 而非 ERROR")
+        self.assertEqual(
+            [], [f[0] for f in result.failures],
+            "真实生产链下不应产生 failure")
+        self.assertEqual(
+            [], list(result.successes),
+            "真实生产链下不得被记为通过（successes 必须为空）")
+        self.assertEqual(
+            1, len(result.skipped),
+            "真实生产链下该反例必须被记为 skipped（1 条）")
+        # ⚠ 原因里必须**同时**能看到「包装层给的类型」与「原始底层类型与消息」：
+        #   包装层类型 = IsolatedPkgBuildError；原始类型/消息由包装层**转述**。
+        reason = result.skipped[0][1]
+        self.assertIn("IsolatedPkgBuildError", reason,
+                      "skip 原因应点名包装后的异常类型（可诊断的入口）")
+        self.assertIn("PermissionError", reason,
+                      "skip 原因必须**转述**原始底层异常类型（PermissionError）")
+        self.assertIn(self.BROKER_MSG, reason,
+                      "skip 原因必须保留原始底层异常消息（broker 拦截的原始串）")
+        self.assertIn("环境限制", reason,
+                      "skip 原因必须写明这是环境限制（非断言失败）")
+        self.assertIn("未验证", reason,
+                      "skip 原因必须写明本轮未验证守卫的『能红』属性")
 
 
 class TestHoursCaliberCrossRef(unittest.TestCase):
