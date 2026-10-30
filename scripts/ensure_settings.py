@@ -1685,7 +1685,8 @@ def check_dead_config_keys(expert_dir):
         #   `task_state.json#current_stage`（数值）驱动，`next_stage` 在代码中 0 次出现。
         #   ⚠ 双份真相风险：yaml 的 `next` 与代码的 `current_stage+1` 是同一事实两处写法
         #     ⇒ 已加漂移守卫（check_stage_order_drift，见第 24 项）。
-        "stages",
+        # ⚠ **v3.28.2**：`stages` 降级为**限定登记** `harness.stages`（见下方
+        #   「通用词降级」小节）⇒ 裸段名登记里**不再**有 `stages`。
         # visual-rules.yaml#caption_five_elements —— v3.19.0 G4 图注要素统一时
         #   明确标注的**历史键**（向后兼容保留，下游若有引用不报错），同源
         #   CHANGELOG:455 记载「保留为历史键并标 deprecated」⇒ 不可删。
@@ -1695,13 +1696,20 @@ def check_dead_config_keys(expert_dir):
         #   search_knowledge / 按通道参数编排）；本文件只声明契约与参数。
         #   ⚠ `channels` 段下被 probe_channels.py 消费的键（id/kind/priority/
         #     endpoint_ref 等）走 alive 分支优先，不受本登记影响。
-        "ima", "standards", "channels",
+        # ⚠ **v3.28.2**：`standards` / `channels` 降级为**限定登记**
+        #   （见下方「通用词降级」小节）⇒ 裸段名登记里**不再**有它们。
+        #   `ima` **保留**为裸段名（见该小节的逐条判定）。
+        "ima",
         # language-profile.yaml#terminology.* / #english_allowed_when.* /
         #   #consistency.* / #english_minimum.* —— 术语标注规则、英语场景判据、
         #   语言一致性策略、英语场景的中文保留项（疾病中文名/学名/法规条款号/数值单位）。
         #   消费方是**会话层**（dvm-content-expert 按规则标注术语、按判据决定交付语言）；
-        #   被 gate1-check 消费的 default_language 走 alive 分支优先。
-        "terminology", "english_allowed_when", "consistency", "english_minimum",
+        #   被 gate1-check 消费的 default_language 走 alive 分段优先。
+        # ⚠ **v3.28.2**：`terminology` / `consistency` 降级为**限定登记**
+        #   （见下方「通用词降级」小节）⇒ 裸段名登记里**不再**有它们。
+        #   `english_allowed_when` / `english_minimum` **保留**为裸段名
+        #   （语义专属，见该小节的逐条判定）。
+        "english_allowed_when", "english_minimum",
         # visual-rules.yaml#gate.deliver_gate_level / #gate.write_gate_level ——
         #   写回/交付门禁级别的**人读档位说明**（P0/P1/P2/P3 的语义由成员执行）。
         #   ⚠ 用**带文件前缀**的完整路径登记，避免与 harness.yaml#gate.*
@@ -1715,8 +1723,74 @@ def check_dead_config_keys(expert_dir):
         "license_uncertain_markers",
         # harness.yaml#collapse.rationale_filled_by / #observability.report_on_finish ——
         #   坍缩理由填写方 / 观测收尾上报策略；流程说明，无脚本判定。
-        "collapse", "observability",
+        # ⚠ **v3.28.2**：`collapse` / `observability` 降级为**限定登记**
+        #   （见下方「通用词降级」小节）⇒ 裸段名登记里**不再**有它们。
     }
+
+    # ── v3.28.2：通用词裸段名的**降级**（限定登记）────────────────────────
+    # 病灶（独立红队审计实测复现）：
+    #   裸段名登记对**任意 config 文件**的同名段生效 ⇒ 通用词会让**整段自动绿灯**。
+    #   实测反例：造 `probe.yaml` 含 `channels: {probe_bare_child: v4}`
+    #   （未登记、无任何证据）⇒ 被判 textual ⇒ **自动绿灯**，不出现在 dead 列表。
+    #   ⚠ 真包当前**未暴露**（`channels`/`ima`/`standards` 恰好都在
+    #     `external-tools.yaml`）⇒ 但这依赖「**当前数据恰好如此**」⇒
+    #     新增 `other.yaml#channels` 即整段静默绿灯 ⇒ **假绿**。
+    #
+    # ★ **降级判据（逐条判断，不照抄审计清单）**：
+    #   「这个裸段名是否是**通用英文词 / 通用概念**（在别的 config 文件里
+    #     也可能出现同名段）？若是 ⇒ 降级为限定登记 `<文件名>.<段名>`。」
+    #   ⚠ **判定要保守**：只降级**确实通用**的词；语义专属的保持裸段名。
+    #
+    # 【逐条判定结果（8 个候选 + 复核全部其余裸段名）】
+    #   ↓↓ **降级**（通用词 ⇒ 限定登记）↓↓ ————————
+    #   · `channels`     → `external-tools.channels` + `domain-profiles.domains.image_channel.channels`
+    #       理由：通用概念词（通道/频道），任何 config 都可能出现 `channels` 段；
+    #             且**实测**它已嵌套出现在 `domain-profiles.yaml#domains[].image_channel.channels`
+    #             （**非首段**！）⇒ 裸段名跨文件跨层级放行，正是病灶形态。
+    #   · `standards`    → `external-tools.standards`
+    #       理由：通用概念词（标准/规范），行业通用术语。
+    #   · `consistency`  → `language-profile.consistency`
+    #       理由：通用概念词（一致性）。
+    #   · `terminology`  → `language-profile.terminology` + `domain-profiles.domains.terminology`
+    #       理由：通用概念词（术语表）；且**实测**它已嵌套出现在
+    #             `domain-profiles.yaml#domains[].terminology`（**非首段**）。
+    #   · `stages`       → `harness.stages`
+    #       理由：通用概念词（阶段），任何流水线配置都可能有 `stages` 段。
+    #   · `collapse`     → `harness.collapse`
+    #       理由：通用概念词（坍缩/折叠），非本包专属。
+    #   · `observability`→ `harness.observability`
+    #       理由：通用概念词（可观测性），业界通用。
+    #   ————————————————————————————————————————
+    #   ↑↑ **保留**（语义专属 / 非通用词）↑↑ ————————
+    #   · `ima`          —— **产品专名**（腾讯 Ima 知识库 API），不是通用英文词
+    #                       ⇒ 别的 config 文件里出现 `ima` 段仍属高度可疑
+    #                       ⇒ 保留裸段名。
+    #   · `english_allowed_when` / `english_minimum` —— 语义专属
+    #                       （「英语场景何时允许」「英语最低要求」），非通用词。
+    #   · `degrade_modes` / `legacy_compat` / `require_disclosure` / `shrink_order`
+    #     / `writes_allowed` / `format_fallback` / `license_uncertain_markers`
+    #     / `caption_five_elements` / `caption_base_elements_note`
+    #     / `enforce_source_theme` / `max_new_colors_per_slide` / `token_slots`
+    #     / `default_disease_module_prefix` / `case_id_prefix`
+    #     / `general-purpose+persona` / `script_pipeline`
+    #     —— 语义专属复合标识符，非通用词；且实测它们**均不作为段名命中**
+    #       （只作为末段键名）⇒ 裸段名登记对它们**无实际放行面**。
+    #
+    # ⚠ **降级后必须实测**：这些段里现有的键**不得**因此被判死
+    #   （它们靠**段级证据**进免检区，人读型登记只是**叠加**判定
+    #     ⇒ 降级后仍应 `textual=0` 死键）⇒ 见 D-C 判据。
+    known_textual.update({
+        # ── 通用词降级后的**限定登记**（形态：`<config 文件名去扩展名>.<段名>`）——
+        "external-tools.channels",
+        "domain-profiles.domains.image_channel.channels",
+        "external-tools.standards",
+        "language-profile.consistency",
+        "language-profile.terminology",
+        "domain-profiles.domains.terminology",
+        "harness.stages",
+        "harness.collapse",
+        "harness.observability",
+    })
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────
     # v3.19.3：改为**自动派生**——原硬编码 7 段不含任何 v3.19.0 新增段
@@ -2006,6 +2080,23 @@ def check_dead_config_keys(expert_dir):
             #   体检输出的「代码读取 N 项〔其中块级消费 M 项〕」口径不变。
             # ⚠ **dead 的判定不放宽**：未登记、未接线、无块级证据的键仍判死。
             _full_hit = bool(n_full and n_full in norm_reads)
+            # ⚠ **v3.28.2**：**弱证据判定**（三条**同时**成立才算 `leaf_weak`）：
+            #   ① 末段键名**撞名**（归一化后在 `norm_reads` 里）
+            #   ② **无路径级证据**（`_a_path` 为假）
+            #   ③ 该键**整条路径**未命中 `norm_reads`（`_full_hit` 为假）
+            # ⚠ **为什么必须显式写成谓词**（而不是靠分支位置「蕴含」）：
+            #   这三条在「块级证据」分支里**由分支位置蕴含**（能走到该分支 ⇒
+            #   `_full_hit`/`_a_path` 必为假；`leaf_weak` 的 elif ⇒ ① 必为真）
+            #   ⇒ 若把条件写成「分支位置蕴含的事实」（如 `elif not _full_hit`），
+            #   则该条件是**恒真**的 ⇒ 任何「改坏条件」的变异体都是
+            #   **等价变异体**（不改变计数）⇒ 守卫 R8 抓不住 ⇒ 判据是恒真的。
+            #   ⇒ 显式写出三条**原始信号**的合取 ⇒ 条件里每一条都**可被写错**
+            #     （如把 `_a_path` 误写成 `_b_block` ⇒ `leaf_weak` 恒为 0
+            #       ⇒ R8 必判红）⇒ 判据**能红**。
+            _leaf_weak_hit = (
+                bool(n_leaf and n_leaf in norm_reads)
+                and not _a_path
+                and not _full_hit)
             if _full_hit or _a_path:
                 alive += 1
             elif _is_textual(fname, _plain):
@@ -2019,7 +2110,7 @@ def check_dead_config_keys(expert_dir):
                     _seg = block_segments.setdefault(
                         _seg_key,
                         {"file": fname, "prefix": _b_prefix, "keys": [],
-                         "idents": [], "leaf_unused": 0})
+                         "idents": [], "leaf_unused": 0, "leaf_weak": 0})
                     # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
                     #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                     _seg["keys"].append(full)
@@ -2034,7 +2125,7 @@ def check_dead_config_keys(expert_dir):
                 _seg = block_segments.setdefault(
                     _seg_key,
                     {"file": fname, "prefix": _b_prefix, "keys": [],
-                     "idents": [], "leaf_unused": 0})
+                     "idents": [], "leaf_unused": 0, "leaf_weak": 0})
                 # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
                 #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                 _seg["keys"].append(full)
@@ -2043,6 +2134,27 @@ def check_dead_config_keys(expert_dir):
                 # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
                 if not (n_leaf and n_leaf in norm_reads):
                     _seg["leaf_unused"] += 1
+                # ⚠ **v3.28.2**：`leaf_weak` = **弱证据洞**的可见化。
+                #   口径（与 `leaf_unused` **精确对位**，两者互斥且穷尽）：
+                #     · `leaf_unused` = 末段键名在代码中 **0 出现**（连撞名都没有）
+                #     · `leaf_weak`   = 末段键名**有**出现（撞名）**且**
+                #                        **无路径级证据**（`_a_path` 为假）
+                #                        **且**该键**整条路径**未命中 `norm_reads`
+                #   ⚠ 为什么必须可见（真实判据洞，已实测复现）：
+                #     v3.23.0 F1 自己明写「弱证据 = 仅末段同名撞车，**不是**路径级证据」。
+                #     但 `weak` 桶因 `_b_block` 已被前置短路而**永不触发**（真包实测
+                #     `weak=0`）⇒ 这批键被「块级证据」这一层**接管**了 ⇒
+                #     既不判死、不进 `leaf_unused`、也不进 `weak` ⇒ **无任何守卫覆盖**。
+                #     ⇒ 一个末段名叫 `note` / `description` / `enabled` 的**新键**，
+                #       加进已登记的免检区段里，会**静默绿灯**（实测：145 键的
+                #       「待人工定性候选」桶之外，还有 **1012 键（67%）** 落在这个洞里）。
+                #   ⇒ 修法：**不判死、不进人工定性范围**（桶③的键大概率确实有人读），
+                #     只是**登记可见**（段级字段 `leaf_weak`）+ 守卫 R8 逐段核对。
+                #   ⚠ **不得**因此改动 `dead` 判定口径（本项是纯观测，不改判定）。
+                # ⚠ 判定用 `_leaf_weak_hit`（三条原始信号的显式合取）——
+                #   理由见该谓词定义处的注释（避免写成**恒真**的等价条件）。
+                elif _leaf_weak_hit:
+                    _seg["leaf_weak"] += 1
             elif seg_hit or _is_guard_consumed(fname, _plain):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
             elif n_leaf and n_leaf in norm_reads:
@@ -2218,7 +2330,7 @@ def check_dead_config_keys(expert_dir):
 def collect_block_segments(expert_dir):
     """返回「免检区（块级消费段）」清单（v3.25.0 · 供登记表守卫与 dump 开关复用）。
 
-    返回 {seg_key: {"file","prefix","key_count","leaf_unused","keys":[完整路径…],"keys_sha256"}}
+    返回 {seg_key: {"file","prefix","key_count","leaf_unused","leaf_weak","keys":[完整路径…],"keys_sha256"}}
       seg_key = f"{config 文件名}#{段前缀}"   （ADR-6：必须带文件名前缀——
         同名段跨文件是不同的段，合并登记会让「新增键处置规则」无法落地）
 
@@ -2412,14 +2524,19 @@ def print_block_segments(block_segments, stream=None):
     items = sorted(block_segments.items(), key=lambda kv: (-len(kv[1]["keys"]), kv[0]))
     total_keys = sum(len(v["keys"]) for _k, v in items)
     total_unused = sum(v["leaf_unused"] for _k, v in items)
+    # ⚠ **v3.28.2**：`leaf_weak` = 弱证据洞（末段键名撞名但**无路径级证据**）。
+    total_weak = sum(v.get("leaf_weak", 0) for _k, v in items)
     print(f"     ── 免检区（块级消费）清单：{len(items)} 段 / {total_keys} 键；"
           f"其中 {total_unused} 键的末段键名在代码中 0 出现"
-          f"（**待人工定性候选，不是死配置**）——", file=out)
+          f"（**待人工定性候选，不是死配置**）；"
+          f"另有 {total_weak} 键为**弱证据**（末段键名撞名但无路径级证据）"
+          f"（**已登记可见，不是死配置**）——", file=out)
     print(f"        说明：这些键按**段**被代码整块消费，静态判据无法逐键确认；"
           f"新增键须按 references/inspection-zones.yaml 的处置规则登记。", file=out)
     for seg_key, v in items:
         print(f"        · {seg_key} — {len(v['keys'])} 键"
-              f"（末段键名 0 出现：{v['leaf_unused']}）", file=out)
+              f"（末段键名 0 出现：{v['leaf_unused']}"
+              f" · 弱证据：{v.get('leaf_weak', 0)}）", file=out)
 
 
 def check_fallback_drift(expert_dir):
@@ -3576,6 +3693,9 @@ def main():
             print(f"    key_count: {segment_key_count(_inp)}")
             print(f"    keys_sha256: \"{segments_digest(_inp)}\"")
             print(f"    leaf_unused: {v['leaf_unused']}")
+            # ⚠ **v3.28.2**：`leaf_weak` = 弱证据洞（末段撞名但无路径级证据）。
+            #   与 `leaf_unused` **精确对位**：两者互斥且穷尽免检区内的「证据不足」键。
+            print(f"    leaf_weak: {v.get('leaf_weak', 0)}")
         return 0
 
     print(f"体检目标：{path}\n")

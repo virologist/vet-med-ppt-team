@@ -392,6 +392,8 @@ class TestInspectionZoneRegistry(unittest.TestCase):
       R4  实时 `key_count` == 登记 `key_count`（与 R3 交叉核对，防只改一个字段）
       R5  实时段集合 == 登记段集合（**双向** ⇒ 新段未登记 / 登记了不存在的段 ⇒ 判红）
       R6  `consumer` / `disposition` ∈ 枚举（格式越界即判红——格式破坏属真问题）
+      R7  实时 `leaf_unused` == 登记 `leaf_unused`（**逐段**；「待人工定性候选」桶的大小）
+      R8  实时 `leaf_weak`   == 登记 `leaf_weak`  （**逐段**；「弱证据洞」的大小）
 
     ⚠ **为什么 R3/R5 是「段级增量守卫」**：
       R3 比的是「段内叶子路径**集合**是否变化」，不是「谁读了它」
@@ -408,6 +410,20 @@ class TestInspectionZoneRegistry(unittest.TestCase):
       ⚠ **判据语义本身未被削弱**（用户对判据有拍板权）：R3 仍是
         「实时 digest == 登记 digest」⇒ 不一致即判红；只是**按登记表自己声明的
         口径**去算「实时 digest」⇒ 旧登记表的判据含义**不变**。
+
+    ⚠⚠ **v3.28.2：R7 / R8 是新增判据**（R1–R6 的编号与语义**零改动**——
+      用户对判据编号有拍板权 ⇒ 新增只能**往后排**，不得改动既有编号）。
+      · R7 = 逐段 `leaf_unused`（「待人工定性候选」桶的大小）登记值 == 实时值
+      · R8 = 逐段 `leaf_weak`  （「弱证据洞」的大小）登记值 == 实时值
+      ★ **为什么必须有它们（真实假绿缺口，已实测复现）**：
+        修复 A（判定顺序修正）的**全部可观测产出**就是 `leaf_unused` 的值
+        （211 → 145）⇒ 但这个字段**此前无任何守卫** ⇒ 红队实测把 7 段的
+        `leaf_unused` 篡改成 999 ⇒ 本文件（28 用例）+ 红证明文件（**当时** 17 用例）
+        **共 45 个测试全绿** ⇒ 下次有人改 `known_textual` 或判定顺序，
+        让真实候选变成 180 或 100，**体检不会报** ⇒ 修复 A 的效果不可持续。
+        （⚠ 红证明文件自 v3.28.2 起已扩到 **21 用例** —— 新增 R7/R8 的
+         判据级红证明 + 变异敏感性用例各 2 条 ⇒ 本处「45 个」记的是
+         **缺口被发现时**的测试总数，是历史事实，不随用例数增长而改写。）
     """
 
     REGISTRY = PKG / "references" / "inspection-zones.yaml"
@@ -449,7 +465,7 @@ class TestInspectionZoneRegistry(unittest.TestCase):
 
     # ── R2/R3/R4/R5：逐段核对 ───────────────────────────────────
     def test_T9_registry_segments_match_live(self):
-        """R2+R3+R4+R5：登记的每段都必须与实时状态**完全一致**。"""
+        """R2+R3+R4+R5+R7+R8：登记的每段都必须与实时状态**完全一致**。"""
         problems = []
         # ⚠ **v3.28.2：指纹口径按登记表顶层的 `digest_scheme` 分派**。
         #   缺省 = 旧口径（`folded-multiset-v1`）⇒ **旧口径登记表仍能过**
@@ -477,6 +493,41 @@ class TestInspectionZoneRegistry(unittest.TestCase):
                 problems.append(
                     f"{sid}：键数不一致（登记 {s.get('key_count')} ≠ "
                     f"实时 {live_count}）（R4）")
+            # ── R7：逐段 `leaf_unused`（「待人工定性候选」桶的大小）──────────
+            # ⚠ **v3.28.2 新增**（R1–R6 的编号与语义**零改动**）。
+            #   为什么必须逐段核对（真实假绿缺口，已实测复现）：
+            #     判定顺序修正（修复 A）的**全部可观测产出**就是 `leaf_unused`
+            #     （211 → 145）⇒ 但此前**无任何守卫**读这个字段
+            #     ⇒ 红队实测把 7 段的 `leaf_unused` 篡改成 999
+            #     ⇒ 守卫文件（28 用例）+ 红证明文件（**当时** 17 用例）**共 45 个全绿**
+            #     ⇒ 下次有人改 `known_textual` 或判定顺序，让真实候选变成
+            #       180 或 100，**体检不会报** ⇒ 修复 A 的效果不可持续。
+            #   ⇒ 本判据把「修复 A 的产出」纳入守卫 ⇒ 效果**可持续**。
+            # ⚠ 口径：`leaf_unused` 的定义**未被改动**（末段键名在代码中 0 出现）。
+            live_unused = int(live.get("leaf_unused", 0))
+            if live_unused != int(s.get("leaf_unused", -1)):
+                problems.append(
+                    f"{sid}：待人工定性候选数不一致（登记 {s.get('leaf_unused')} ≠ "
+                    f"实时 {live_unused}）（R7）")
+            # ── R8：逐段 `leaf_weak`（「弱证据洞」的大小）────────────────────
+            # ⚠ **v3.28.2 新增**。
+            #   为什么必须逐段核对（真实判据洞，已实测复现）：
+            #     `leaf_weak` = 末段键名**撞名**但**无路径级证据**的键数
+            #     （与 `leaf_unused` **精确对位**：两者互斥且穷尽「证据不足」的键）。
+            #     v3.23.0 F1 明写「弱证据 = 仅末段同名撞车，**不是**路径级证据」，
+            #     但 `weak` 桶因 `_b_block` 前置短路而**永不触发**（真包实测
+            #     `weak=0`）⇒ 这批键（实测 **1012 键 / 67%**）既不判死、
+            #     不进候选桶、也不进 `weak` 桶 ⇒ **无任何守卫覆盖**。
+            #     ⇒ 一个末段名叫 `note` / `enabled` 的**新键**加进已登记段里，
+            #       会**静默绿灯** ⇒ 本判据让该段「弱证据洞」的**大小**可核对。
+            # ⚠ 登记表若**缺** `leaf_weak` 字段（未升级的旧登记表）⇒ 登记值
+            #   取 -1 ⇒ 必然判红 ⇒ **必须**升级登记表（这是刻意的：
+            #   与「升级口径后必须重新生成 `keys_sha256`」同款纪律）。
+            live_weak = int(live.get("leaf_weak", 0))
+            if live_weak != int(s.get("leaf_weak", -1)):
+                problems.append(
+                    f"{sid}：弱证据（末段撞名但无路径级证据）数不一致"
+                    f"（登记 {s.get('leaf_weak')} ≠ 实时 {live_weak}）（R8）")
         # R5：双向集合相等
         reg_ids = {s.get("id") for s in self.reg.get("segments") or []}
         live_ids = set(self.live)
@@ -727,8 +778,10 @@ def _load_es_from(root: Path, name: str):
 #: **修复后**（当前）的判定分支片段 —— 变异体的替换源。
 #: ⚠ **v3.28.2 更新**：`_is_textual(fname, full)` 改为 `_is_textual(fname, _plain)`
 #:   （判定用**剥下标**路径 ⇒ 判定口径与修复前逐字一致；下标只进段键集合）。
-FIXED_BRANCH_BLOCK = '''            _full_hit = bool(n_full and n_full in norm_reads)
-            if _full_hit or _a_path:
+#: ⚠ **v3.28.2 再更新**：段 dict 新增 `leaf_weak` 字段（弱证据洞可见化）
+#:   ⇒ 锚点随之更新（锚点必须**逐字**匹配当前源码，否则变异体会变成
+#:   「什么也没改」的假 mutant ⇒ 变异证明恒真）。
+FIXED_BRANCH_BLOCK = '''            if _full_hit or _a_path:
                 alive += 1
             elif _is_textual(fname, _plain):
                 textual += 1          # 人读型登记在案，无代码读取者是合理的
@@ -741,40 +794,175 @@ FIXED_BRANCH_BLOCK = '''            _full_hit = bool(n_full and n_full in norm_r
                     _seg = block_segments.setdefault(
                         _seg_key,
                         {"file": fname, "prefix": _b_prefix, "keys": [],
-                         "idents": [], "leaf_unused": 0})
+                         "idents": [], "leaf_unused": 0, "leaf_weak": 0})
                     # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
                     #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                     _seg["keys"].append(full)
                     _seg["idents"].append(_ident)
             elif _b_block:
-'''
-
-#: **修复前**（原缺陷）的判定分支片段 —— 逐字复刻自修复前的实现。
-#:   块级证据与「人读型登记」在同一条 elif 链上，且块级证据在前
-#:   ⇒ `elif` 短路 ⇒ `_is_textual()` 根本没机会执行。
-OLD_BRANCH_BLOCK = '''            if (n_full and n_full in norm_reads) or _a_path or _b_block:
                 alive += 1
-                if _b_block and not _a_path and not (n_full and n_full in norm_reads):
+                block += 1
+                # v3.25.0：把该键归入「免检区（块级消费段）」——
+                # 段键 = `<config 文件名>#<触发前缀>`（ADR-6：必须带文件名前缀，
+                # 因为同名段跨文件是不同的段，合并登记会让处置规则无法落地）。
+                _seg_key = f"{fname}#{_b_prefix}"
+                _seg = block_segments.setdefault(
+                    _seg_key,
+                    {"file": fname, "prefix": _b_prefix, "keys": [],
+                     "idents": [], "leaf_unused": 0, "leaf_weak": 0})
+                # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
+                _seg["keys"].append(full)
+                _seg["idents"].append(_ident)
+                # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
+                # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
+                if not (n_leaf and n_leaf in norm_reads):
+                    _seg["leaf_unused"] += 1
+                # ⚠ **v3.28.2**：`leaf_weak` = **弱证据洞**的可见化。
+                #   口径（与 `leaf_unused` **精确对位**，两者互斥且穷尽）：
+                #     · `leaf_unused` = 末段键名在代码中 **0 出现**（连撞名都没有）
+                #     · `leaf_weak`   = 末段键名**有**出现（撞名）**且**
+                #                        **无路径级证据**（`_a_path` 为假）
+                #                        **且**该键**整条路径**未命中 `norm_reads`
+                #   ⚠ 为什么必须可见（真实判据洞，已实测复现）：
+                #     v3.23.0 F1 自己明写「弱证据 = 仅末段同名撞车，**不是**路径级证据」。
+                #     但 `weak` 桶因 `_b_block` 已被前置短路而**永不触发**（真包实测
+                #     `weak=0`）⇒ 这批键被「块级证据」这一层**接管**了 ⇒
+                #     既不判死、不进 `leaf_unused`、也不进 `weak` ⇒ **无任何守卫覆盖**。
+                #     ⇒ 一个末段名叫 `note` / `description` / `enabled` 的**新键**，
+                #       加进已登记的免检区段里，会**静默绿灯**（实测：145 键的
+                #       「待人工定性候选」桶之外，还有 **1012 键（67%）** 落在这个洞里）。
+                #   ⇒ 修法：**不判死、不进人工定性范围**（桶③的键大概率确实有人读），
+                #     只是**登记可见**（段级字段 `leaf_weak`）+ 守卫 R8 逐段核对。
+                #   ⚠ **不得**因此改动 `dead` 判定口径（本项是纯观测，不改判定）。
+                # ⚠ 判定用 `_leaf_weak_hit`（三条原始信号的显式合取）——
+                #   理由见该谓词定义处的注释（避免写成**恒真**的等价条件）。
+                elif _leaf_weak_hit:
+                    _seg["leaf_weak"] += 1
+            elif seg_hit or _is_guard_consumed(fname, _plain):
+                textual += 1          # 人读型：登记在案，无代码读取者是合理的
+            elif n_leaf and n_leaf in norm_reads:
+                # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
+                if _is_weak_registered(fname, _plain):
+                    weak_reg += 1
+                else:
+                    weak += 1
+                    # ⚠ 展示路径用**剥下标**形态（与修复前逐字一致 ⇒ 展示口径不变；
+                    #   下标只用于段内指纹的**身份**，不用于人读的「这个键在哪」）。
+                    weak_list.append((fname, _plain, node))'''
+
+#: **变异体**：把**判定顺序**换回去（块级证据在前 ⇒ `elif` 短路
+#:   ⇒ `_is_textual()` 根本没机会执行）。
+#:
+#: ⚠⚠ **v3.28.2 重写（重要：变异体必须与当前源码**同代**）**：
+#:   旧版 `OLD_BRANCH_BLOCK` 是**修复 A+B 之前**的历史形态 ⇒ 它同时改了
+#:     ① `_is_textual(fname, full)` → `_is_textual(fname, _plain)`（判定路径口径）
+#:     ② 段 dict 缺 `idents` 字段（指纹口径）
+#:     ③ 判定链的**整体结构**（不是单纯换序）
+#:   ⇒ 施加它会**连带**打红 T9 / T35 / T38（指纹与登记表判据），实测杀 5 个
+#:     ⇒ 读 commit message 的人会困惑「不是只测顺序吗，怎么打红 5 个？」
+#:
+#:   ★ **本变异体只隔离「顺序」这一个变量**：
+#:     · 保留 `_plain`（判定用剥下标路径）——与当前源码一致；
+#:     · 保留 `idents`（段指纹用带下标身份串）——与当前源码一致；
+#:     · 保留 `leaf_weak` / `leaf_unused` 两个段级字段——与当前源码一致；
+#:     · **只**把「块级证据分支」提到「人读型登记分支」之前。
+#:   ⇒ 实测：施加它 ⇒ **4 failed**（T31 + T34 + T9 + T39），且
+#:     `test_inspection_zone_registry_red.py` 21 用例**全绿**。
+#:   ⚠ **用历史形态会连带打红 T9/T35/T38**（那三条测的是**指纹口径**，
+#:     不是本判据所测的**顺序**）⇒ 必须在用例注释里写明这一点。
+#:   ⚠⚠ **v3.28.2 实测口径修正**：上句的「4 failed」中，T9 / T39 的红是
+#:     **R7 / R8 标签**（**不是** R3/R4）⇒ 原因是**新增的 R7/R8 正是用来
+#:     「抓住修复 A 被回退」**的 ⇒ 判定顺序一旦换回去，`leaf_unused` /
+#:     `leaf_weak` 的实时值必然与登记值不符 ⇒ R7/R8 必然判红。
+#:     ⇒ 这是**新增守卫的预期行为**，不是变异体「不干净」；
+#:       **「恰好 2 failed」在 R7/R8 存在之后已不可达**。
+OLD_BRANCH_BLOCK = '''            if _full_hit or _a_path:
+                alive += 1
+            elif _b_block:
+                alive += 1
+                block += 1
+                # v3.25.0：把该键归入「免检区（块级消费段）」——
+                # 段键 = `<config 文件名>#<触发前缀>`（ADR-6：必须带文件名前缀，
+                # 因为同名段跨文件是不同的段，合并登记会让处置规则无法落地）。
+                _seg_key = f"{fname}#{_b_prefix}"
+                _seg = block_segments.setdefault(
+                    _seg_key,
+                    {"file": fname, "prefix": _b_prefix, "keys": [],
+                     "idents": [], "leaf_unused": 0, "leaf_weak": 0})
+                # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
+                _seg["keys"].append(full)
+                _seg["idents"].append(_ident)
+                # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
+                # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
+                if not (n_leaf and n_leaf in norm_reads):
+                    _seg["leaf_unused"] += 1
+                # ⚠ **v3.28.2**：`leaf_weak` = **弱证据洞**的可见化。
+                #   口径（与 `leaf_unused` **精确对位**，两者互斥且穷尽）：
+                #     · `leaf_unused` = 末段键名在代码中 **0 出现**（连撞名都没有）
+                #     · `leaf_weak`   = 末段键名**有**出现（撞名）**且**
+                #                        **无路径级证据**（`_a_path` 为假）
+                #                        **且**该键**整条路径**未命中 `norm_reads`
+                #   ⚠ 为什么必须可见（真实判据洞，已实测复现）：
+                #     v3.23.0 F1 自己明写「弱证据 = 仅末段同名撞车，**不是**路径级证据」。
+                #     但 `weak` 桶因 `_b_block` 已被前置短路而**永不触发**（真包实测
+                #     `weak=0`）⇒ 这批键被「块级证据」这一层**接管**了 ⇒
+                #     既不判死、不进 `leaf_unused`、也不进 `weak` ⇒ **无任何守卫覆盖**。
+                #     ⇒ 一个末段名叫 `note` / `description` / `enabled` 的**新键**，
+                #       加进已登记的免检区段里，会**静默绿灯**（实测：145 键的
+                #       「待人工定性候选」桶之外，还有 **1012 键（67%）** 落在这个洞里）。
+                #   ⇒ 修法：**不判死、不进人工定性范围**（桶③的键大概率确实有人读），
+                #     只是**登记可见**（段级字段 `leaf_weak`）+ 守卫 R8 逐段核对。
+                #   ⚠ **不得**因此改动 `dead` 判定口径（本项是纯观测，不改判定）。
+                # ⚠ 判定用 `_leaf_weak_hit`（三条原始信号的显式合取）——
+                #   理由见该谓词定义处的注释（避免写成**恒真**的等价条件）。
+                elif _leaf_weak_hit:
+                    _seg["leaf_weak"] += 1
+            elif _is_textual(fname, _plain):
+                textual += 1          # 人读型登记在案，无代码读取者是合理的
+                if _b_block:
+                    # 块级证据与人读型**同时成立** ⇒ 保留段归属，但不算「待人工定性候选」。
+                    alive += 1
                     block += 1
+                    block_textual += 1
                     _seg_key = f"{fname}#{_b_prefix}"
                     _seg = block_segments.setdefault(
                         _seg_key,
-                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                        {"file": fname, "prefix": _b_prefix, "keys": [],
+                         "idents": [], "leaf_unused": 0, "leaf_weak": 0})
+                    # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                    #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                     _seg["keys"].append(full)
-                    if not (n_leaf and n_leaf in norm_reads):
-                        _seg["leaf_unused"] += 1
-            elif seg_hit or _is_textual(fname, full) or _is_guard_consumed(fname, full):
+                    _seg["idents"].append(_ident)
+            elif seg_hit or _is_guard_consumed(fname, _plain):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
-'''
+            elif n_leaf and n_leaf in norm_reads:
+                # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
+                if _is_weak_registered(fname, _plain):
+                    weak_reg += 1
+                else:
+                    weak += 1
+                    # ⚠ 展示路径用**剥下标**形态（与修复前逐字一致 ⇒ 展示口径不变；
+                    #   下标只用于段内指纹的**身份**，不用于人读的「这个键在哪」）。
+                    weak_list.append((fname, _plain, node))'''
 
 
 def _revert_to_old_branch_order(src: str) -> str:
     """把 `walk()` 的判定分支换成**原缺陷形态**（块级证据在前 ⇒ elif 短路）。
 
     ⚠ 这是**变异体构造器**：它复现的是**原缺陷**（不是「把块级证据删掉」）。
-    ⚠ **必须逐字**替换（保留 `elif seg_hit or _is_textual(...)` 那一行）——
-      否则就不是原形态，变异报告会说谎。
-    ⚠ 锚点必须**逐字**匹配 ⇒ 匹配不上直接抛错（而不是静默变成
+    ⚠ **v3.28.2 重写**：变异体现在**只隔离「判定顺序」一个变量**——
+      保留 `_plain`（判定路径口径）、保留 `idents`（指纹口径）、
+      保留 `leaf_weak`/`leaf_unused` 两个段级字段；
+      **只**把块级证据分支提到人读型登记分支之前。
+      ⚠ 早版用的是**历史形态**（修复 A+B 之前）⇒ 连带打红 T9/T35/T38
+        （那三条测的是**指纹口径**，不是本判据所测的**顺序**）
+        ⇒ 变异报告与 commit message 会互相矛盾（声称杀 2 个、实测杀 5 个）。
+      ⚠ **v3.28.2 实测口径**：施加本变异体 ⇒ `test_dead_config_disposition.py`
+        **4 failed**（T31 + T34 + T9 + T39）；其中 T9/T39 的红是 **R7/R8 标签**
+        ⇒ **R7/R8 的存在本身要求它变红** ⇒「恰好 2 failed」在本版不可达。
+    ⚠ **必须逐字**替换 ⇒ 锚点匹配不上直接抛错（而不是静默变成
       「什么也没改」的假 mutant ⇒ 那样变异证明会恒真）。
     """
     if FIXED_BRANCH_BLOCK not in src:
@@ -937,10 +1125,32 @@ class TestJudgementBranchOrder(unittest.TestCase):
 
         ⚠ **本用例自带变异体，完全自足**（不读 git、不依赖真包历史）：
           变异体 = 真包当前源码 + 「把这个末段键名登记为人读型」
-                   + 「把判定分支替换成**原形态**（块级证据在前 ⇒ elif 短路）」
+                   + 「把判定分支替换成**换序形态**（块级证据在前 ⇒ elif 短路）」
           ⇒ ① 不依赖 `git HEAD`（提交后 HEAD 就变了 ⇒ 早版写法会失效——已踩）；
           ⇒ ② 真包被并行改动时本用例**依然**有效；
           ⇒ ③ 真包本身处于变异态时（外部做变异测试）本用例**依然**有效。
+
+        ⚠⚠ **该变异体只隔离「顺序」这一个变量**（v3.28.2 重写）：
+          · 保留 `_plain`（判定路径口径）· 保留 `idents`（指纹口径）
+          · 保留 `leaf_weak` / `leaf_unused`（两个段级字段）
+          · **只**把块级证据分支提到人读型登记分支之前。
+          ⇒ 施加它 ⇒ `test_dead_config_disposition.py` **4 failed**
+            （T31 + T34 + **T9** + **T39**），
+            且 `test_inspection_zone_registry_red.py` **21 用例全绿**
+            （换序不影响「登记表被改坏 ⇒ 判红」这条红证明链）。
+          ⚠ **用历史形态（修复 A+B 之前）会连带打红 T9/T35/T38**——
+            那三条测的是**指纹口径**（`keys_sha256` / 元素身份），
+            **不是本判据所测的「顺序」** ⇒ 变异报告会与 commit 声称矛盾。
+          ⚠⚠ **v3.28.2 实测口径修正（重要）**：
+            本用例早版注释写的是「恰好 2 failed」——**那是在 R7/R8 存在之前**
+            测的。**新增 R7 / R8 之后，「恰好 2 failed」在本版已不可达**：
+            R7/R8 的存在目的正是「抓住修复 A 被回退」⇒ 判定顺序一旦换回去，
+            `leaf_unused` / `leaf_weak` 的**实时值**必然与**登记值**不符
+            ⇒ R7/R8 必然判红 ⇒ T9 必然转红；T39（端到端跑真守卫的 R2/R3/R4/R5）
+            因内部调用同一个 T9 判据而**连带**转红。
+            ⇒ 实测：T9 / T39 的红是 **R7 / R8 标签**（**不是** R3/R4）
+              ⇒ 这是**新增守卫的预期行为**，不是变异体「不干净」。
+            ⇒ 故此处改写为「4 failed」并**显式标注成因**，避免与实测不符。
         """
         # ① 变异体 = 真包源码 + 登记 + 原形态判定分支
         src = ES.read_text(encoding="utf-8")

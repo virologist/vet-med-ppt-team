@@ -39,11 +39,16 @@ test_inspection_zone_registry_red.py — 免检区登记表守卫的**判据级�
 ─────────────────────────────────────────────────────────────────────────────
 【本文件做什么（三层）】
 ─────────────────────────────────────────────────────────────────────────────
-第 1 层 · **判据级红证明**（R1–R6 各一条）
+第 1 层 · **判据级红证明**（R1–R8 各一条）
     逐条把「登记表被改坏」或「实时 config 被改坏」，
     然后**直接调用真实守卫文件里的判据方法**，
     断言它**真的抛 AssertionError 且报出对应判据标签**。
     ⚠ 与原守卫的反例的本质区别：原守卫测「机制」，本文件测「**判据本体**」。
+    ⚠ **v3.28.2 新增 R7 / R8**：
+      · R7 = 逐段 `leaf_unused`（判定顺序修正的**全部可观测产出** ⇒
+        此前**无守卫** ⇒ 篡改成 999 时 45 个测试**全绿** ⇒ 修复效果不可持续）；
+      · R8 = 逐段 `leaf_weak`（弱证据洞的**大小** ⇒ 实测 1012 键 / 67%
+        此前**无守卫** ⇒ 末段撞名的新键会**静默绿灯**）。
 
 第 2 层 · **变异敏感性证明**（杀掉 mutant）
     在**进程内**构造「删掉该判据分支」的守卫**副本**，
@@ -187,6 +192,43 @@ def break_key_count(reg: dict) -> dict:
     r = copy.deepcopy(reg)
     seg = _segment(r, PROBE_SEG)
     seg["key_count"] = int(seg.get("key_count", 0)) + 999
+    return r
+
+
+def break_leaf_unused(reg: dict) -> dict:
+    """破坏 R7：把某段的 `leaf_unused` 改错 ⇒ 「待人工定性候选」数对不上。
+
+    ★ **为什么要这条（真实假绿缺口，已实测复现）**：
+      判定顺序修正（修复 A）的**全部可观测产出**就是 `leaf_unused` 的值
+      （211 → 145）⇒ 但该字段此前**无任何守卫**读它
+      ⇒ 红队实测把 7 段的 `leaf_unused` 篡改成 999
+      ⇒ 守卫文件（28 用例）+ 本文件（**当时** 17 用例）**共 45 个测试全绿**
+      （⚠ 45 是**缺口被发现时**的测试总数，是历史事实；本文件自 v3.28.2 起
+        已扩到 **21 用例** —— 新增 R7/R8 的判据级红证明 + 变异敏感性用例各 2 条）
+      ⇒ 下次有人改 `known_textual` 或判定顺序，让真实候选变成 180 或 100，
+        **体检不会报** ⇒ 修复 A 的效果**不可持续**。
+    ⇒ R7 必须能红（否则「修复 A 的效果」无守卫保护）。
+    """
+    r = copy.deepcopy(reg)
+    seg = _segment(r, PROBE_SEG)
+    seg["leaf_unused"] = int(seg.get("leaf_unused", 0)) + 999
+    return r
+
+
+def break_leaf_weak(reg: dict) -> dict:
+    """破坏 R8：把某段的 `leaf_weak` 改错 ⇒ 「弱证据洞」数对不上。
+
+    ★ **为什么要这条（真实判据洞，已实测复现）**：
+      `leaf_weak` = 末段键名**撞名**但**无路径级证据**的键数（实测 1012 键 / 67%）。
+      v3.23.0 F1 明写「弱证据 = 仅末段同名撞车，**不是**路径级证据」，
+      但 `weak` 桶因块级证据前置短路而**永不触发**（真包实测 `weak=0`）
+      ⇒ 这批键既不判死、也不进候选桶、也不进 `weak` 桶 ⇒ **无任何守卫覆盖**
+      ⇒ 一个末段名叫 `note` / `enabled` 的新键加进已登记段里会**静默绿灯**。
+    ⇒ R8 必须能红（否则「弱证据洞」的大小永远无人核对）。
+    """
+    r = copy.deepcopy(reg)
+    seg = _segment(r, PROBE_SEG)
+    seg["leaf_weak"] = int(seg.get("leaf_weak", 0)) + 999
     return r
 
 
@@ -374,6 +416,38 @@ class TestRegistryJudgementsGoRed(unittest.TestCase):
             reg, "不在枚举内",
             "R6（disposition 越界）")
 
+    # ── R7：逐段 `leaf_unused` ─────────────────────────────────
+    def test_r7_leaf_unused_mismatch_goes_red(self):
+        """R7 红证明：某段 `leaf_unused` 与实时**不一致** ⇒ 判据必须判红。
+
+        防的真实缺陷：**修复 A（判定顺序修正）的效果不可持续**——
+        它的全部可观测产出就是 `leaf_unused`（211 → 145），但该字段此前
+        **无任何守卫**⇒ 红队实测把它篡改成 999 ⇒ 45 个测试**全绿**
+        ⇒ 下次有人改 `known_textual` 或判定顺序，让真实候选变成 180 或 100，
+        **体检不会报** ⇒ 修复白做。
+        """
+        reg = break_leaf_unused(self.reg)
+        self._assert_goes_red(
+            "test_T9_registry_segments_match_live",
+            reg, "（R7）",
+            "R7（leaf_unused 不一致）")
+
+    # ── R8：逐段 `leaf_weak` ───────────────────────────────────
+    def test_r8_leaf_weak_mismatch_goes_red(self):
+        """R8 红证明：某段 `leaf_weak` 与实时**不一致** ⇒ 判据必须判红。
+
+        防的真实缺陷：**弱证据洞（实测 1012 键 / 67%）无人看守**——
+        这批键末段撞名但无路径级证据，既不判死、也不进候选桶、
+        也不进 `weak` 桶（该桶被前置短路 ⇒ 永不触发）⇒ 一个末段名叫
+        `note` 的新键加进已登记段里会**静默绿灯**。
+        ⇒ R8 让「该段弱证据洞的大小」可核对 ⇒ 洞变了会报。
+        """
+        reg = break_leaf_weak(self.reg)
+        self._assert_goes_red(
+            "test_T9_registry_segments_match_live",
+            reg, "（R8）",
+            "R8（leaf_weak 不一致）")
+
 
 # ══════════════════════════════════════════════════════════════════════
 # 第 2 层 · 变异敏感性证明（杀掉 mutant）
@@ -421,6 +495,22 @@ MUTANTS = {
         for sid in sorted(live_ids - reg_ids):
             problems.append(f"{sid}：实时存在但**未登记**（R5）")''',
         '''        pass  # MUTANT: R5 判据分支被整段删除''',
+    ),
+    "R7_leaf_unused_branch_removed": (
+        '''            live_unused = int(live.get("leaf_unused", 0))
+            if live_unused != int(s.get("leaf_unused", -1)):
+                problems.append(
+                    f"{sid}：待人工定性候选数不一致（登记 {s.get('leaf_unused')} ≠ "
+                    f"实时 {live_unused}）（R7）")''',
+        '''            pass  # MUTANT: R7 判据分支被整段删除''',
+    ),
+    "R8_leaf_weak_branch_removed": (
+        '''            live_weak = int(live.get("leaf_weak", 0))
+            if live_weak != int(s.get("leaf_weak", -1)):
+                problems.append(
+                    f"{sid}：弱证据（末段撞名但无路径级证据）数不一致"
+                    f"（登记 {s.get('leaf_weak')} ≠ 实时 {live_weak}）（R8）")''',
+        '''            pass  # MUTANT: R8 判据分支被整段删除''',
     ),
 }
 
@@ -573,6 +663,36 @@ class TestJudgementMutantsAreKilled(unittest.TestCase):
                         "mutant 只掏空了 R3，幽灵段仍应由 R2/R5 抓红 ⇒ "
                         "若此处不红，说明本文件的红证明机制本身坏了")
         self.assertIn("（R2）", msg, f"mutant 仍应报出 R2 ⇒ 实际消息：{msg}")
+
+    def test_mutant_r7_removed_breaks_red_proof(self):
+        """mutant「删 R7 分支」⇒ R7 的红证明必须失效。
+
+        ⚠ 注意：mutant 里 R3/R4/R8 **仍在**，所以 digest / key_count 破坏仍会被抓；
+          ⇒ 本用例的破坏必须是**只**动 `leaf_unused`
+            （digest / key_count 保持正确）⇒ 否则 mutant 抓到的其实是 R3/R4。
+        """
+        mutant = self._make_mutant_guard("R7_leaf_unused_branch_removed")
+        reg = break_leaf_unused(self.reg)
+        red, msg = self._judgement_goes_red(
+            mutant, "test_T9_registry_segments_match_live", reg)
+        self.assertFalse(
+            red,
+            "mutant（删 R7 分支）竟然抓到了 leaf_unused 破坏 ⇒ "
+            "R7 的红证明与 R7 判据**无关**（恒真守卫 ⇒ 假绿）")
+
+    def test_mutant_r8_removed_breaks_red_proof(self):
+        """mutant「删 R8 分支」⇒ R8 的红证明必须失效。
+
+        ⚠ 与 R7 同理：破坏必须**只**动 `leaf_weak`。
+        """
+        mutant = self._make_mutant_guard("R8_leaf_weak_branch_removed")
+        reg = break_leaf_weak(self.reg)
+        red, msg = self._judgement_goes_red(
+            mutant, "test_T9_registry_segments_match_live", reg)
+        self.assertFalse(
+            red,
+            "mutant（删 R8 分支）竟然抓到了 leaf_weak 破坏 ⇒ "
+            "R8 的红证明与 R8 判据**无关**（恒真守卫 ⇒ 假绿）")
 
 
 # ══════════════════════════════════════════════════════════════════════
