@@ -1362,36 +1362,82 @@ class TestSegmentDigestElementIdentity(unittest.TestCase):
     def test_T39_backward_compatible_old_scheme_registry_still_passes(self):
         """T39：登记表**没写** `digest_scheme`（= 旧口径）⇒ 仍能过 R3/R4。
 
-        ★ **向后兼容的证明**：旧口径的 `keys_sha256` 是按「折叠路径多重集」算的。
+        ★ **向后兼容的证明**（旧口径的 `keys_sha256` 是按「折叠路径多重集」算的；
           本次把 `walk()` 改成带下标后，若不能**精确复现**旧值，
-          旧登记表会被误判成「脱节」⇒ 升级就会**逼所有人**重登一遍。
-        ⚠ 本用例**不写生产登记表**：只验证**算法层**能复现旧值
-          （真实登记表已升级为新口径，此处用 HEAD 原值做对照）。
+          旧登记表会被误判成「脱节」⇒ 升级就会**逼所有人**重登一遍）。
+
+        ⚠⚠ **完全自足**（不读 git、不依赖 HEAD 历史）—— **踩坑修正**：
+          早版实现用 `git show HEAD:references/inspection-zones.yaml` 取旧登记值
+          当对照 ⇒ **提交后 HEAD 就变了** ⇒ 该判据**自毁**（提交后必转红）。
+          本仓库已有纪律明写「不依赖 `git HEAD`（提交后 HEAD 就变了 ⇒ 早版写法
+          会失效——已踩）」，本条不得再犯。
+          ⇒ 改为**现场造**一份旧口径登记表（见下），对照值由**独立 oracle** 算出。
+
+        【本用例的鉴别力从哪来（两处，都不是「复刻自己」）】
+          ① **独立 oracle**：旧口径指纹由本测试**自己实现**的 sha256 + 剥下标
+             算出（**不复用**被测的 `segments_digest` / `fold_segment_keys`）
+             ⇒ 被测实现若把「剥下标」或「去值/去重」写错 ⇒ 两者不一致 ⇒ 判红。
+          ② **端到端跑真守卫**：旧口径登记表交给**真守卫代码**（子进程跑
+             `TestInspectionZoneRegistry.test_T9_registry_segments_match_live`，
+             它同时跑 R2/R3/R4/R5）⇒ 守卫的旧口径分支被改坏 ⇒ 守卫判红
+             ⇒ 本用例失败。**跑的是真代码，不是复刻**。
+
+        ⚠ 全程在**隔离副本**上做（不碰生产 config、不碰生产登记表）。
         """
-        import yaml
+        import hashlib
+        import re
         import subprocess
+        import sys
+        import yaml
+        from test_pkg_isolation import cleanup_isolated_pkg, make_isolated_pkg
 
-        # ① 旧口径复现：把新口径的键**折回**旧形态后算指纹 ⇒ 必须等于旧登记值
-        old_reg = yaml.safe_load(
-            subprocess.run(
-                ["git", "show", "HEAD:references/inspection-zones.yaml"],
-                cwd=str(PKG), capture_output=True, text=True, check=True).stdout)
-        old_map = {s["id"]: s for s in old_reg["segments"]}
-        live = self.es.collect_block_segments(str(PKG))
-        bad = []
-        for sid, seg in live.items():
-            sha = self.es.segments_digest(seg["keys"],
-                                         scheme=self.es.DIGEST_SCHEME_FOLDED)
-            cnt = self.es.segment_key_count(seg["keys"],
-                                            scheme=self.es.DIGEST_SCHEME_FOLDED)
-            if sha != old_map[sid]["keys_sha256"] or cnt != old_map[sid]["key_count"]:
-                bad.append(sid)
-        self.assertEqual(
-            bad, [],
-            "旧口径无法复现 HEAD 原登记表的值 ⇒ 向后兼容是假的"
-            f"（{len(bad)} 段对不上）：{bad[:5]}")
+        # ── 独立 oracle：旧口径 = sha256("\\n".join(sorted(折叠路径)))[:40] ──
+        #    ⚠ **不复用被测代码**（否则「实现和自己一致」恒真 ⇒ 鉴别力为零）。
+        def _old_oracle(keys):
+            folded = [re.sub(r"\[\d+\]", "", str(k)) for k in keys]
+            blob = "\n".join(sorted(folded)).encode("utf-8")
+            return hashlib.sha256(blob).hexdigest()[:40], len(folded)
 
-        # ② 缺省口径 = 旧口径（登记表不写 `digest_scheme` ⇒ 按旧口径解释）
+        iso = make_isolated_pkg(prefix="vetmed-iso-oldscheme-")
+        try:
+            es_iso = _load_es_on(iso)
+            live = es_iso.collect_block_segments(str(iso))
+            self.assertTrue(live, "隔离副本未造出免检区段——判据前提失效")
+
+            # ① 把副本的登记表换成「旧口径版本」
+            reg_path = iso / "references" / "inspection-zones.yaml"
+            reg = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
+            reg.pop("digest_scheme", None)        # = 旧登记表形态（无口径声明）
+            for s in reg.get("segments") or []:
+                seg = live.get(s["id"])
+                if seg is None:
+                    continue
+                sha, cnt = _old_oracle(seg["keys"])
+                s["keys_sha256"] = sha
+                s["key_count"] = cnt
+            reg_path.write_text(
+                yaml.safe_dump(reg, allow_unicode=True, sort_keys=False),
+                encoding="utf-8")
+
+            # ② 子进程跑**真守卫**的 R2/R3/R4/R5（真代码，不是复刻）
+            guard = iso / "scripts" / "test_dead_config_disposition.py"
+            env = dict(os.environ)
+            env["PYTHONPATH"] = (str(iso / "scripts") + os.pathsep
+                                  + env.get("PYTHONPATH", ""))
+            proc = subprocess.run(
+                [sys.executable, str(guard),
+                 "TestInspectionZoneRegistry.test_T9_registry_segments_match_live"],
+                capture_output=True, text=True, env=env, cwd=str(iso), timeout=300)
+            self.assertEqual(
+                proc.returncode, 0,
+                "旧口径登记表（无 `digest_scheme`）没通过真守卫的 R2/R3/R4/R5 ⇒ "
+                "向后兼容是假的（守卫的旧口径分支被改坏？）\n"
+                f"输出尾部：{(proc.stdout or '')[-2000:]}\n"
+                f"错误尾部：{(proc.stderr or '')[-800:]}")
+        finally:
+            cleanup_isolated_pkg(iso)
+
+        # ③ 缺省口径 = 旧口径（登记表不写 `digest_scheme` ⇒ 按旧口径解释）
         self.assertEqual(self.es.DEFAULT_DIGEST_SCHEME,
                          self.es.DIGEST_SCHEME_FOLDED,
                          "缺省口径必须是旧口径，否则旧登记表会被误判成脱节")
