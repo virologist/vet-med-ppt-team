@@ -607,5 +607,357 @@ def _load_es_on(pkg_root):
     return m
 
 
+# ══════════════════════════════════════════════════════════════════════
+# T31–T34：判定**分支顺序**的守卫（人读型登记优先于块级证据）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 病灶（实测复现，可证伪）：
+#   第 18 项的 `walk()` 原本把「块级证据」与「人读型登记」放在**同一条 elif 链**上，
+#   且块级证据在前 ⇒ `elif` **短路** ⇒ `_is_textual()` **根本没机会执行**
+#   ⇒ 已登记为「人读型」的键，只要其所在段被代码**整块读取**，
+#     就会被误归入「免检区（块级消费段）」的**待人工定性候选**桶
+#     ⇒ **既没被判死、也没拿到人读型定性 ⇒ 永久悬空**。
+#   实测规模：修复前 211 键待人工定性候选里，**66 键**属此型（确定性假候选）。
+#
+# ★ **本组的判据全部自造隔离 fixture**（临时目录 + 自己的 config + 自己的 script）：
+#   不依赖仓库现有 config 的具体值 ⇒ 后续任何配置变动都不会让判据失效或假绿。
+#   ⚠ fixture 必须造出「**人读型登记 ∧ 块级证据同时成立**」的**最小**形态：
+#     · 一个新段 `probe_block`（代码整块取走 ⇒ 块级证据成立）；
+#     · 段内一个键，其**末段键名**已在 `known_textual` 登记（⇒ 人读型成立）；
+#     · 段内另一个键，**未**登记（⇒ 只有块级证据 ⇒ 仍应进免检区）；
+#     · 段外一个键，**未**登记、无块级证据、无路径证据（⇒ 仍应判死）。
+#
+# ⚠ **不写生产 config、不写生产 script**：全部改动都发生在 `tempfile.mkdtemp()`
+#   造的临时目录里，用完即删 ⇒ 并发下不会污染真包（与本文件 T1b 的既有纪律一致）。
+#
+# ⚠ **测试文件自身的读取点不算消费**：`_collect_ast_reads` / `_collect_chain_reads`
+#   都排除 `test_*.py` ⇒ 本守卫文件里写的 `cfg["probe_block"]` **不会**给探针键
+#   制造路径级证据 ⇒ 探针的块级证据只能来自 fixture 自带的**非测试**脚本。
+
+
+#: fixture 里「被代码整块取走」的段名。
+FIXTURE_SEG = "probe_block"
+#: fixture 里「已登记为人读型」的末段键名（**不进** `known_textual` 的原始集）。
+FIXTURE_TEXTUAL_LEAF = "probe_textual_leaf"
+#: fixture 里「块级证据成立但未登记」的末段键名。
+FIXTURE_PLAIN_LEAF = "probe_plain_leaf"
+#: fixture 里「未登记 + 无块级证据 + 无路径证据」的末段键名（应判死）。
+FIXTURE_DEAD_LEAF = "probe_dead_leaf"
+
+
+def _build_branch_order_fixture(root: Path):
+    """造一个「人读型登记 ∧ 块级证据同时成立」的**最小隔离 fixture**。
+
+    目录形态（`<root>` 即返回的包根）：
+        <root>/config/probe.yaml   —— 三个探针键 + 段外一个死键
+        <root>/scripts/probe_reader.py —— 整块取走 `probe_block` 段（⇒ 块级证据）
+
+    ⚠ 探针脚本**不**以 `test_` 开头 ⇒ 其读取点被 AST/链式读取点采集器计入
+      （否则 fixture 造不出块级证据，判据就失去意义）。
+    """
+    import yaml
+
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+
+    cfg = {
+        FIXTURE_SEG: {
+            FIXTURE_TEXTUAL_LEAF: "人读型键（末段键名已登记）",
+            FIXTURE_PLAIN_LEAF: "普通键（未登记，但有块级证据）",
+        },
+        FIXTURE_DEAD_LEAF: "无人读、无线索的键（应判死）",
+    }
+    (root / "config" / "probe.yaml").write_text(
+        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    # 整块取走 `probe_block` ⇒ 该段下所有键都拿到**块级证据**。
+    # ⚠ 用 `cfg["probe_block"]`（下标访问）——链式读取点采集器能还原出 "probe_block"
+    #   ⇒ 父级被整块取走的证据成立。
+    (root / "scripts" / "probe_reader.py").write_text(
+        'def _read(cfg):\n'
+        '    return cfg["probe_block"]\n',
+        encoding="utf-8")
+    return root
+
+
+def _register_textual_leaf(es_src: str, leaf: str) -> str:
+    """在 `known_textual` 里为给定末段键名加一条登记（返回改写后的源码）。
+
+    ⚠ 用**末段键名**登记（不是段名）：这样只有该段下的**这一个**键被人读型，
+      段内另一个未登记的键仍只有块级证据 ⇒ 两条判据可在同一 fixture 上同时验证。
+    """
+    marker = "    known_textual = {\n"
+    if marker not in es_src:
+        raise AssertionError("known_textual 定义未找到（ensure_settings.py 结构变了？）")
+    if es_src.count(marker) != 1:
+        raise AssertionError("known_textual 定义锚点不唯一（ensure_settings.py 结构变了？）")
+    return es_src.replace(marker, marker + f'        "{leaf}",\n', 1)
+
+
+def _load_es_from(root: Path, name: str):
+    """加载 fixture 根下的 ensure_settings.py（fixture 只含 scripts/ 与 config/）。"""
+    spec = importlib.util.spec_from_file_location(
+        name, root / "scripts" / "ensure_settings.py")
+    m = importlib.util.module_from_spec(spec)
+    sys.modules[name] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+#: **修复后**（当前）的判定分支片段 —— 变异体的替换源。
+FIXED_BRANCH_BLOCK = '''            _full_hit = bool(n_full and n_full in norm_reads)
+            if _full_hit or _a_path:
+                alive += 1
+            elif _is_textual(fname, full):
+                textual += 1          # 人读型登记在案，无代码读取者是合理的
+                if _b_block:
+                    # 块级证据与人读型**同时成立** ⇒ 保留段归属，但不算「待人工定性候选」。
+                    alive += 1
+                    block += 1
+                    block_textual += 1
+                    _seg_key = f"{fname}#{_b_prefix}"
+                    _seg = block_segments.setdefault(
+                        _seg_key,
+                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                    _seg["keys"].append(full)
+            elif _b_block:
+'''
+
+#: **修复前**（原缺陷）的判定分支片段 —— 逐字复刻自修复前的实现。
+#:   块级证据与「人读型登记」在同一条 elif 链上，且块级证据在前
+#:   ⇒ `elif` 短路 ⇒ `_is_textual()` 根本没机会执行。
+OLD_BRANCH_BLOCK = '''            if (n_full and n_full in norm_reads) or _a_path or _b_block:
+                alive += 1
+                if _b_block and not _a_path and not (n_full and n_full in norm_reads):
+                    block += 1
+                    _seg_key = f"{fname}#{_b_prefix}"
+                    _seg = block_segments.setdefault(
+                        _seg_key,
+                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                    _seg["keys"].append(full)
+                    if not (n_leaf and n_leaf in norm_reads):
+                        _seg["leaf_unused"] += 1
+            elif seg_hit or _is_textual(fname, full) or _is_guard_consumed(fname, full):
+                textual += 1          # 人读型：登记在案，无代码读取者是合理的
+'''
+
+
+def _revert_to_old_branch_order(src: str) -> str:
+    """把 `walk()` 的判定分支换成**原缺陷形态**（块级证据在前 ⇒ elif 短路）。
+
+    ⚠ 这是**变异体构造器**：它复现的是**原缺陷**（不是「把块级证据删掉」）。
+    ⚠ **必须逐字**替换（保留 `elif seg_hit or _is_textual(...)` 那一行）——
+      否则就不是原形态，变异报告会说谎。
+    ⚠ 锚点必须**逐字**匹配 ⇒ 匹配不上直接抛错（而不是静默变成
+      「什么也没改」的假 mutant ⇒ 那样变异证明会恒真）。
+    """
+    if FIXED_BRANCH_BLOCK not in src:
+        raise AssertionError(
+            "变异体锚点未逐字匹配（ensure_settings.py 的判定分支结构变了？）")
+    if src.count(FIXED_BRANCH_BLOCK) != 1:
+        raise AssertionError("变异体锚点不唯一（ensure_settings.py 的判定分支结构变了？）")
+    return src.replace(FIXED_BRANCH_BLOCK, OLD_BRANCH_BLOCK, 1)
+
+
+def _run_fixture(root: Path):
+    """在 fixture 上跑第 18 项，返回 (rc, 输出, 段清单)。"""
+    import io as _io
+    import contextlib as _ctx
+    es = _load_es_from(root, "es_t31_fixture")
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        rc = es.check_dead_config_keys(str(root))
+    return rc, buf.getvalue(), es.last_block_segments()
+
+
+class TestJudgementBranchOrder(unittest.TestCase):
+    """T31–T34：第 18 项**判定分支顺序**守卫。
+
+    ★ 本组的价值：这条判据钉住的是「**判定顺序**」本身，
+      而非「某个键当前是什么状态」⇒ 不会被配置演进打穿。
+    """
+
+    # ── 构造（每个用例一份独立 fixture，互不串味）──────────────────
+    def _make_fixture(self, register_textual=True):
+        """造 fixture +（可选）在副本的 known_textual 里加登记 + 跑第 18 项。
+
+        返回 (root, rc, 输出, 段清单)。
+        """
+        import shutil
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="vetmed-t31-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        _build_branch_order_fixture(root)
+        # 把真包的 ensure_settings.py 复制进 fixture（它是被测对象）
+        shutil.copy2(ES, root / "scripts" / "ensure_settings.py")
+        if register_textual:
+            es_src = (root / "scripts" / "ensure_settings.py").read_text(encoding="utf-8")
+            es_src = _register_textual_leaf(es_src, FIXTURE_TEXTUAL_LEAF)
+            (root / "scripts" / "ensure_settings.py").write_text(es_src, encoding="utf-8")
+        rc, out, segs = _run_fixture(root)
+        return root, rc, out, segs
+
+    @staticmethod
+    def _textual_count(out: str) -> int:
+        """从体检输出里取「人读型登记 N 项」的数字。"""
+        import re
+        m = re.search(r"人读型登记\s*(\d+)\s*项", out)
+        if not m:
+            raise AssertionError(f"体检输出里找不到「人读型登记 N 项」：\n{out[:800]}")
+        return int(m.group(1))
+
+    # ── T31：核心判据（能红）─────────────────────────────────────
+    def test_T31_textual_registration_wins_over_block_evidence(self):
+        """T31：**人读型登记** ∧ **块级证据** 同时成立 ⇒ 计入 textual，
+        且**不**计入「待人工定性候选」（leaf_unused）。
+
+        这是本次修复的**核心判据**。
+        修复前（块级证据在 `elif` 链前面 ⇒ 短路）本用例会 FAIL：
+          探针键 `probe_block.probe_textual_leaf` 会被计入该段的
+          「待人工定性候选」桶（leaf_unused）⇒ 它既没被判死、也没拿到人读型定性
+          ⇒ **永久悬空**。
+
+        ⚠ **断言口径说明（避免误读）**：
+          该键**仍保留**在所属段的键集合里（`seg["keys"]`）——
+          这是**有意**保留的：段归属是 R3「段内增/删/改名任一 ⇒ 判红」这条
+          **段级增量守卫**的覆盖范围 ⇒ 若把人读型键踢出段集合，
+          以后往该段新增一个人读型键就会**逃过 R3**（守卫被削弱）。
+          本次修复要消掉的是「**待人工定性候选**」这个桶里的假候选，
+          **不是**消掉段归属信息。
+          ⇒ 故判据落在两处：① `leaf_unused` 不含它；② 它被计入 textual 计数。
+        """
+        # ① 同一条 fixture，跑两遍：有登记 / 无登记 ⇒ textual 计数必须**恰好 +1**
+        #    （这直接证明「该键被计入 textual」，而不是靠段清单间接推断）。
+        _, rc_with, out_with, segs_with = self._make_fixture(register_textual=True)
+        _, rc_without, out_without, segs_without = self._make_fixture(register_textual=False)
+
+        self.assertEqual(
+            self._textual_count(out_with), self._textual_count(out_without) + 1,
+            "T31：已登记的人读型键**未被计入 textual 计数**"
+            "——判定分支顺序又倒回去了（块级证据短路了人读型判定）")
+
+        # ② 它**不得**被算作「待人工定性候选」（leaf_unused）
+        seg_key = f"probe.yaml#{FIXTURE_SEG}"
+        self.assertIn(seg_key, segs_with, "T31：fixture 未造出免检区段——判据失效")
+        self.assertEqual(
+            segs_with[seg_key]["leaf_unused"], 1,
+            "T31：已定性的人读型键被计入了「待人工定性候选」桶（leaf_unused）"
+            "⇒ 它会被误列为待人工定性（永久悬空）")
+
+        # ③ 对照：未登记时，同一 fixture 的 leaf_unused 必须是 2
+        #    （证明 ② 里的 1 是**判定顺序带来的差异**，不是 fixture 天然如此）。
+        self.assertEqual(
+            segs_without[seg_key]["leaf_unused"], 2,
+            "T31 对照组：未登记时两键都应是待人工定性候选（leaf_unused=2）——"
+            "fixture 前提失效，T31 的差异断言失去意义")
+
+        # ④ 该键**不得**被判死（它已被登记 ⇒ 没人读是对的）
+        self.assertNotIn(f"{FIXTURE_SEG}.{FIXTURE_TEXTUAL_LEAF}", out_with,
+                         "T31：已登记的人读型键被判死——登记机制失效")
+
+    # ── T32：防过度修正（块级证据成立但未登记 ⇒ 仍进免检区）──────
+    def test_T32_block_only_key_still_enters_examination_zone(self):
+        """T32：块级证据成立但**未**人读型登记 ⇒ **仍**进免检区（防过度修正）。
+
+        防的是「把块级证据整层删掉」这种过度修正：
+        那会让所有块级消费的键都掉进死配置门 ⇒ 假阳性爆炸。
+
+        ⚠ **本判据只针对「未登记的那一个键」**：
+          `leaf_unused` 是**段级**计数（该段里几个键算待人工定性候选），
+          故这里断言「≥1」而非「==1」——否则本判据会被 T31 的修复**连带**打死
+          （判定顺序一改，该段的 leaf_unused 就从 2 变 1）⇒ 一个用例盯两件事
+          ⇒ 变异报告读不出「哪个判据咬住了哪个缺陷」。
+          「恰好那一个未登记键」的精确口径由 T31 的对照组（2 vs 1）承担。
+        """
+        root, rc, out, segs = self._make_fixture()
+
+        seg_key = f"probe.yaml#{FIXTURE_SEG}"
+        self.assertIn(seg_key, segs,
+                      "T32：块级消费段未出现在免检区清单里——"
+                      "块级证据层被误删（过度修正）")
+        self.assertIn(f"{FIXTURE_SEG}.{FIXTURE_PLAIN_LEAF}", segs[seg_key]["keys"],
+                      "T32：块级证据成立但未登记的键未进免检区段——过度修正")
+        # 该键的末段键名在代码中 0 出现 ⇒ 应算「待人工定性候选」
+        self.assertGreaterEqual(
+            segs[seg_key]["leaf_unused"], 1,
+            "T32：未登记的块级键未被计入「待人工定性候选」")
+        # ⚠ 它**不得**被判死（它有块级证据 ⇒ 不是死配置）
+        self.assertNotIn(f"{FIXTURE_SEG}.{FIXTURE_PLAIN_LEAF}", out,
+                         "T32：块级证据成立的键被判死——块级证据层失效")
+    # ── T33：防误伤 dead 判定（未登记 + 无块级证据 ⇒ 仍判死）──────
+    def test_T33_unregistered_key_without_evidence_still_dies(self):
+        """T33：未登记 + 无块级证据 + 无路径证据 ⇒ **仍判死**（防误伤 dead 判定）。
+
+        防的是「为了修分支顺序，把 dead 判定放宽了」：
+        那样任何新配置键都不会被检出 ⇒ 死配置门彻底失效。
+        """
+        root, rc, out, segs = self._make_fixture()
+
+        self.assertIn(f"{FIXTURE_DEAD_LEAF}", out,
+                      "T33：未登记、无任何证据的键未出现在死配置清单里"
+                      "——dead 判定被放宽了（假绿）")
+        self.assertNotEqual(rc, 0,
+                            "T33：存在未登记死键但第 18 项 rc=0——dead 判定被放宽了")
+
+    # ── T34：变异体必须能红（判定顺序改回原样 ⇒ T31 必须 FAIL）────
+    def test_T34_reverse_example_old_branch_order_makes_T31_fail(self):
+        """T34 反例：把判定顺序**改回原样**（elif 短路，textual 在 block 之后）
+        ⇒ T31 的核心判据**必须失效**。
+
+        ★ 这是「判据能红」的证明：若 T31 在错误实现下也通过，
+          那 T31 就是恒真守卫 ⇒ 本组整体假绿。
+        ⚠ 变异**只发生在临时目录的副本里**（不改真包、不改生产 config）。
+
+        ⚠ **本用例自带变异体，完全自足**（不读 git、不依赖真包历史）：
+          变异体 = 真包当前源码 + 「把这个末段键名登记为人读型」
+                   + 「把判定分支替换成**原形态**（块级证据在前 ⇒ elif 短路）」
+          ⇒ ① 不依赖 `git HEAD`（提交后 HEAD 就变了 ⇒ 早版写法会失效——已踩）；
+          ⇒ ② 真包被并行改动时本用例**依然**有效；
+          ⇒ ③ 真包本身处于变异态时（外部做变异测试）本用例**依然**有效。
+        """
+        # ① 变异体 = 真包源码 + 登记 + 原形态判定分支
+        src = ES.read_text(encoding="utf-8")
+        mutant_src = _register_textual_leaf(src, FIXTURE_TEXTUAL_LEAF)
+        mutant_src = _revert_to_old_branch_order(mutant_src)
+
+        # ② 在 fixture 上跑变异体
+        import shutil
+        import tempfile
+        root = Path(tempfile.mkdtemp(prefix="vetmed-t34-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        _build_branch_order_fixture(root)
+        (root / "scripts" / "ensure_settings.py").write_text(mutant_src, encoding="utf-8")
+        rc_mut, out_mut, segs_mut = _run_fixture(root)
+
+        # ③ 对照组：正确实现（有登记）vs 基线（未登记）
+        _, _, out_ok, _ = self._make_fixture(register_textual=True)
+        _, _, out_base, _ = self._make_fixture(register_textual=False)
+
+        seg_key = f"probe.yaml#{FIXTURE_SEG}"
+        self.assertIn(seg_key, segs_mut,
+                      "T34：变异体未造出免检区段——变异未生效，"
+                      "本反例失去意义（不能证明判据能红）")
+
+        # ★ 变异体下：已登记的人读型键**重新**落进「待人工定性候选」桶
+        #   （leaf_unused = 2）⇒ 复现原缺陷 ⇒ T31 的 leaf_unused 断言必然失败。
+        self.assertEqual(
+            segs_mut[seg_key]["leaf_unused"], 2,
+            "T34：变异体（判定顺序改回原样）未把已登记的人读型键打回"
+            "「待人工定性候选」桶——变异未生效，本反例无效")
+
+        # ★ 变异体下：textual 计数**不再**因该登记而 +1
+        #   （对照组 +1，变异组 +0）⇒ T31 的 textual 断言在变异体下必然失败。
+        mut_txt = self._textual_count(out_mut)
+        ok_txt = self._textual_count(out_ok)
+        base_txt = self._textual_count(out_base)
+        self.assertEqual(ok_txt, base_txt + 1,
+                         "T34 对照组：正确实现下该键未计入 textual —— "
+                         "对照组前提失效，本反例无法证明判据能红")
+        self.assertEqual(mut_txt, base_txt,
+                         "T34：变异体下 textual 计数仍 +1 —— "
+                         "变异未生效（人读型判定没被短路掉），本反例无效")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

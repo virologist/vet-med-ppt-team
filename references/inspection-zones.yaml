@@ -10,12 +10,23 @@
 #
 # ── 这是什么 ────────────────────────────────────────────────────────
 # 第 18 项（死配置巡检）的静态判据对「父级被代码整块取走」的键**无法逐键确认**
-# ⇒ 这些键落在**免检区**里（v3.25.0 实测：39 段 / 1514 键，其中 211 键的末段键名
-# 连同名都没撞上）。免检区的键**不是缺陷**——它们按段被消费，只是静态判据看不到。
+# ⇒ 这些键落在**免检区**里（当前：39 段 / 1514 键，其中 145 键的末段键名
+# 连同名都没撞上 ⇒ 属「待人工定性候选」）。免检区的键**不是缺陷**——
+# 它们按段被消费，只是静态判据看不到。
 # 本登记表把「免检区」从**一个总数**变成**可行动清单**：
 #   · `consumer`       —— 这段由谁消费（脚本 / 会话层 / 主理人）
 #   · `disposition`    —— 这段里**新增键**该怎么处置
 #   · `keys_sha256`    —— 段内叶子路径集合的指纹（**集合相等**语义）
+#
+# ⚠ **`leaf_unused` 字段的口径**（本次修复后已变，看清楚再读）：
+#   `leaf_unused` = 该段里「**末段键名在代码中 0 出现**」的键数
+#   ⇒ 即「**待人工定性候选**」的个数（不是段的总键数）。
+#   ⚠ **人读型登记优先于块级证据**（判定顺序修复后）：
+#     「已登记为人读型」**且**「所在段被整块读取」的键 ⇒ 计 `textual`，
+#     **不**计入 `leaf_unused`（人读型 ≠ 待定性候选）⇒ 但**仍保留**在
+#     本段的 `keys_sha256` 覆盖范围内（段级增量守卫 R3 不被削弱）。
+#   ⇒ 因此本次修复让 `leaf_unused` 合计从 211 降到 145（**66 键**是
+#     「早被登记定性、却被判定顺序短路成假候选」的那一批）。
 #
 # ── 守卫（`scripts/test_dead_config_disposition.py::TestInspectionZoneRegistry`）──
 #   R1  文件存在且含全部段（缺即 FAIL——它是必交付物）
@@ -52,7 +63,7 @@ segments:
     prefix: "channels"
     key_count: 83
     keys_sha256: "0b2fdbaa3ebf616bbbf060acd5778339cf5bfcfc"
-    leaf_unused: 11
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "MCP 能力通道编排（id/kind/layer/endpoint_ref 等）。probe_channels.py 整块遍历通道清单。"
@@ -70,7 +81,7 @@ segments:
     prefix: "three_source_check"
     key_count: 71
     keys_sha256: "88f3e8fe4d3a439972cd7481232dec63d93e0fc0"
-    leaf_unused: 2
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须接线"
     note: "三源核验阈值与来源分档（PubMed/书籍/法规）。运行时由 harness budget check 读取并与 yaml 对账（第 21 项）。"
@@ -88,7 +99,7 @@ segments:
     prefix: "members"
     key_count: 39
     keys_sha256: "b81af728d2e4205cebffb8b8acdc45182bfc5679"
-    leaf_unused: 24
+    leaf_unused: 19
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "成员注册表（职责/白名单/降级通道/spawn 策略）。整块被 preflight 与装配器消费；白名单本身**无代码强制力**（平台限制）。"
@@ -124,7 +135,7 @@ segments:
     prefix: "ima"
     key_count: 35
     keys_sha256: "3eb52ff4ab8b83140c597503827ff6e2aec5a188"
-    leaf_unused: 10
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "Ima API 契约（工具名/入参/返回形态）。消费方是会话层（成员按契约调用）。"
@@ -142,7 +153,7 @@ segments:
     prefix: "domains"
     key_count: 28
     keys_sha256: "6fc8a70e625b173ff8408e1f86e2140c81a5c4e2"
-    leaf_unused: 20
+    leaf_unused: 4
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。"
@@ -169,7 +180,7 @@ segments:
     prefix: "observability"
     key_count: 14
     keys_sha256: "a5448b814233404aac86b87099c2882e7e0c2c47"
-    leaf_unused: 1
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "观测/追踪配置（trace 文件、状态上限）。"
@@ -214,7 +225,7 @@ segments:
     prefix: "collapse"
     key_count: 9
     keys_sha256: "98321a6e91065daf5308ff34d6f8f25640a62aeb"
-    leaf_unused: 1
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "坍缩契约（理由填写方/确认态等）。"
@@ -259,7 +270,7 @@ segments:
     prefix: "theme"
     key_count: 7
     keys_sha256: "d045a3777624b5ceb0c034f320db0ff357734fc8"
-    leaf_unused: 7
+    leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
     note: "主题色**令牌槽位**定义（值不在此定义）。消费方是会话层与工作区 theme.yaml。"
@@ -304,7 +315,7 @@ segments:
     prefix: "terminology"
     key_count: 4
     keys_sha256: "046227956794784c6abee7cfd7f2f2c3561dddf6"
-    leaf_unused: 3
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "术语标注规则（形态/格式）。消费方是会话层（成员据此标注术语）。"
@@ -322,7 +333,7 @@ segments:
     prefix: "density"
     key_count: 4
     keys_sha256: "77ec4eda4886b8e584f2f71a5984a03fd94c9601"
-    leaf_unused: 4
+    leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
     note: "降密策略与执行顺序。执行顺序是**给成员的指令**，不由脚本判定。"
@@ -340,7 +351,7 @@ segments:
     prefix: "consistency"
     key_count: 3
     keys_sha256: "494ef9e48cd249a3fbd3300269b56c27fe732e8f"
-    leaf_unused: 1
+    leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
     note: "语言一致性策略。消费方是会话层。"
@@ -358,7 +369,7 @@ segments:
     prefix: "fallback"
     key_count: 2
     keys_sha256: "6fd251b3d45af93fbd6deb52107f5cce7635c826"
-    leaf_unused: 2
+    leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
     note: "降级通道（spawn 失败/不可用时的处置）。与 domain-profiles.yaml#fallback **同名但不同语义**（ADR-6）。"
@@ -376,7 +387,7 @@ segments:
     prefix: "gate"
     key_count: 2
     keys_sha256: "64906f3d5de4814004a7802c7d0aca45bfd26cb6"
-    leaf_unused: 2
+    leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
     note: "门禁档位说明（写回/交付）。消费方是会话层。"
@@ -385,7 +396,7 @@ segments:
     prefix: "delta_gate"
     key_count: 1
     keys_sha256: "b35ee5584cceba5e5b926966fcde4bd978b26b27"
-    leaf_unused: 1
+    leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
     note: "Delta 门禁判据。多数键已接线；`insert_font_at_creation` 属**结构性不可判定**（写入时行为，成品无痕迹）。"

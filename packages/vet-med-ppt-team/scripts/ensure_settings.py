@@ -1788,6 +1788,13 @@ def check_dead_config_keys(expert_dir):
     dead, alive, textual = [], 0, 0
     # v3.23.0 F1：块级证据计数 + 弱证据（仅末段同名撞车）清单
     block, weak, weak_reg, weak_list = 0, 0, 0, []
+    # ── 「块级证据 ∧ 人读型登记」**同时成立**的键数（两个计数器的重叠部分）──
+    #   为什么要单独计数（否则输出会被误读）：
+    #     这类键**既**计入 `alive`/`block`（父级被整块消费 ⇒ 有代码读取者）
+    #     **又**计入 `textual`（已被人读型登记定性 ⇒ 无需逐键复核）
+    #     ⇒ `alive + textual + weak_reg` **不是**叶子键总数（存在重叠）。
+    #   本计数器让输出**自证**这一点（避免读的人把重叠当成漏算）。
+    block_textual = 0
     # v3.25.0：**免检区（块级消费段）清单**——按 `<config 文件名>#<段前缀>` 聚合。
     # ⚠ 段归属直接复用 `_b_block` 的**同一次**短路循环结果（不另算一遍）⇒
     #   新输出与既有判定**口径必然一致**，不可能出现「两套算法算出两个答案」。
@@ -1881,7 +1888,7 @@ def check_dead_config_keys(expert_dir):
         在别的分支下也可能出现，只查末段会误报；反过来，只查整条路径会漏报
         「代码读了同名字段但走的是另一条分支」，故**两段都查，任一命中即算有读取者**。
         """
-        nonlocal alive, textual, block, weak, weak_reg
+        nonlocal alive, textual, block, weak, weak_reg, block_textual
         if isinstance(node, dict):
             for k, v in node.items():
                 walk(v, f"{path}.{k}" if path else str(k), fname)
@@ -1926,23 +1933,66 @@ def check_dead_config_keys(expert_dir):
                     _b_block = True
                     _b_prefix = ".".join(_segs[:_i + 1])   # v3.25.0：记下触发前缀
                     break
-            if (n_full and n_full in norm_reads) or _a_path or _b_block:
+            # ── 判定顺序（**人读型登记优先于块级证据**）────────────────────
+            # 病灶（实测复现，可证伪）：
+            #   原实现把「块级证据」与「人读型登记」放在**同一条 elif 链**上，
+            #   而块级证据在前 ⇒ `elif` **短路** ⇒ `_is_textual()` **根本没机会执行**
+            #   ⇒ 已登记为「人读型」的键，只要其所在段被代码**整块读取**，
+            #     就会被误归入「免检区（块级消费段）」的**待人工定性候选**桶
+            #     ⇒ **既没被判死、也没拿到人读型定性 ⇒ 永久悬空**。
+            #   实测规模（修复前，211 键待人工定性候选里）：**66 键**属此型
+            #   （确定性假候选 —— 它们早已被人读型登记定性过，只是被短路吃掉了）。
+            #
+            # 修法：把「人读型登记」提到块级证据**之前**。
+            #   语义依据：块级证据（父级被整块消费）与「该键是人读型」**可以同时成立**；
+            #   两者同时成立时，人读型**定性更明确、更可行动** ⇒ 归 textual。
+            #
+            # ⚠ **同时成立时的三条处置（本实现的取舍，逐条列明）**：
+            #   ① **归 textual**（计入「人读型登记」计数）——定性更明确、更可行动；
+            #   ② **保留段归属信息**——该键**仍计入**所属段的键集合
+            #      （⇒ 登记表的 `keys_sha256` 仍覆盖整段 ⇒ R3「段内增/删/改名任一
+            #        ⇒ 判红」这条**段级增量守卫**不被削弱；新的人读型键落进已登记段
+            #        仍会被抓到，不会静默逃逸）；
+            #   ③ **不计入 `leaf_unused`**——「待人工定性候选」桶里不放已定性的键
+            #      （人读型 ≠ 待定性候选）⇒ 这正是本次修复要消掉的那 66 个假候选。
+            #
+            # ⚠ **alive 的语义不变**：路径级证据命中的键仍然算 alive；
+            #   `alive` / `block` 两个计数器的**取值与修复前逐字一致**
+            #   （块级证据独有的键仍同时计入 alive 与 block；与块级证据同时成立的人读型键
+            #     也仍计入 alive 与 block，只是不再计入 leaf_unused）⇒
+            #   体检输出的「代码读取 N 项〔其中块级消费 M 项〕」口径不变。
+            # ⚠ **dead 的判定不放宽**：未登记、未接线、无块级证据的键仍判死。
+            _full_hit = bool(n_full and n_full in norm_reads)
+            if _full_hit or _a_path:
                 alive += 1
-                if _b_block and not _a_path and not (n_full and n_full in norm_reads):
+            elif _is_textual(fname, full):
+                textual += 1          # 人读型登记在案，无代码读取者是合理的
+                if _b_block:
+                    # 块级证据与人读型**同时成立** ⇒ 保留段归属，但不算「待人工定性候选」。
+                    alive += 1
                     block += 1
-                    # v3.25.0：把该键归入「免检区（块级消费段）」——
-                    # 段键 = `<config 文件名>#<触发前缀>`（ADR-6：必须带文件名前缀，
-                    # 因为同名段跨文件是不同的段，合并登记会让处置规则无法落地）。
+                    block_textual += 1
                     _seg_key = f"{fname}#{_b_prefix}"
                     _seg = block_segments.setdefault(
                         _seg_key,
                         {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
                     _seg["keys"].append(full)
-                    # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
-                    # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
-                    if not (n_leaf and n_leaf in norm_reads):
-                        _seg["leaf_unused"] += 1
-            elif seg_hit or _is_textual(fname, full) or _is_guard_consumed(fname, full):
+            elif _b_block:
+                alive += 1
+                block += 1
+                # v3.25.0：把该键归入「免检区（块级消费段）」——
+                # 段键 = `<config 文件名>#<触发前缀>`（ADR-6：必须带文件名前缀，
+                # 因为同名段跨文件是不同的段，合并登记会让处置规则无法落地）。
+                _seg_key = f"{fname}#{_b_prefix}"
+                _seg = block_segments.setdefault(
+                    _seg_key,
+                    {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                _seg["keys"].append(full)
+                # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
+                # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
+                if not (n_leaf and n_leaf in norm_reads):
+                    _seg["leaf_unused"] += 1
+            elif seg_hit or _is_guard_consumed(fname, full):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
             elif n_leaf and n_leaf in norm_reads:
                 # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
@@ -2039,6 +2089,10 @@ def check_dead_config_keys(expert_dir):
               f"（代码读取 {alive} 项〔其中块级消费 {block} 项〕 · 人读型登记 {textual} 项 · "
               f"弱证据登记 {weak_reg} 项 · "
               f"另有 {len(dead) - len(uniq)} 条为同键多值重复，已按唯一键计）")
+        if block_textual:
+            print(f"     ⚠ 计数说明：其中 **{block_textual} 项**是「块级消费 ∧ 人读型登记」"
+                  f"**同时成立**的键（既计入『代码读取/块级消费』，也计入『人读型登记』）"
+                  f"⇒ 上列各项**不是**互斥分区，直接相加会重复计。")
         # v3.19.3（L3）：**全量输出**——原实现截断为前 12 条，其余条目**永远不可见**，
         #   ⇒ 人工无法复核 ⇒ 这本身是工具缺陷（体检项形同虚设）。
         #   默认打印全部；如需精简输出可设 VET_DEAD_CONFIG_LIMIT=<n> 截断（0 = 不截断）。
@@ -2085,6 +2139,10 @@ def check_dead_config_keys(expert_dir):
         print(f"[18/{N}] ✓ 无死配置（{len(cfg_files)} 个 config 文件："
               f"代码读取 {alive} 项〔其中块级消费 {block} 项〕 · 人读型登记 {textual} 项 · "
               f"弱证据登记 {weak_reg} 项）")
+        if block_textual:
+            print(f"     ⚠ 计数说明：其中 **{block_textual} 项**是「块级消费 ∧ 人读型登记」"
+                  f"**同时成立**的键（既计入『代码读取/块级消费』，也计入『人读型登记』）"
+                  f"⇒ 上列各项**不是**互斥分区，直接相加会重复计。")
     # ── v3.25.0：**免检区（块级消费段）清单**输出 ──────────────────────
     # 为什么要输出（可证伪的动机）：
     #   第 18 项的静态判据对「父级被代码整块取走」的键**无法逐键确认**
