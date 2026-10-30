@@ -1653,5 +1653,299 @@ class TestSegmentDigestElementIdentity(unittest.TestCase):
                          "缺省口径必须是旧口径，否则旧登记表会被误判成脱节")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# T40–T43：AST 读取集**第 ④ 种形态**（元组/列表/集合字面量里的字符串键）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 病灶（已实测复现，可证伪）：
+#   `_collect_ast_reads()` 原来只收**三种**形态：
+#     ① `x.get("key")`  ② `x["key"]`  ③ 字典字面量的字符串键
+#   ⇒ **看不见元组/列表/集合字面量里的字符串键**。
+#   而生产装配器 `assemble_domain_prompt.py` 真实这么写：
+#     for k in ("layer_notes", "data_requirements", "case_forms"): v = _ap.get(k)
+#     for k, label in (("default_strategy", "优先级"), ("conflict_rule", "冲突处置"), …):
+#   ⇒ 这 6 个键**确实被真实渲染进提示词**，但因键名藏在**序列字面量**里，
+#     AST 读取集收集不到 ⇒ 被判「末段键名 0 出现」⇒ **误列「待人工定性候选」**
+#     （假阳性 ⇒ 人工去白判）。
+#   实测规模：`domain-profiles.yaml#domains` 段内 **17 个键路径**属此型。
+#
+# ★ **本组判据全部自造隔离 fixture**（临时目录 + 自己的 config + 自己的 script）：
+#   不依赖仓库现有 config 的具体值 ⇒ 配置演进不会让判据失效或假绿。
+#   ⚠ fixture 里的 script **不**以 `test_` 开头 ⇒ 其读取点被 AST 采集器计入
+#     （否则 fixture 造不出证据，判据失去意义）。
+#
+# ⚠ **本组同时承担「防假阳性扩散」的职责**：第 ④ 种形态若收得太宽，
+#   会把「标签文案」「命令行实参」「元组里的普通词」当成键名
+#   ⇒ **同名键被误判为「已接线」** ⇒ 制造**假阴性**（死配置门假绿）——
+#   那比假阳性更危险（假阳性让人白判，假阴性让缺陷永久静默）。
+#   ⇒ T41/T42/T43 三条**反例**逐条钉住三道排除门。
+
+
+#: fixture 里被造出来的**真·键名**（应出现在 AST 读取集里）
+FIXTURE_SEQ_KEYS = (
+    "probe_tuple_key",       # 元组字面量里的键名
+    "probe_list_key",        # 列表字面量里的键名
+    "probe_set_key",         # 集合字面量里的键名
+)
+
+#: fixture 里被造出来的**不该**进读取集的字符串（防假阳性扩散）
+FIXTURE_EXCLUDED_STRINGS = (
+    "优先级",          # 标签文案（含中文）
+    "冲突处置",        # 标签文案（含中文）
+    "probe_cmd_arg",   # 函数调用实参里的字符串（蛇形 ⇒ 只靠位置门挡）
+    "probe_dict_value",  # dict 的 value 元组里的字符串（蛇形 ⇒ 只靠排除门挡）
+)
+
+
+def _build_seq_reads_fixture(root: Path):
+    """造一个「序列字面量里的键名」的**最小隔离 fixture**。
+
+    目录形态：
+        <root>/config/probe.yaml    —— 探针段（一个被整块取走的段）+ 段外死键
+        <root>/scripts/probe_reader.py —— ① 整块取走探针段（⇒ 块级证据）
+                                       ② 用**元组/列表/集合**按名读三个键
+
+    ⚠ probe_reader.py **不**以 `test_` 开头 ⇒ 其读取点被 AST 采集器计入。
+    """
+    import yaml
+
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+
+    cfg = {
+        "probe_seq_block": {
+            FIXTURE_SEQ_KEYS[0]: "元组字面量里的键",
+            FIXTURE_SEQ_KEYS[1]: "列表字面量里的键",
+            FIXTURE_SEQ_KEYS[2]: "集合字面量里的键",
+        },
+    }
+    (root / "config" / "probe.yaml").write_text(
+        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    # ① 整块取走探针段 ⇒ 段内键都有**块级证据**（⇒ 落进免检区段）
+    # ② 三个真键名分别用**元组 / 列表 / 集合**字面量迭代取出
+    # ③ 三条**排除规则**的反例材料一并放进同一个脚本
+    #
+    # ⚠ **每条反例只被「一道门」挡住**（这样判据才有鉴别力 ——
+    #   若一条反例被多道门同时挡住，改坏其中一道时判据仍绿 ⇒ 无鉴别力）：
+    #   · 反例① 的**纯文案循环**（`for k in ("优先级", …)`）
+    #     ⇒ 只有**形状门**能挡（位置门 ✓、数据流门 ✓）；
+    #   · 反例① 的**配对元组**（`for k, label in (("k","优先级"), …)`）
+    #     ⇒ 只有**位置-绑定对齐门**能挡（`label` 未被当键用 ⇒ 其位置不收）；
+    #   · 反例②（调用实参）/ 反例③（dict 的 value）
+    #     ⇒ 靠**排除门**挡（位置门本来就挡得住它们，但排除门是**第二道防线**：
+    #       一旦有人放宽位置门（如把「赋值右侧」也算进来），这两条必须仍然挡住）。
+    (root / "scripts" / "probe_reader.py").write_text(
+        'def _read(cfg):\n'
+        '    block = cfg["probe_seq_block"]\n'
+        # 正例 ①：元组字面量
+        '    for k in ("probe_tuple_key",):\n'
+        '        block.get(k)\n'
+        # 正例 ②：列表字面量
+        '    for k in ["probe_list_key"]:\n'
+        '        block.get(k)\n'
+        # 正例 ③：集合字面量
+        '    for k in {"probe_set_key"}:\n'
+        '        block.get(k)\n'
+        # 反例 ①-a：纯标签文案循环（**只有形状门**能挡）
+        '    for k in ("优先级", "冲突处置"):\n'
+        '        block.get(k)\n'
+        # 反例 ①-b：配对元组（`label` 位未被当键用 ⇒ 位置-绑定对齐门挡）
+        '    for k, label in (("probe_tuple_key", "优先级"),\n'
+        '                     ("probe_list_key", "冲突处置")):\n'
+        '        block.get(k)\n'
+        # 反例 ②：函数调用实参里的字符串（排除门 = 第二道防线）
+        '    _run(["probe_cmd_arg"])\n'
+        '    _run(("probe_cmd_arg",))\n'
+        # 反例 ③：dict 的 value 元组里的字符串（排除门 = 第二道防线）
+        '    _map = {"a": ("probe_dict_value", "b")}\n'
+        '    return block\n'
+        '\n'
+        '\n'
+        'def _run(argv):\n'
+        '    return argv\n',
+        encoding="utf-8")
+    return root
+
+
+class TestSeqLiteralKeyReads(unittest.TestCase):
+    """T40–T43：AST 读取集第 ④ 种形态（元组/列表/集合字面量里的字符串键）。
+
+    ★ 判据落点：`_collect_ast_reads()` 的**返回值**（读取集本身）——
+      而**不是**第 18 项的最终计数。
+      理由：读取集是**被测单元**（本形态的判据就在这里）；
+      若只断言最终计数，会把「读取集收对了」与「下游分类碰巧对」混在一起
+      ⇒ 判据鉴别力下降（改坏读取集时可能因下游巧合而假绿）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        import tempfile
+
+        cls.root = Path(tempfile.mkdtemp(prefix="vetmed-t40-"))
+        cls._cleanup = lambda: shutil.rmtree(cls.root, ignore_errors=True)
+        _build_seq_reads_fixture(cls.root)
+        shutil.copy2(ES, cls.root / "scripts" / "ensure_settings.py")
+        cls.es = _load_es_from(cls.root, "es_t40_fixture")
+        cls.reads = cls.es._collect_ast_reads(str(cls.root / "scripts"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._cleanup()
+
+    # ── T40：正例——元组/列表/集合字面量里的键名必须进读取集（能红）────
+    def test_T40_tuple_list_set_literal_keys_are_collected(self):
+        """T40：元组/列表/集合字面量里的**键名**必须出现在 AST 读取集里。
+
+        这是本组的**核心判据**：修复前（第 ④ 种形态不存在）本用例必 FAIL。
+        ⚠ 用**隔离 fixture**（自己的 config + 自己的 script）
+          ⇒ 不依赖「当前数据恰好如此」。
+        """
+        for key in FIXTURE_SEQ_KEYS:
+            self.assertTrue(
+                key in self.reads,
+                f"T40：{key!r} 没进 AST 读取集 ⇒ 第 ④ 种形态（序列字面量里的"
+                f"字符串键）**没实现**或被某道排除门误伤——"
+                f"键名藏在序列字面量里的键会被误列为「待人工定性候选」（假阳性）")
+
+    # ── T41：反例①——标签文案（含中文）不得进读取集 ─────────────────
+    def test_T41_label_text_in_tuple_is_not_collected(self):
+        """T41：元组里的**标签文案**（含中文）**不得**进读取集。
+
+        判据依据：标签文案（如 `("default_strategy", "优先级")` 的第 2 位）
+        是**给人看的文案**，不是键名 ⇒ 收它 ⇒ 同名键被误判为「已接线」
+        ⇒ 制造**假阴性**（死配置门假绿）。
+        ⚠ 本用例**同时**覆盖两道门：
+          · 纯文案循环（`for k in ("优先级", …)`）⇒ **形状门**挡；
+          · 配对元组（`for k, label in (("k","优先级"), …)`）
+            ⇒ **位置-绑定对齐门**挡（`label` 那个位置未被当键用）。
+        """
+        for label in ("优先级", "冲突处置"):
+            self.assertNotIn(
+                label, self.reads,
+                f"T41：标签文案 {label!r} 进了 AST 读取集 ⇒ "
+                f"标签文案被当成键名 ⇒ 同名配置键会被误判为「已接线」"
+                f"（假阴性：死配置门假绿）")
+
+    # ── T42：反例②——函数调用实参里的字符串不得进读取集 ──────────────
+    def test_T42_call_argument_strings_are_not_collected(self):
+        """T42：**函数调用实参**里的字符串不得进读取集。
+
+        判据依据：`subprocess.run(["git", "status"])` 里的 `"git"` 是
+        **命令行参数**，不是配置键名 ⇒ 收它 ⇒ 名为 `git` 的配置键
+        会被误判为「已接线」。
+        """
+        for arg in ("probe_cmd_arg",):
+            self.assertNotIn(
+                arg, self.reads,
+                f"T42：调用实参 {arg!r} 进了 AST 读取集 ⇒ "
+                f"命令行参数被当成键名 ⇒ 同名配置键会被误判为「已接线」"
+                f"（假阴性：死配置门假绿）")
+
+    # ── T43：反例③——dict 的 value 元组里的字符串不得进读取集 ────────
+    def test_T43_dict_value_tuple_strings_are_not_collected(self):
+        """T43：**dict 的 value** 里的元组字符串**不得**进读取集。
+
+        判据依据：`{"a": ("b", "c")}` 里的 `"b"` 是**值**不是键
+        ⇒ 收它 ⇒ 名为 `b` 的配置键会被误判为「已接线」。
+        """
+        for v in ("probe_dict_value",):
+            self.assertNotIn(
+                v, self.reads,
+                f"T43：dict 的 value 里的 {v!r} 进了 AST 读取集 ⇒ "
+                f"字典值被当成键名 ⇒ 同名配置键会被误判为「已接线」"
+                f"（假阴性：死配置门假绿）")
+
+    # ── T43b：反例④——**赋值右侧**的序列不得进读取集（回落表防假绿）──
+    def test_T43b_assignment_rhs_sequence_is_not_collected(self):
+        """T43b：**赋值右侧**的序列字面量里的字符串**不得**进读取集。
+
+        判据依据（本包既有纪律，见 `scripts/loop_contract.py` 与
+        `scripts/insight_carrier.py` 的文件头注释）：
+          「回落表用**元组列表**而非字典字面体：若本表写成字典，它里面这些键名
+          会被第 18 项 AST 当成『有代码读取者』，于是**回落表自己把死配置刷成
+          绿色**。」
+
+        ⇒ **第 ④ 种形态不得把这张回落表收进来**，否则那两处的「刻意规避」
+          会被**反向撤销**（回落表又变成读取者 ⇒ 死配置门假绿）。
+        ⚠ 本判据**直接钉住**这条既有纪律 ⇒ 若将来有人放宽位置门，
+          本用例会先红。
+        """
+        import shutil
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="vetmed-t43b-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "scripts").mkdir(parents=True, exist_ok=True)
+        # 被测对象（`ensure_settings.py`）本身也放进去
+        shutil.copy2(ES, root / "scripts" / "ensure_settings.py")
+        (root / "scripts" / "probe_fallback.py").write_text(
+            '_FALLBACK = [\n'
+            '    ("probe_fallback_key", 30),\n'
+            ']\n'
+            '_FB = dict(_FALLBACK)\n',
+            encoding="utf-8")
+        es = _load_es_from(root, "es_t43b_fixture")
+        reads = es._collect_ast_reads(str(root / "scripts"))
+        self.assertNotIn(
+            "probe_fallback_key", reads,
+            "T43b：**赋值右侧**的回落表进了 AST 读取集 ⇒ "
+            "回落表被当成读取者 ⇒ 回落表自己把死配置刷绿（假阴性）——"
+            "这正是本包 `loop_contract.py` / `insight_carrier.py` "
+            "刻意用元组列表规避的行为被**反向撤销**了")
+
+    # ── T43c：变异证明——把第 ④ 种形态摘掉 ⇒ T40 必须 FAIL（能红）────
+    def test_T43c_reverse_example_removing_form4_makes_T40_fail(self):
+        """T43c：把第 ④ 种形态**摘掉**（= 回到修复前的三种形态）
+        ⇒ T40 的核心断言**必须 FAIL** ⇒ 证明 T40 不是恒真判据。
+
+        ⚠ 变异体在**隔离副本**上构造（**绝不**改仓库真包）。
+        ⚠ 变异体**必须真的改坏东西** ⇒ 若构造失败（锚点匹配不上）
+          直接抛 AssertionError（而不是静默变成「什么也没改」的假 mutant
+          ⇒ 那样变异证明会恒真）。
+        """
+        import shutil
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="vetmed-t43c-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        _build_seq_reads_fixture(root)
+        shutil.copy2(ES, root / "scripts" / "ensure_settings.py")
+        es_path = root / "scripts" / "ensure_settings.py"
+        src = es_path.read_text(encoding="utf-8")
+
+        # 变异体构造：**摘掉第 ④ 种形态的调用行**（连同其上一行注释）
+        #   = 等价于「回到修复前的三种形态」。
+        # ⚠ 用**逐行**匹配（而非整块字符串）⇒ 注释文案的措辞变化不会让
+        #   判据变成「锚点匹配不上」的假失败；同时**调用行必须唯一**
+        #   （不唯一 ⇒ 变异体不可靠 ⇒ 直接抛错）。
+        lines = src.split("\n")
+        hits = [i for i, l in enumerate(lines)
+                if l.strip() == "_collect_seq_reads(tree, fn, add)"]
+        if len(hits) != 1:
+            raise AssertionError(
+                f"变异体锚点不唯一（命中 {len(hits)} 处，期望 1 处）——"
+                f"ensure_settings.py 的第 ④ 种形态结构变了？")
+        i = hits[0]
+        if not lines[i - 1].lstrip().startswith("#"):
+            raise AssertionError("变异体锚点异常：调用行上一行不是注释")
+        del lines[i - 1:i + 1]
+        mutated = "\n".join(lines)
+        if mutated == src:
+            raise AssertionError("变异体构造失败：源码没变 ⇒ 变异证明会恒真")
+        es_path.write_text(mutated, encoding="utf-8")
+
+        # 变异体上：T40 的核心断言必须**不成立**（三个真键名不再出现）
+        es_mut = _load_es_from(root, "es_t43c_mutant")
+        reads_mut = es_mut._collect_ast_reads(str(root / "scripts"))
+        still_there = [k for k in FIXTURE_SEQ_KEYS if k in reads_mut]
+        self.assertEqual(
+            [], still_there,
+            f"T43c：摘掉第 ④ 种形态后，{still_there} 仍在读取集里 ⇒ "
+            f"变异体**没改坏东西**（第 ④ 种形态可能另有实现来源？）"
+            f"⇒ 变异证明恒真 ⇒ T40 也就恒真（无鉴别力）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

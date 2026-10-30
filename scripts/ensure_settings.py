@@ -1419,13 +1419,59 @@ def _collect_ast_reads(scripts_dir):
     把 `cfg.get("three_source_check")` 改成 `{}`（读取已破坏），
     因该键名在别处仍出现，文本搜索判定不变，缺陷被完全掩盖。
 
-    收集三种形态：
+    收集四种形态：
       ① `x.get("key")`          —— 字典 .get 取值
       ② `x["key"]`              —— 下标取值
       ③ **字典字面量的字符串键** —— 如 `cmd_budget` 里
          `threshold_map = {"stage_minutes": ("max_stage_minutes", ...)}`
          这类键**是真被消费的**（`b.get(key)` 按 key 名查），
          但不出现在任何 `.get("…")` 字面量里，只按 .get 判会漏（实测 `max_stage_minutes` 即如此）。
+      ④ **元组/列表/集合字面量里的字符串键** —— 如
+         `for k in ("layer_notes", "data_requirements", "case_forms"): v = _ap.get(k)`
+         键名藏在**序列字面量**里 ⇒ 前三种形态全看不见 ⇒ 真实被装配器渲染的键
+         被误判为「末段键名 0 出现」⇒ **误列「待人工定性候选」**（假阳性）。
+
+    ── 第 ④ 种形态的**准入判据**（四道门，逐条可证伪）────────────────────
+      判据设计目标（双向）：
+        · **收真阳性**：键名藏在序列字面量里、且该键**真被代码按名读取**的；
+        · **挡假阳性扩散**：不能把「标签文案」「命令行实参」「元组里的普通词」
+          当成键名——那会让**同名键**被误判为「已接线」⇒ 制造**假阴性**
+          （死配置门假绿），比假阳性更危险。
+
+      【门 A · 形状门】：字符串必须匹配 `^[a-z][a-z0-9_]*$`（小写蛇形）。
+        判据依据：**配置键名**在本仓一律是小写蛇形（`layer_notes` /
+        `default_strategy` / `traceability_rule`…）；
+        而**标签文案**（`"优先级"` / `"冲突处置"`）含中文、
+        **枚举字面量**（`"P0"` / `"json"` / `"legacy"`）含大写 ⇒ 被排除。
+        ⚠ 这一条**不能单独成立**：纯小写蛇形的普通词（如 `"status"` / `"values"`）
+        仍会被误收 ⇒ 必须叠加门 B/C/D。
+
+      【门 B · 位置门】：只收**迭代绑定位置**上的字符串常量 ——
+        即 `for <目标> in (<序列字面量>)` 与**推导式**的 `for` 可迭代对象。
+        判据依据：本仓「键名藏在序列里」的真实写法**全部**是这一形态
+        （实测 `assemble_domain_prompt.py:571` / `:601` 两处）。
+        ⚠ **不收「赋值右侧」**：`x = ("a","b")` 里的字符串**不是读取点**，
+          而是**值**（回落表/白名单/枚举）——收它会把**回落表**当成读取者
+          ⇒ 制造假绿。**这一条是本形态与第 ③ 种形态的关键区别**：
+          第 ③ 种收「dict 的键」（`{"stage_minutes": …}` 是查表用的键），
+          本形态只收「被 `for` 绑定的键名位置」。
+          ⇒ 本包 `loop_contract.py` / `insight_carrier.py` **刻意**用元组列表
+            写回落表（见那两处文件头注释：为了**不被**第 18 项当成读取者）
+            —— 本形态**不得**把这张回落表收进来，否则那两处的「刻意规避」
+            会被反向撤销（回落表自己把死配置刷绿）。
+
+      【门 C · 键位数据流门】：该绑定变量在循环体（或推导式的结果表达式）里
+        **被当作键使用**（`x.get(v)` / `x[v]`）才收。
+        判据依据：只有「拿这个名字去查字典」才是**读取**；
+        「拿它当枚举值遍历」（`for s in ("json","legacy")`）不是读取。
+        ⇒ 这道门把 `versionctl.py:1499`（`for src in ("json","legacy")`，
+          `src` 只是来源标签）挡在外面。
+
+      【门 D · 排除门（两处子树）**：
+        · **dict 的 value 子树** —— `{"a": ("b","c")}` 里的 `"b"` 是**值**不是键；
+        · **call 的实参子树** —— `subprocess.run(["git","status"])` 里的 `"git"`
+          是**命令行参数**不是键。
+        判据依据：这两处都是「字符串出现在序列里，但不是查表用的键名」。
 
     返回 {key: [位置…]}。
     """
@@ -1435,6 +1481,120 @@ def _collect_ast_reads(scripts_dir):
     def add(k, where):
         if isinstance(k, str) and k:
             reads.setdefault(k, []).append(where)
+
+    # ── 第 ④ 种形态的形状门：只收「小写蛇形」的字符串常量 ──────────────
+    #   依据见上方「门 A」：配置键名在本仓一律小写蛇形；
+    #   标签文案（含中文）/ 枚举字面量（含大写）据此排除。
+    _KEYNAME_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+    def _collect_seq_reads(tree, fn, add):
+        """第 ④ 种形态：元组/列表/集合字面量里的字符串键（见上方四道门）。
+
+        ⚠ **只收「迭代绑定位置」且「被当作键使用」的位置** ⇒
+          回落表（`x = [("k", v), …]`）、命令行实参、标签文案一律不收。
+        """
+        # ── 门 D：构造「排除子树」集合（dict 的 value / call 的实参）──
+        excluded = set()
+
+        def _mark_subtree(node):
+            for sub in ast.walk(node):
+                excluded.add(id(sub))
+
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Dict):
+                for v in n.values:
+                    if v is not None:
+                        _mark_subtree(v)
+            elif isinstance(n, ast.Call):
+                for a in list(n.args) + [k.value for k in n.keywords]:
+                    _mark_subtree(a)
+
+        # ── 门 C 的探针：变量是否「被当作键使用」（`x.get(v)` / `x[v]`）──
+        def _key_used_vars(nodes, names):
+            used = set()
+            for node in nodes:
+                for x in ast.walk(node):
+                    if (isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)
+                            and x.func.attr == "get" and x.args
+                            and isinstance(x.args[0], ast.Name)
+                            and x.args[0].id in names):
+                        used.add(x.args[0].id)
+                    elif (isinstance(x, ast.Subscript)
+                          and isinstance(x.slice, ast.Name)
+                          and x.slice.id in names):
+                        used.add(x.slice.id)
+            return used
+
+        def _target_vars(target):
+            """解包目标的变量名集合（支持单名 / 元组 / 嵌套元组）。"""
+            out = []
+            if isinstance(target, ast.Name):
+                out.append(target.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for e in target.elts:
+                    out.extend(_target_vars(e))
+            return out
+
+        def _harvest(container, where, allowed):
+            """收**一层**序列里的字符串常量，**只收绑定给「被当键用的变量」的位置**。
+
+            `allowed` = {位置: 变量名}（该层的绑定映射；缺位的键不收 —— 门 C）。
+
+            ⚠ **必须逐层对齐绑定**：元组目标 `for k, label in ((k1,l1),(k2,l2))`
+              里 `k` 绑定的是**内层第 0 位**、`label` 绑定**内层第 1 位**；
+              若不区分，就会把 `label` 的**标签文案**（`"优先级"`）也当成键名
+              ⇒ 制造假阴性（同名键被误判为已接线）。
+            """
+            if id(container) in excluded:
+                return
+            for pos, el in enumerate(getattr(container, "elts", [])):
+                if allowed.get(pos) is None:
+                    # 该位置绑定的变量**未被当作键使用** ⇒ 不收（门 C）
+                    continue
+                if (isinstance(el, ast.Constant) and isinstance(el.value, str)
+                        and _KEYNAME_SHAPE.match(el.value)):
+                    add(el.value, f"{fn}:{where}{{seq}}")
+
+        def _handle(target, iter_node, body_nodes, where):
+            """门 B + 门 C：位置门（迭代绑定） ∧ 数据流门（被当键用）。"""
+            if not isinstance(iter_node, (ast.Tuple, ast.List, ast.Set)):
+                return
+            if id(iter_node) in excluded:
+                return
+            names = _target_vars(target)
+            if not names:
+                return
+            used = _key_used_vars(body_nodes, set(names))
+            if not used:
+                return
+            if isinstance(target, ast.Name):
+                # 单名目标：元素**整体**绑定给它 ⇒ 键名候选在**本层**
+                _harvest(iter_node, where,
+                         {i: target.id for i in range(len(iter_node.elts))})
+            else:
+                # 元组目标：元素**本身是序列**，第 j 位绑定给目标元组的第 j 个变量
+                #   ⇒ 键名候选在**内层**；只收「被当键用的那个变量」的位置
+                names_in_order = []
+                for e in target.elts:
+                    nm = _target_vars(e)
+                    names_in_order.append(nm[0] if nm else None)
+                inner = {j: nm for j, nm in enumerate(names_in_order)
+                         if nm and nm in used}
+                if not inner:
+                    return
+                for el in getattr(iter_node, "elts", []):
+                    if isinstance(el, (ast.Tuple, ast.List, ast.Set)):
+                        _harvest(el, where, inner)
+
+        for n in ast.walk(tree):
+            # `for <目标> in (<序列字面量>)`
+            if isinstance(n, ast.For):
+                _handle(n.target, n.iter, n.body, n.lineno)
+            # 推导式的 `for` 可迭代对象
+            elif isinstance(n, (ast.ListComp, ast.SetComp,
+                                ast.GeneratorExp, ast.DictComp)):
+                for g in n.generators:
+                    _handle(g.target, g.iter, [n], "comp")
 
     for fn in sorted(os.listdir(scripts_dir)):
         if not fn.endswith(".py"):
@@ -1471,6 +1631,8 @@ def _collect_ast_reads(scripts_dir):
                 for k in node.keys:
                     if isinstance(k, ast.Constant) and isinstance(k.value, str):
                         add(k.value, f"{fn}:{node.lineno}{{dict}}")
+        # ④ 元组/列表/集合字面量里的字符串键（位置门 ∧ 数据流门 ∧ 形状门 ∧ 排除门）
+        _collect_seq_reads(tree, fn, add)
     return reads
 
 
