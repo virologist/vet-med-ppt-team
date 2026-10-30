@@ -742,6 +742,102 @@ FEDERATION_SHIM_HEAD_LINES = 40
 FEDERATION_FIXED_SKIP = frozenset({"shared-core", "viral-evo-lab"})
 
 
+def _git_committed_core_sha(core_path):
+    """【只读】取联邦真源**已提交版本**（HEAD）的 sha256。
+
+    为什么要「已提交版本」做基准（2026-10-30 实测真缺陷）：
+      真源 `shared-core/assemble_spawn_prompt.py` 常被**并行会话**改动，改动还常处在
+      **未提交**状态（`git status` 显示 ` M`）。若拿「工作区真源」当**唯一**基准，
+      则真源一旦在途未提交，所有**尚未跟升**的包都会被误判成「vendor 漂移」——
+      把「这个包没跟上最新真源」（正常节奏的**待同步**）与
+      「这个包的副本坏了/对不上**已发布**真源」（**真缺陷**）混为一谈。
+      后果是**已提交真源的防漂移能力被架空**：真源提交后本该报出的未跟升包，
+      在真源未提交期间被噪声淹没。
+
+    基准集合（工作区 sha ∪ 已提交 sha）的判定语义：
+      · vendor sha 命中集合中**任一个** ⇒ 不算漂移（该包处于「已同步到某一版真源」）；
+      · vendor sha **不命中任何** ⇒ 算漂移（副本对不上任何已知真源版本 = 真缺陷）。
+
+    ★ **关键不变量**：真源**提交后**，未跟升的包**仍然会被报出**——
+      因为「已提交 sha」此时已变成新版，未跟升的包对不上它，也对不上旧版
+      ⇒ 必然落入 drift。（这条由 test_G8 钉死。）
+
+    实现：走 `git rev-parse HEAD:<相对路径>` 拿 blob oid，再 `git cat-file blob`
+    取字节算 sha256（**不经过文本解码**，避免换行/编码被改写 ⇒ sha 才是可信的）。
+
+    ⚠ **全容错**（任一环节失败 ⇒ 返回 "" ⇒ 调用方退回「只有工作区 sha」基准）：
+      · 真源不在 git 仓库内（`rev-parse --show-toplevel` 失败）；
+      · 该路径在 HEAD 里不存在 / 未提交；
+      · git 不可用（FileNotFoundError）、超时、非零退出码。
+    ⇒ **绝不抛异常**（巡检不能因为环境缺 git 就崩）。
+    """
+    if not core_path:
+        return ""
+    try:
+        core_dir = os.path.dirname(os.path.abspath(core_path))
+        if not os.path.isfile(core_path) or not os.path.isdir(core_dir):
+            return ""
+        # ① 定位仓库根（core 可能在仓库的任意层级 ⇒ 用 git 自己解析）
+        r = subprocess.run(["git", "-C", core_dir, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            return ""
+        repo_root = os.path.realpath(r.stdout.strip())
+        # ② 算出相对仓库根的路径（用 realpath 归一 ⇒ 抗 macOS 的 /tmp → /private/tmp 软链）
+        rel = os.path.relpath(os.path.realpath(os.path.abspath(core_path)), repo_root)
+        if rel.startswith(".."):
+            return ""                      # 真源在仓库根之外 ⇒ 取不到提交态
+        # ③ 拿 blob oid（HEAD:./<rel> —— 必须带 "./" 前缀，否则 git 按仓库根解析）
+        spec = "HEAD:./" + rel.replace(os.sep, "/")
+        r = subprocess.run(["git", "-C", repo_root, "rev-parse", spec],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            return ""                      # 路径在 HEAD 里不存在 / 未提交
+        oid = r.stdout.strip()
+        # ④ 取 blob 原始字节算 sha256（**二进制**，不经文本解码）
+        import hashlib as _hl
+        b = subprocess.run(["git", "-C", repo_root, "cat-file", "blob", oid],
+                           capture_output=True, timeout=30).stdout
+        if not b:
+            return ""
+        return _hl.sha256(b).hexdigest()
+    except Exception:
+        # 任何异常（git 缺失/超时/OSError/解码失败）⇒ 不判定，不崩
+        return ""
+
+
+def federal_core_shas(core_path, committed_sha=None):
+    """【纯函数】算出联邦真源的**基准 sha 集合**（比对基准集合，而非单一 sha）。
+
+    基准集合 = {工作区真源的 sha} ∪ {已提交真源的 sha}
+
+    参数：
+      core_path     联邦真源 shared-core/assemble_spawn_prompt.py 的路径
+                    （不存在 ⇒ 返回空集合 ⇒ 调用方不做 vendor 比对）
+      committed_sha **可注入**的「已提交真源」sha（默认 None ⇒ 自动探测 git）。
+                    注入入口是为了让单测能在**隔离目录 + 假 git 环境**里测，
+                    而不必真的建仓库。
+
+    返回：基准 sha 集合（set[str]）。空集合 = 没有可用基准。
+
+    ⚠ **纯函数性**：本函数**不打印、不改文件**；只有在 `committed_sha is None`
+      时才会去问 git（只读探测）。注入 `committed_sha` ⇒ **完全不碰 git**。
+    """
+    import hashlib
+    shas = set()
+    if core_path and os.path.isfile(core_path):
+        try:
+            with open(core_path, "rb") as f:
+                shas.add(hashlib.sha256(f.read()).hexdigest())
+        except OSError:
+            pass
+    if committed_sha is None:
+        committed_sha = _git_committed_core_sha(core_path)
+    if committed_sha:
+        shas.add(committed_sha)
+    return shas
+
+
 def federation_skip_set(explicit_skip=()):
     """构造联邦 shim 巡检的 skip 集合：固定跳过集 ∪ 显式传入的包名。
 
@@ -759,7 +855,7 @@ def federation_skip_set(explicit_skip=()):
     return set(FEDERATION_FIXED_SKIP) | set(explicit_skip or ())
 
 
-def scan_federation_shims(plugins_root, core_path, skip=()):
+def scan_federation_shims(plugins_root, core_path, skip=(), committed_sha=None):
     """【纯逻辑】扫描联邦各包的 shim 版本声明 + vendor 副本哈希。
 
     不打印、不改文件、不依赖全局状态 ⇒ 可在隔离目录里构造反例直接单测
@@ -771,20 +867,29 @@ def scan_federation_shims(plugins_root, core_path, skip=()):
       core_path     联邦真源 shared-core/assemble_spawn_prompt.py 的路径
                     （不存在 ⇒ 不做 vendor 哈希比对，因缺少比对基准）
       skip          跳过的包名集合
+      committed_sha **可注入**的「已提交真源」sha（默认 None ⇒ 自动探测 git）。
+                    注入后**完全不碰 git** ⇒ 单测可在隔离目录 + 假 git 环境里跑。
 
     返回：(rows, stale, drift)
       rows   —— [(包名, 展示用版本描述), ...]，按包名排序
       stale  —— 声明停留在旧版（未跟升）的包名列表
-      drift  —— vendor 副本与联邦真源哈希不一致的包名列表
+      drift  —— vendor 副本与**任何已知真源版本**（工作区 sha ∪ 已提交 sha）
+                都不一致的包名列表
+
+    ★ **判定基准是「集合」而非单一 sha**（2026-10-30 实测真缺陷修复）：
+      真源常被并行会话改动且**未提交**。旧实现拿「工作区真源」当唯一基准
+      ⇒ 真源在途未提交时，所有尚未跟升的包都被误判成「vendor 漂移」
+      ⇒ 噪声淹没真信号，**已提交真源的防漂移能力被架空**。
+      现在：vendor sha 命中集合中**任一**基准 ⇒ 不算漂移（已同步到某一版真源）；
+            **不命中任何**基准 ⇒ 算漂移（副本对不上任何已知真源版本 = 真缺陷）。
+      ⇒ 真源**提交后**，未跟升的包**仍然会被报出**（见 test_G8）。
     """
     import hashlib
     rows, stale, drift = [], [], []
     skip_set = set(skip or ())
     if not os.path.isdir(plugins_root):
         return rows, stale, drift
-    core_sha = ""
-    if core_path and os.path.isfile(core_path):
-        core_sha = hashlib.sha256(open(core_path, "rb").read()).hexdigest()
+    core_shas = federal_core_shas(core_path, committed_sha=committed_sha)
     for name in sorted(os.listdir(plugins_root)):
         pkg = os.path.join(plugins_root, name)
         shim = os.path.join(pkg, "scripts", "assemble_spawn_prompt.py")
@@ -799,11 +904,12 @@ def scan_federation_shims(plugins_root, core_path, skip=()):
             stale.append(name)
         else:
             ver = "无标准声明（独立版/待审）"
-        # vendor 副本哈希比对（存在才查；有真源才有比对基准）
+        # vendor 副本哈希比对（存在才查；有基准才查）
+        # 判定基准 = {工作区真源 sha, 已提交真源 sha} ⇒ 命中任一即「已同步」
         vend = os.path.join(pkg, "vendor", "shared-core", "assemble_spawn_prompt.py")
-        if core_sha and os.path.isfile(vend):
+        if core_shas and os.path.isfile(vend):
             vsha = hashlib.sha256(open(vend, "rb").read()).hexdigest()
-            if vsha != core_sha:
+            if vsha not in core_shas:
                 ver += " | vendor漂移❌"
                 drift.append(name)
         rows.append((name, ver))

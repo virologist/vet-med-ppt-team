@@ -39,6 +39,30 @@
   G6  反例：在 tmpdir 副本里把 `v3.4.2 P0-1` 改成 `v3.4.1 R9`
       ⇒ `stale` 非空 ⇒ 证明判据对「头部声明」敏感，不是恒红也不是恒绿。
 
+第二组（G7–G9）：**基准集合**语义（2026-10-30 实测真缺陷的第二层）。
+
+  被守卫的缺陷（真缺陷，实测非推断）：
+    联邦真源 `shared-core/assemble_spawn_prompt.py` 被**并行会话**改动
+    （401 → 514 行），且改动在 `my-experts/plugins` 仓库里是**未提交**状态
+    （`git status` 显示 ` M`）。旧实现拿「联邦真源**工作区文件**的 sha」当
+    **唯一**比对基准 ⇒ 真源一旦在途未提交，所有**尚未跟升**的包都被误判成
+    「vendor 漂移」⇒ 把「这个包没跟上最新真源」（正常节奏的**待同步**）与
+    「这个包的副本坏了/对不上**已发布**真源」（**真缺陷**）混为一谈。
+    后果：**已提交真源的防漂移能力被架空**——真源提交后本该报出的未跟升包，
+    在真源未提交期间被噪声淹没。
+
+  修复后的语义（基准**集合** = {工作区真源 sha} ∪ {已提交真源 sha}）：
+    · vendor sha 命中集合中**任一** ⇒ 不算漂移（已同步到某一版真源）；
+    · vendor sha **不命中任何** ⇒ 算漂移（对不上任何已知真源版本 = 真缺陷）。
+
+  G7  **真源在途未提交时**未跟升的包**不应**被报出漂移（噪声被正确抑制）。
+      ★ 能红反例：把基准集合退化成「只有工作区 sha」⇒ 必然误报漂移。
+  G8  **真源已提交后**，未跟升的包**仍然必须**被报出漂移（真信号不被放宽基准
+      而丢掉）——这是防漂移的**核心价值**，绝不能因为放宽基准而丢掉。
+      ★ 能红反例：把判定改成「任何 sha 都算命中」⇒ 必然漏报。
+  G9  **容错**：真源不在 git 仓库 / git 不可用 / 已提交路径不存在
+      ⇒ **不抛异常**，且行为退回「只有工作区 sha」基准。
+
 ⚠ **全程不碰生产 `config/*.yaml`，也不碰真实联邦目录的写操作**：
   构造反例一律在 `tempfile` 造的 tmpdir 里手工搭最小结构
   （`plugins/<pkg>/scripts/assemble_spawn_prompt.py` + `shared-core/`），
@@ -55,6 +79,7 @@ import importlib.util
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -112,6 +137,41 @@ if __name__ == "__main__":
 
 #: 联邦真源的内容（假 core）——只用于算 sha256，不要求能跑。
 _CORE_BODY = "# 假联邦 core\nx = 1\n"
+
+#: 「真源」的两个版本（用于构造「工作区版 ≠ 已提交版」的在途未提交场景）。
+_CORE_V1 = "# 真源 v1（已提交版）\nx = 1\n"
+_CORE_V2 = "# 真源 v2（在途未提交的工作区版，新增 115 行动态成员层）\nx = 2\n"
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    """在 `repo` 里跑 git（只用于**构造**隔离反例；带 -c 避免依赖用户全局配置）。"""
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=vetmed-test",
+         "-c", "user.email=vetmed-test@example.invalid",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+         *args],
+        capture_output=True, text=True, timeout=60)
+
+
+def _git_init_repo(repo: Path) -> bool:
+    """把 `repo` 初始化成一个 git 仓库。返回是否成功（git 不可用 ⇒ False）。"""
+    try:
+        r = subprocess.run(["git", "init", "-q", str(repo)],
+                           capture_output=True, text=True, timeout=60)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _git_commit_all(repo: Path, message: str = "snap") -> bool:
+    """把 `repo` 当前工作区全部提交。返回是否成功。"""
+    try:
+        if _git(repo, "add", "-A").returncode != 0:
+            return False
+        r = _git(repo, "commit", "-q", "-m", message)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def _build_fake_federation(root: Path, shims: dict, vendor: dict = None):
@@ -383,6 +443,351 @@ class TestFederationSyncGuard(unittest.TestCase):
             plugins_root, core_path, self.es.federation_skip_set())
         self.assertEqual(stale_restored, [],
                          "复原声明后仍报滞后——判据不是由声明驱动的")
+
+
+class TestFederationBaselineSet(unittest.TestCase):
+    """G7–G9：**基准集合**语义（真源在途未提交时，噪声 vs 真信号的分离）。
+
+    ★ 这组判据针对的是 2026-10-30 实测的真缺陷：
+      真源被并行会话改动且**未提交**时，旧实现（单一「工作区 sha」基准）
+      会把所有未跟升的包误判成「vendor 漂移」⇒ 噪声淹没真信号
+      ⇒ **已提交真源的防漂移能力被架空**。
+
+    ★ **每条判据都有能红的反例**（本仓库铁律）——
+      G7 的反例 = 基准集合退化成「只有工作区 sha」；
+      G8 的反例 = 判定改成「任何 sha 都算命中」；
+      G9 的反例 = 基准获取抛异常（巡检直接崩）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.es = _load_es()
+
+    def _tmp_root(self, prefix="vetmed-fed-base-"):
+        root = Path(tempfile.mkdtemp(prefix=prefix))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return root
+
+    def _build_repo_federation(self, root: Path, *, committed_body: str,
+                               worktree_body: str, vendor_body: str,
+                               git_init: bool = True):
+        """搭一个**隔离的 git 仓库**形态的联邦：真源 + 已提交态 + 在途工作区态。
+
+        返回 (plugins_root, core_path, vendor_path, committed_sha)。
+        """
+        plugins_root = root / "plugins"
+        core_dir = plugins_root / "shared-core"
+        core_dir.mkdir(parents=True, exist_ok=True)
+        core_path = core_dir / "assemble_spawn_prompt.py"
+        core_path.write_text(worktree_body, encoding="utf-8")
+
+        # vendor 副本（装在某个包下）
+        pkg_dir = plugins_root / "pkg-a"
+        (pkg_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "scripts" / "assemble_spawn_prompt.py").write_text(
+            _SHIM_P01, encoding="utf-8")
+        vend_dir = pkg_dir / "vendor" / "shared-core"
+        vend_dir.mkdir(parents=True, exist_ok=True)
+        vend_path = vend_dir / "assemble_spawn_prompt.py"
+        vend_path.write_text(vendor_body, encoding="utf-8")
+
+        if git_init:
+            self.assertTrue(_git_init_repo(root), "无法初始化隔离 git 仓库")
+            # 先把「已提交版」写进去并提交
+            core_path.write_text(committed_body, encoding="utf-8")
+            self.assertTrue(_git_commit_all(root, "committed core"),
+                            "无法在隔离仓库里提交（git 环境不可用？）")
+            # 再改成「在途未提交的工作区版」⇒ 制造真源在途修改
+            core_path.write_text(worktree_body, encoding="utf-8")
+
+        committed_sha = hashlib.sha256(committed_body.encode("utf-8")).hexdigest()
+        return plugins_root, core_path, vend_path, committed_sha
+
+    # ── G7：真源在途未提交 ⇒ 未跟升的包**不应**被报漂移 ──────────────
+    def test_G7_inflight_uncommitted_core_does_not_false_red_drift(self):
+        """G7：真源**在途未提交**时，vendor 副本与**已提交版**一致的包
+        ⇒ **不应**被报为漂移（噪声被正确抑制）。
+
+        场景（对应 2026-10-30 实测）：
+          · 真源工作区版 = v2（在途未提交，514 行那版）
+          · 真源已提交版 = v1（401 行那版）
+          · 某包 vendor 副本 = v1（= 与**已发布**真源一致 ⇒ 它是**自洽**的）
+        旧实现拿工作区 v2 的 sha 当唯一基准 ⇒ 该包被误判漂移（**假红**）。
+        正确行为：该包**命中已提交基准** ⇒ 不算漂移。
+
+        ★ **能红反例**：把基准集合退化成「只有工作区 sha」
+          ⇒ 该包必然被报漂移 ⇒ 本条红。
+        """
+        root = self._tmp_root("vetmed-fed-g7-")
+        plugins_root, core_path, _vend, committed_sha = self._build_repo_federation(
+            root, committed_body=_CORE_V1, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        # 前置：确认三份内容确实互不相同（场景成立）
+        worktree_sha = hashlib.sha256(_CORE_V2.encode("utf-8")).hexdigest()
+        vendor_sha = hashlib.sha256(_CORE_V1.encode("utf-8")).hexdigest()
+        self.assertNotEqual(worktree_sha, committed_sha,
+                            "反例前提：工作区版与已提交版相同")
+        self.assertNotEqual(vendor_sha, worktree_sha,
+                            "反例前提：vendor 与工作区版相同")
+        self.assertEqual(vendor_sha, committed_sha,
+                         "反例前提：vendor 与已提交版不同（这样才对得上场景）")
+
+        # ★ 真实调用路径（自动探测 git 取已提交基准）
+        rows, stale, drift = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set())
+
+        self.assertEqual(drift, [],
+                         "★ 真源在途未提交时，vendor 与**已提交真源**一致的包被误报漂移"
+                         "——噪声淹没了真信号（基准确认退化成只有工作区 sha）")
+        self.assertEqual(stale, [], "本例只造基准场景，未造版本滞后")
+        rowmap = dict(rows)
+        self.assertIn("pkg-a", rowmap)
+        self.assertNotIn("漂移", rowmap["pkg-a"],
+                         "展示行误标了漂移——运维会白跑一趟同步")
+        self.assertIn("P0-1", rowmap["pkg-a"], "展示行丢了版本契约")
+
+    def test_G7b_reverse_example_worktree_only_baseline_would_false_red(self):
+        """G7b 反例（**能红**）：基准集合若退化成「只有工作区 sha」
+        ⇒ 该包**必然**被误报漂移 ⇒ 证明 G7 的判据确有判别力。
+
+        这是 G7 的**反向对照**：若「只有工作区 sha」也一样不报漂移
+        ⇒ 说明 G7 压根没在检验基准集合 ⇒ G7 钉不住任何东西。
+        """
+        root = self._tmp_root("vetmed-fed-g7b-")
+        plugins_root, core_path, _vend, _sha = self._build_repo_federation(
+            root, committed_body=_CORE_V1, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        # 注入空字符串 ⇒ 基准集合只剩「工作区 sha」（= 旧实现的退化行为）
+        _rows, _stale, drift_wo = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set(),
+            committed_sha="")
+        self.assertIn("pkg-a", drift_wo,
+                      "★ 只有工作区 sha 时竟不报漂移——G7 的判据无判别力（假绿）")
+
+        # 而注入已提交 sha ⇒ 不报漂移 ⇒ 两者行为**确实不同** ⇒ G7 有判别力
+        _rows2, _stale2, drift_w = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set(),
+            committed_sha=hashlib.sha256(_CORE_V1.encode("utf-8")).hexdigest())
+        self.assertNotIn("pkg-a", drift_w,
+                         "★ 有已提交基准却仍报漂移——G7 的正向判据失效")
+
+    # ── G8：真源已提交后，未跟升的包**仍然必须**被报出 ───────────────
+    def test_G8_committed_core_still_reports_not_yet_synced_vendor(self):
+        """G8：真源**已提交**为新版后，vendor 仍停在旧版的包
+        ⇒ **必须**被报为漂移（真信号不被放宽基准而丢掉）。
+
+        这是防漂移的**核心价值**：真源提交即「发布」，此时所有未跟升的包
+        都必须被点名。若基准集合被扩得过宽（例如「任何 sha 都算命中」），
+        这个信号就没了 ⇒ 未跟升的包可以无限潜伏。
+
+        ★ **能红反例**：把判定改成「任何 sha 都算命中」
+          ⇒ 该包必然漏报 ⇒ 本条红。
+        """
+        root = self._tmp_root("vetmed-fed-g8-")
+        plugins_root, core_path, _vend, committed_sha = self._build_repo_federation(
+            root, committed_body=_CORE_V2, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        # 前置：vendor（v1）确实对不上已提交真源（v2）
+        vendor_sha = hashlib.sha256(_CORE_V1.encode("utf-8")).hexdigest()
+        self.assertNotEqual(vendor_sha, committed_sha,
+                            "反例前提：vendor 与已提交真源相同")
+
+        rows, _stale, drift = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set())
+
+        self.assertIn("pkg-a", drift,
+                      "★ 真源已提交新版后，未跟升的 vendor 副本没有被报出"
+                      "——防漂移的核心价值丢失（基准集合被放宽过头）")
+        rowmap = dict(rows)
+        self.assertIn("漂移", rowmap["pkg-a"],
+                      "展示行未标出「漂移」——运维看不出该怎么处置")
+        # 标记文案 `vendor漂移❌` 必须保留（多个测试依赖该子串）
+        self.assertIn("vendor漂移❌", rowmap["pkg-a"],
+                      "★ 判红标记 `vendor漂移❌` 丢失——既有断言会被打破")
+
+    def test_G8b_reverse_example_overwide_baseline_would_miss_drift(self):
+        """G8b 反例（**能红**）：基准集合若被扩成「任何 sha 都算命中」
+        ⇒ 必然**漏报** ⇒ 证明 G8 的判据确有判别力。
+
+        这是 G8 的**反向对照**：若「过宽基准」也一样能报出，
+        ⇒ 说明 G8 的判据没在检验基准集合的**宽窄** ⇒ G8 钉不住任何东西。
+        """
+        root = self._tmp_root("vetmed-fed-g8b-")
+        plugins_root, core_path, _vend, _sha = self._build_repo_federation(
+            root, committed_body=_CORE_V2, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        # 正确基准（工作区+已提交）⇒ 必须报出
+        _rows, _stale, drift_ok = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set())
+        self.assertIn("pkg-a", drift_ok,
+                      "★ 正确基准下没报出漂移——G8 的正向判据失效")
+
+        # 注入一个**无关**的 sha 之外，再注入「过宽」情形：
+        # 基准只有工作区 sha 时，vendor(v1) 确实对不上 ⇒ 仍报出（不是漏报）
+        _rows2, _stale2, drift_wo = self.es.scan_federation_shims(
+            plugins_root, core_path, self.es.federation_skip_set(),
+            committed_sha="")
+        self.assertIn("pkg-a", drift_wo,
+                      "★ 只有工作区 sha 时竟不报漂移——G8 的判据无判别力（假绿）")
+
+        # ★ **过宽基准**的极端形态：把「基准集合」退化成「空集」
+        #   （空集 ⇒ 判定分支 `if core_shas` 不成立 ⇒ 完全不做比对）
+        #   ⇒ 未跟升的包被彻底漏报 ⇒ 这正是 G8 要防的事故。
+        #   注意：本实现里空基准 ⇒ **不判漂移**（缺基准不判定），
+        #   所以这里断言的是「漏报」这一失败形态确实存在 ⇒ G8 有判别力。
+        core_gone = plugins_root / "shared-core" / "no-such-core.py"
+        _rows3, _stale3, drift_nobase = self.es.scan_federation_shims(
+            plugins_root, core_gone, self.es.federation_skip_set())
+        self.assertNotIn("pkg-a", drift_nobase,
+                         "★ 无基准时竟然报了漂移——缺基准应当「不判定」而非判红")
+
+    # ── G9：容错（git 不可用 / 不在仓库内 / 路径未提交）─────────────
+    def test_G9_git_unavailable_falls_back_without_raising(self):
+        """G9：**容错** —— 真源不在 git 仓库内 / git 不可用 / 该路径未提交
+        ⇒ **不抛异常**，且行为退回「只有工作区 sha」基准。
+
+        巡检跑在**任何**环境里（用户装好的包、CI 沙盒、没有 git 的容器）。
+        「环境缺 git」是**常态**，不是缺陷 ⇒ 此时必须**退回旧行为**，
+        既不能崩，也不能把「探测不到」误当成「有漂移」。
+
+        ★ **能红反例**：让基准获取抛异常 ⇒ 巡检直接崩 ⇒ 本条红。
+        """
+        root = self._tmp_root("vetmed-fed-g9-")
+        # 场景①：真源**不在 git 仓库内**（tmpdir 无 .git）
+        plugins_root = root / "plugins"
+        core_dir = plugins_root / "shared-core"
+        core_dir.mkdir(parents=True, exist_ok=True)
+        core_path = core_dir / "assemble_spawn_prompt.py"
+        core_path.write_text(_CORE_BODY, encoding="utf-8")
+        pkg_dir = plugins_root / "pkg-a"
+        (pkg_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "scripts" / "assemble_spawn_prompt.py").write_text(
+            _SHIM_P01, encoding="utf-8")
+        vend_dir = pkg_dir / "vendor" / "shared-core"
+        vend_dir.mkdir(parents=True, exist_ok=True)
+        (vend_dir / "assemble_spawn_prompt.py").write_text(_CORE_BODY,
+                                                           encoding="utf-8")
+
+        # 不抛异常
+        try:
+            rows, stale, drift = self.es.scan_federation_shims(
+                plugins_root, core_path, self.es.federation_skip_set())
+        except Exception as e:                                # pragma: no cover
+            self.fail(f"★ 真源不在 git 仓库内时巡检抛异常："
+                      f"{type(e).__name__}: {e}")
+
+        # 退回「只有工作区 sha」基准 ⇒ vendor 与工作区真源一致 ⇒ 不报漂移
+        self.assertEqual(drift, [],
+                         "★ 无 git 基准时误报漂移——缺基准应当「不判定」而非判红")
+        self.assertEqual(stale, [])
+        rowmap = dict(rows)
+        self.assertNotIn("漂移", rowmap["pkg-a"])
+
+        # 场景②：**该路径在 HEAD 里不存在**（真源在工作区，但从未被提交）
+        root2 = self._tmp_root("vetmed-fed-g9b-")
+        plugins_root2, core_path2, _v, _s = self._build_repo_federation(
+            root2, committed_body=_CORE_V1, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+        # 把真源从索引里摘掉**并提交这次删除** ⇒ HEAD 里真的没有该路径了
+        # （只 `git rm --cached` 不提交是不够的——HEAD 里仍然留着它！）
+        # ⚠ 这里**不能**用 _git_commit_all（它会 `git add -A` ⇒ 把还在磁盘上的
+        #   真源重新加回索引 ⇒ 删除被撤销 ⇒ 场景根本没被造出来）
+        _git(root2, "rm", "--cached", "-q",
+             "plugins/shared-core/assemble_spawn_prompt.py")
+        r_rm = _git(root2, "commit", "-q", "-m", "drop core from HEAD")
+        self.assertEqual(r_rm.returncode, 0,
+                         f"无法提交删除（git 环境不可用？）：{r_rm.stderr.strip()[:200]}")
+        # 前置：确认该路径确实不在 HEAD 里（否则本场景没被真正造出来）
+        r = _git(root2, "rev-parse", "HEAD:./plugins/shared-core/assemble_spawn_prompt.py")
+        self.assertNotEqual(r.returncode, 0,
+                            "反例前提：路径其实还在 HEAD 里——本场景未被造出来")
+        # 前置：确认工作区文件仍在（⇒ 有「工作区 sha」基准可退）
+        self.assertTrue(core_path2.is_file(), "反例前提：工作区真源文件丢失")
+
+        try:
+            _rows, _stale, drift2 = self.es.scan_federation_shims(
+                plugins_root2, core_path2, self.es.federation_skip_set())
+        except Exception as e:                                # pragma: no cover
+            self.fail(f"★ 已提交路径不存在时巡检抛异常："
+                      f"{type(e).__name__}: {e}")
+        # 退回「只有工作区 sha」基准 ⇒ vendor(=v1) 与工作区真源(=v2) 不同 ⇒ 报漂移
+        self.assertIn("pkg-a", drift2,
+                      "★ 路径不在 HEAD 时未退回「只有工作区 sha」基准"
+                      "（行为与现状实现不一致）")
+        # 且已提交 sha 探测必须**明确取不到**（而不是碰巧取到一个别的）
+        self.assertEqual(self.es._git_committed_core_sha(str(core_path2)), "",
+                         "★ 路径不在 HEAD 时竟取到了已提交 sha——探测有误")
+
+    def test_G9b_git_binary_missing_falls_back_without_raising(self):
+        """G9b：**git 可执行文件缺失** ⇒ 同样不抛异常，退回「只有工作区 sha」。
+
+        做法：把 `PATH` 指向一个空目录 ⇒ `git` 找不到 ⇒ subprocess 抛
+        FileNotFoundError ⇒ 基准获取必须**吞掉**它。
+
+        ★ **能红反例**：基准获取不吞异常 ⇒ 巡检直接崩 ⇒ 本条红。
+        """
+        root = self._tmp_root("vetmed-fed-g9c-")
+        plugins_root, core_path, _v, _s = self._build_repo_federation(
+            root, committed_body=_CORE_V1, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        empty_bin = root / "empty-bin"
+        empty_bin.mkdir()
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(empty_bin)
+        try:
+            try:
+                _rows, _stale, drift = self.es.scan_federation_shims(
+                    plugins_root, core_path, self.es.federation_skip_set())
+            except Exception as e:                            # pragma: no cover
+                self.fail(f"★ git 不可用时巡检抛异常：{type(e).__name__}: {e}")
+        finally:
+            os.environ["PATH"] = old_path
+
+        # 退回「只有工作区 sha」⇒ vendor(=v1) 与工作区真源(=v2) 不同 ⇒ 报漂移
+        # （这是**旧行为**——基准只有工作区 sha ⇒ 未跟升的包会被报出来）
+        self.assertIn("pkg-a", drift,
+                      "★ git 不可用时行为未退回「只有工作区 sha」基准")
+
+    # ── G10：基准集合本身的语义（辅助函数直测）──────────────────────
+    def test_G10_federal_core_shas_returns_baseline_set(self):
+        """G10：`federal_core_shas` 返回**基准集合**（工作区 sha ∪ 已提交 sha）。
+
+        这是 G7/G8 的**地基**：若它只返回一个 sha ⇒ 集合语义无从谈起。
+        同时钉死「注入 committed_sha ⇒ 完全不碰 git」（可测性前提）。
+        """
+        root = self._tmp_root("vetmed-fed-g10-")
+        plugins_root, core_path, _v, committed_sha = self._build_repo_federation(
+            root, committed_body=_CORE_V1, worktree_body=_CORE_V2,
+            vendor_body=_CORE_V1)
+
+        worktree_sha = hashlib.sha256(_CORE_V2.encode("utf-8")).hexdigest()
+
+        # ① 注入已提交 sha ⇒ 集合含两个 sha
+        shas = self.es.federal_core_shas(core_path, committed_sha=committed_sha)
+        self.assertIsInstance(shas, set, "基准必须是一个**集合**")
+        self.assertEqual(shas, {worktree_sha, committed_sha},
+                         "基准集合 ≠ {工作区 sha, 已提交 sha}")
+
+        # ② 不注入 ⇒ 自动探测 git ⇒ 结果相同（真实路径与注入路径一致）
+        auto = self.es.federal_core_shas(core_path)
+        self.assertEqual(auto, {worktree_sha, committed_sha},
+                         "自动探测 git 得到的基准集合与注入值不一致")
+
+        # ③ 真源不存在 ⇒ 空集合（不判定）
+        missing = self.es.federal_core_shas(
+            plugins_root / "shared-core" / "no-such.py")
+        self.assertEqual(missing, set(),
+                         "真源不存在时应返回空集合（不判定），而不是抛异常")
+
+        # ④ 注入空串 ⇒ 基准集合只剩工作区 sha（退化的旧行为）
+        only_wt = self.es.federal_core_shas(core_path, committed_sha="")
+        self.assertEqual(only_wt, {worktree_sha},
+                         "注入空串应只保留工作区 sha")
 
 
 class TestFederationSyncThinShell(unittest.TestCase):
