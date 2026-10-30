@@ -1794,6 +1794,17 @@ def check_dead_config_keys(expert_dir):
         "default_disease_module_prefix", "case_id_prefix",
         # 成员能力声明：供主理人 spawn 前判断，不由脚本消费
         "writes_allowed",
+        # ── v3.28.2：第 18 项 128 键人工定性 · 批 B01–B06（76 键）裁定 ──
+        # domain-profiles.yaml#domains[].expert_panel[].activation_hints[] ——
+        #   专家面板**激活关键词表**（域内中文触发词，如「病毒/流感/毒株/变异…」）。
+        #   消费方 = **主理人装配**：把专家面板装配进 spawn 提示词时按域匹配触发词，
+        #   属会话层语义判定（"这段内容是否涉及该专家的领域"），脚本无法确定性执行
+        #   ⇒ 人读型登记（与 writes_allowed / shrink_order 同判据：给 LLM/人的语义判据）。
+        #   ⚠ 登记按末段键名生效 ⇒ 3 域 × 专家面板全部命中（同族键处置一致）。
+        #   证据：同段 expert_panel 本体（id/title/background/stance/duties…）即
+        #   主理人装配物，activation_hints 与其同族；装配器只渲染面板文档，
+        #   不做触发词匹配（scripts/assemble_domain_prompt.py 实测 0 处读取）。
+        "activation_hints",
         # 降级通道的说明文本与披露要求：主理人按条款执行，无脚本判定
         "general-purpose+persona", "script_pipeline", "require_disclosure",
         "degrade_modes",

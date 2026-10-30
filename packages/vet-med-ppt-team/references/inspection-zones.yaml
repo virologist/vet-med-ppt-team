@@ -106,394 +106,396 @@
 digest_scheme: "indexed-set-v2"
 version: "3.28.1"
 
+digest_scheme: indexed-set-v2
+version: 3.28.1
 segments:
-  - id: "domain-profiles.yaml#domains"
-    file: "domain-profiles.yaml"
-    prefix: "domains"
-    key_count: 794
-    keys_sha256: "4f57817fcd8f266e44057c6633db0e5350f4a590"
-    leaf_unused: 95
-    leaf_weak: 610
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "域档案清单（id/label/glossary/知识库路由等）。域档案本体由主理人装配进提示词；条目内的少数字段由脚本按路径读取。"
-  - id: "external-tools.yaml#channels"
-    file: "external-tools.yaml"
-    prefix: "channels"
-    key_count: 83
-    keys_sha256: "2de5a099abc31527371c0aa7f5d0afd4f0bc34dd"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "MCP 能力通道编排（id/kind/layer/endpoint_ref 等）。probe_channels.py 整块遍历通道清单。"
-  - id: "hygiene-words.yaml#domain_specific_terms"
-    file: "hygiene-words.yaml"
-    prefix: "domain_specific_terms"
-    key_count: 78
-    keys_sha256: "0d68db332489b5cc0c7a8195c71f7510857a0317"
-    leaf_unused: 0
-    leaf_weak: 52
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "各域专有术语黑名单，供 hygiene 扫描按域取用。"
-  - id: "domain_config.yaml#three_source_check"
-    file: "domain_config.yaml"
-    prefix: "three_source_check"
-    key_count: 71
-    keys_sha256: "84b0043a5999dbd04b8620892badf13cf5db1d2b"
-    leaf_unused: 0
-    leaf_weak: 69
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须接线"
-    note: "三源核验阈值与来源分档（PubMed/书籍/法规）。运行时由 harness budget check 读取并与 yaml 对账（第 21 项）。"
-  - id: "harness.yaml#gate1_freeze"
-    file: "harness.yaml"
-    prefix: "gate1_freeze"
-    key_count: 40
-    keys_sha256: "45b5e4ffe6c8f515d330b6bc79501b53ed53f6db"
-    leaf_unused: 0
-    leaf_weak: 36
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "闸1 任务冻结清单（任务包四要素、域、面板等）。gate1-check 整块校验。"
-  - id: "harness.yaml#members"
-    file: "harness.yaml"
-    prefix: "members"
-    key_count: 39
-    keys_sha256: "0cb4d1fd977b4891613224850477364c28fa5e72"
-    leaf_unused: 19
-    leaf_weak: 10
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "成员注册表（职责/白名单/降级通道/spawn 策略）。整块被 preflight 与装配器消费；白名单本身**无代码强制力**（平台限制）。"
-  - id: "external-tools.yaml#knowledge_bases"
-    file: "external-tools.yaml"
-    prefix: "knowledge_bases"
-    key_count: 38
-    keys_sha256: "0aa80a29212af6f71d31e6251aa988ffe0ec7efc"
-    leaf_unused: 1
-    leaf_weak: 30
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。"
-  - id: "harness.yaml#loop_b"
-    file: "harness.yaml"
-    prefix: "loop_b"
-    key_count: 38
-    keys_sha256: "a0bdc7099262b3a075d6e7f885719e4a13637859"
-    leaf_unused: 0
-    leaf_weak: 37
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "双层 Loop 契约（B 环：原件只读/单写者/共存）。loop_contract.py 逐键取值器承接。"
-  - id: "domain_config.yaml#disease_modules"
-    file: "domain_config.yaml"
-    prefix: "disease_modules"
-    key_count: 37
-    keys_sha256: "ec926f2532ed0cf498037bed2c93ca8843c462d6"
-    leaf_unused: 4
-    leaf_weak: 33
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "疾病模块清单（病名/学名/模块前缀）。case_extract.py 整块读取。"
-  - id: "external-tools.yaml#ima"
-    file: "external-tools.yaml"
-    prefix: "ima"
-    key_count: 35
-    keys_sha256: "3185814731730b70bc8480fd9b31a65faee90d7c"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "Ima API 契约（工具名/入参/返回形态）。消费方是会话层（成员按契约调用）。"
-  - id: "hygiene-words.yaml#scan"
-    file: "hygiene-words.yaml"
-    prefix: "scan"
-    key_count: 32
-    keys_sha256: "36c24863f6bb83538aaa5a83a21737eda5875843"
-    leaf_unused: 0
-    leaf_weak: 32
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "卫生词表扫描规则（禁语/替换/严重度）。hygiene 检查整块消费。"
-  - id: "domain_config.yaml#domains"
-    file: "domain_config.yaml"
-    prefix: "domains"
-    key_count: 28
-    keys_sha256: "a000b50e441e23e21eb7e950958d7ae87d222980"
-    leaf_unused: 4
-    leaf_weak: 8
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。"
-  - id: "harness.yaml#stages"
-    file: "harness.yaml"
-    prefix: "stages"
-    key_count: 27
-    keys_sha256: "e40d2441e66c5a8913bfeafa02f6b7354054006c"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "五闸阶段定义（name/members/gate/parallel/next）。编排与阶段镜像块共用。"
-  - id: "harness.yaml#routing"
-    file: "harness.yaml"
-    prefix: "routing"
-    key_count: 24
-    keys_sha256: "eb3fc29a4c352acdf42a7909b2cdfe3e3b05f9b8"
-    leaf_unused: 0
-    leaf_weak: 24
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "L1/L2/L3 分层路由与成员映射。"
-  - id: "harness.yaml#observability"
-    file: "harness.yaml"
-    prefix: "observability"
-    key_count: 14
-    keys_sha256: "f25522ec7a504bc62733c8d243853ae9e7302bf9"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "观测/追踪配置（trace 文件、状态上限）。"
-  - id: "visual-rules.yaml#severity"
-    file: "visual-rules.yaml"
-    prefix: "severity"
-    key_count: 11
-    keys_sha256: "bfca5f7ff790bf748caa909f51f83dd5c78712d7"
-    leaf_unused: 0
-    leaf_weak: 11
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "P0–P3 分级键集合。verify_deck 分级唯一定义源。"
-  - id: "harness.yaml#loop_a"
-    file: "harness.yaml"
-    prefix: "loop_a"
-    key_count: 10
-    keys_sha256: "d127175aa192f6ef917227ec583ea3c697a2075f"
-    leaf_unused: 0
-    leaf_weak: 9
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。"
-  - id: "visual-rules.yaml#hours_page_range"
-    file: "visual-rules.yaml"
-    prefix: "hours_page_range"
-    key_count: 10
-    keys_sha256: "38d8501f8dbd97f21f780fec606b7b0bc7367446"
-    leaf_unused: 0
-    leaf_weak: 10
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "课时 ↔ 页数换算表（多档）。门禁判据。"
-  - id: "domain-profiles.yaml#fallback"
-    file: "domain-profiles.yaml"
-    prefix: "fallback"
-    key_count: 9
-    keys_sha256: "70ed15aa7e2dcb800590027d94dd9439c874f1eb"
-    leaf_unused: 1
-    leaf_weak: 8
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "域档案缺失时的通用兜底渲染块。装配器回落读取。"
-  - id: "harness.yaml#collapse"
-    file: "harness.yaml"
-    prefix: "collapse"
-    key_count: 9
-    keys_sha256: "19fef18599870a248e49986d2e272a53d8f8d111"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "坍缩契约（理由填写方/确认态等）。"
-  - id: "visual-rules.yaml#checks"
-    file: "visual-rules.yaml"
-    prefix: "checks"
-    key_count: 8
-    keys_sha256: "0d5107de89e4cc99d824fd539d47c7c614ed1b51"
-    leaf_unused: 0
-    leaf_weak: 8
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "门禁检查项清单与建议级。门禁判据。"
-  - id: "visual-rules.yaml#hours_page_range_single_ppt"
-    file: "visual-rules.yaml"
-    prefix: "hours_page_range_single_ppt"
-    key_count: 8
-    keys_sha256: "82c6f152a2374d941e71590e8a712abccf424236"
-    leaf_unused: 0
-    leaf_weak: 8
-    consumer: "脚本"
-    disposition: "禁止新增（冻结）"
-    note: "单 PPT 变体的课时换算表。门禁判据。"
-  - id: "guard.yaml#cross_review_mapping"
-    file: "guard.yaml"
-    prefix: "cross_review_mapping"
-    key_count: 7
-    keys_sha256: "8d62a83e0f0c6de1d3bce5088ae3241660f01403"
-    leaf_unused: 4
-    leaf_weak: 3
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须接线"
-    note: "闸3 交叉复检映射（改动类型 → 复检人）。第 22 项守卫比对。"
-  - id: "harness.yaml#budgets"
-    file: "harness.yaml"
-    prefix: "budgets"
-    key_count: 7
-    keys_sha256: "670c8d4fc615b39acb8f7e3bd5a93952f020a12e"
-    leaf_unused: 0
-    leaf_weak: 7
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "各类预算与阈值（三源/轮次/降密等）。harness budget check 逐键读取。"
-  - id: "visual-rules.yaml#theme"
-    file: "visual-rules.yaml"
-    prefix: "theme"
-    key_count: 7
-    keys_sha256: "534f553629cf8a5460818d9d896778f9f2858c2b"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "会话层+主理人"
-    disposition: "新增键须登记"
-    note: "主题色**令牌槽位**定义（值不在此定义）。消费方是会话层与工作区 theme.yaml。"
-  - id: "external-tools.yaml#domains_without_knowledge_bases"
-    file: "external-tools.yaml"
-    prefix: "domains_without_knowledge_bases"
-    key_count: 6
-    keys_sha256: "6a4284fe12d2666a522530e49e167968fffcd976"
-    leaf_unused: 0
-    leaf_weak: 6
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "声明「本就无账号内库」的域清单。装配器按此分支渲染。"
-  - id: "language-profile.yaml#english_allowed_when"
-    file: "language-profile.yaml"
-    prefix: "english_allowed_when"
-    key_count: 6
-    keys_sha256: "57d684eab3a4552a8b3724da8c402b75e776d557"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "允许英语的场景判据。消费方是会话层（成员据此决定交付语言）。"
-  - id: "domain_config.yaml#image_fetch"
-    file: "domain_config.yaml"
-    prefix: "image_fetch"
-    key_count: 5
-    keys_sha256: "2f70aee2d58968326a354cd48aa4867dab2e1ead"
-    leaf_unused: 0
-    leaf_weak: 1
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "图片抓取参数（许可标记等）。"
-  - id: "harness.yaml#gate_exit_codes"
-    file: "harness.yaml"
-    prefix: "gate_exit_codes"
-    key_count: 5
-    keys_sha256: "13dbd1435712476faf3a8d77432d285f15c205f6"
-    leaf_unused: 0
-    leaf_weak: 5
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "门禁退出码语义（0–4）。唯一源；文档侧镜像块由 test_arch_drift.py 强制一致。"
-  - id: "language-profile.yaml#terminology"
-    file: "language-profile.yaml"
-    prefix: "terminology"
-    key_count: 4
-    keys_sha256: "f72b2f6d801f83020c6220a4fbbaf1ad7af8a556"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "术语标注规则（形态/格式）。消费方是会话层（成员据此标注术语）。"
-  - id: "visual-rules.yaml#chart"
-    file: "visual-rules.yaml"
-    prefix: "chart"
-    key_count: 4
-    keys_sha256: "2e0069aa0710f4f3d1813a7a8ab6e4446128755f"
-    leaf_unused: 0
-    leaf_weak: 4
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "图表类检查项（未实现项已登记）。"
-  - id: "visual-rules.yaml#density"
-    file: "visual-rules.yaml"
-    prefix: "density"
-    key_count: 4
-    keys_sha256: "2773f92b646914e8d1ec706b53743e12e372a452"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "会话层+主理人"
-    disposition: "新增键须登记"
-    note: "降密策略与执行顺序。执行顺序是**给成员的指令**，不由脚本判定。"
-  - id: "visual-rules.yaml#overlay_injection"
-    file: "visual-rules.yaml"
-    prefix: "overlay_injection"
-    key_count: 4
-    keys_sha256: "270ab8a8f36ab1f36ba055477041ae25da94cf98"
-    leaf_unused: 0
-    leaf_weak: 4
-    consumer: "脚本"
-    disposition: "新增键须接线"
-    note: "备注注入参数（重叠率/审计等）。inject_notes.py 真正读取。"
-  - id: "language-profile.yaml#consistency"
-    file: "language-profile.yaml"
-    prefix: "consistency"
-    key_count: 3
-    keys_sha256: "a3421c929fa975268d399df1ac8335b3732b5300"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "脚本+会话层+主理人"
-    disposition: "新增键须登记"
-    note: "语言一致性策略。消费方是会话层。"
-  - id: "harness.yaml#context"
-    file: "harness.yaml"
-    prefix: "context"
-    key_count: 2
-    keys_sha256: "a3d40be22cf997a1daac02b25e33bb2abae6b8bf"
-    leaf_unused: 0
-    leaf_weak: 2
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "上下文装配参数。"
-  - id: "harness.yaml#fallback"
-    file: "harness.yaml"
-    prefix: "fallback"
-    key_count: 2
-    keys_sha256: "b576cdbef707a16380e898aa97175436c86dc3e6"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "会话层+主理人"
-    disposition: "新增键须登记"
-    note: "降级通道（spawn 失败/不可用时的处置）。与 domain-profiles.yaml#fallback **同名但不同语义**（ADR-6）。"
-  - id: "visual-rules.yaml#font"
-    file: "visual-rules.yaml"
-    prefix: "font"
-    key_count: 2
-    keys_sha256: "0185ebe703788c2ce314b2dc37c57eb361c384c2"
-    leaf_unused: 0
-    leaf_weak: 2
-    consumer: "脚本"
-    disposition: "新增键须登记"
-    note: "字体规格约束。"
-  - id: "visual-rules.yaml#gate"
-    file: "visual-rules.yaml"
-    prefix: "gate"
-    key_count: 2
-    keys_sha256: "07448f7f0ca860d781886817740a8d4e5a5cd60f"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "会话层+主理人"
-    disposition: "新增键须登记"
-    note: "门禁档位说明（写回/交付）。消费方是会话层。"
-  - id: "harness.yaml#delta_gate"
-    file: "harness.yaml"
-    prefix: "delta_gate"
-    key_count: 1
-    keys_sha256: "bd99090378047f7942e3f8b68b7c3d01db2b7bdf"
-    leaf_unused: 0
-    leaf_weak: 0
-    consumer: "会话层+主理人"
-    disposition: "新增键须登记"
-    note: "Delta 门禁判据。多数键已接线；`insert_font_at_creation` 属**结构性不可判定**（写入时行为，成品无痕迹）。"
+- id: domain-profiles.yaml#domains
+  file: domain-profiles.yaml
+  prefix: domains
+  key_count: 794
+  keys_sha256: 4f57817fcd8f266e44057c6633db0e5350f4a590
+  leaf_unused: 19
+  leaf_weak: 610
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 域档案清单（id/label/glossary/知识库路由等）。域档案本体由主理人装配进提示词；条目内的少数字段由脚本按路径读取。
+- id: external-tools.yaml#channels
+  file: external-tools.yaml
+  prefix: channels
+  key_count: 83
+  keys_sha256: 2de5a099abc31527371c0aa7f5d0afd4f0bc34dd
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: MCP 能力通道编排（id/kind/layer/endpoint_ref 等）。probe_channels.py 整块遍历通道清单。
+- id: hygiene-words.yaml#domain_specific_terms
+  file: hygiene-words.yaml
+  prefix: domain_specific_terms
+  key_count: 78
+  keys_sha256: 0d68db332489b5cc0c7a8195c71f7510857a0317
+  leaf_unused: 0
+  leaf_weak: 52
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: 各域专有术语黑名单，供 hygiene 扫描按域取用。
+- id: domain_config.yaml#three_source_check
+  file: domain_config.yaml
+  prefix: three_source_check
+  key_count: 71
+  keys_sha256: 84b0043a5999dbd04b8620892badf13cf5db1d2b
+  leaf_unused: 0
+  leaf_weak: 69
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须接线
+  note: 三源核验阈值与来源分档（PubMed/书籍/法规）。运行时由 harness budget check 读取并与 yaml 对账（第 21 项）。
+- id: harness.yaml#gate1_freeze
+  file: harness.yaml
+  prefix: gate1_freeze
+  key_count: 40
+  keys_sha256: 45b5e4ffe6c8f515d330b6bc79501b53ed53f6db
+  leaf_unused: 0
+  leaf_weak: 36
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 闸1 任务冻结清单（任务包四要素、域、面板等）。gate1-check 整块校验。
+- id: harness.yaml#members
+  file: harness.yaml
+  prefix: members
+  key_count: 39
+  keys_sha256: 0cb4d1fd977b4891613224850477364c28fa5e72
+  leaf_unused: 19
+  leaf_weak: 10
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 成员注册表（职责/白名单/降级通道/spawn 策略）。整块被 preflight 与装配器消费；白名单本身**无代码强制力**（平台限制）。
+- id: external-tools.yaml#knowledge_bases
+  file: external-tools.yaml
+  prefix: knowledge_bases
+  key_count: 38
+  keys_sha256: 0aa80a29212af6f71d31e6251aa988ffe0ec7efc
+  leaf_unused: 1
+  leaf_weak: 30
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。
+- id: harness.yaml#loop_b
+  file: harness.yaml
+  prefix: loop_b
+  key_count: 38
+  keys_sha256: a0bdc7099262b3a075d6e7f885719e4a13637859
+  leaf_unused: 0
+  leaf_weak: 37
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 双层 Loop 契约（B 环：原件只读/单写者/共存）。loop_contract.py 逐键取值器承接。
+- id: domain_config.yaml#disease_modules
+  file: domain_config.yaml
+  prefix: disease_modules
+  key_count: 37
+  keys_sha256: ec926f2532ed0cf498037bed2c93ca8843c462d6
+  leaf_unused: 4
+  leaf_weak: 33
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 疾病模块清单（病名/学名/模块前缀）。case_extract.py 整块读取。
+- id: external-tools.yaml#ima
+  file: external-tools.yaml
+  prefix: ima
+  key_count: 35
+  keys_sha256: 3185814731730b70bc8480fd9b31a65faee90d7c
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: Ima API 契约（工具名/入参/返回形态）。消费方是会话层（成员按契约调用）。
+- id: hygiene-words.yaml#scan
+  file: hygiene-words.yaml
+  prefix: scan
+  key_count: 32
+  keys_sha256: 36c24863f6bb83538aaa5a83a21737eda5875843
+  leaf_unused: 0
+  leaf_weak: 32
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: 卫生词表扫描规则（禁语/替换/严重度）。hygiene 检查整块消费。
+- id: domain_config.yaml#domains
+  file: domain_config.yaml
+  prefix: domains
+  key_count: 28
+  keys_sha256: a000b50e441e23e21eb7e950958d7ae87d222980
+  leaf_unused: 4
+  leaf_weak: 8
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。
+- id: harness.yaml#stages
+  file: harness.yaml
+  prefix: stages
+  key_count: 27
+  keys_sha256: e40d2441e66c5a8913bfeafa02f6b7354054006c
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 五闸阶段定义（name/members/gate/parallel/next）。编排与阶段镜像块共用。
+- id: harness.yaml#routing
+  file: harness.yaml
+  prefix: routing
+  key_count: 24
+  keys_sha256: eb3fc29a4c352acdf42a7909b2cdfe3e3b05f9b8
+  leaf_unused: 0
+  leaf_weak: 24
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: L1/L2/L3 分层路由与成员映射。
+- id: harness.yaml#observability
+  file: harness.yaml
+  prefix: observability
+  key_count: 14
+  keys_sha256: f25522ec7a504bc62733c8d243853ae9e7302bf9
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 观测/追踪配置（trace 文件、状态上限）。
+- id: visual-rules.yaml#severity
+  file: visual-rules.yaml
+  prefix: severity
+  key_count: 11
+  keys_sha256: bfca5f7ff790bf748caa909f51f83dd5c78712d7
+  leaf_unused: 0
+  leaf_weak: 11
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: P0–P3 分级键集合。verify_deck 分级唯一定义源。
+- id: harness.yaml#loop_a
+  file: harness.yaml
+  prefix: loop_a
+  key_count: 10
+  keys_sha256: d127175aa192f6ef917227ec583ea3c697a2075f
+  leaf_unused: 0
+  leaf_weak: 9
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。
+- id: visual-rules.yaml#hours_page_range
+  file: visual-rules.yaml
+  prefix: hours_page_range
+  key_count: 10
+  keys_sha256: 38d8501f8dbd97f21f780fec606b7b0bc7367446
+  leaf_unused: 0
+  leaf_weak: 10
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: 课时 ↔ 页数换算表（多档）。门禁判据。
+- id: domain-profiles.yaml#fallback
+  file: domain-profiles.yaml
+  prefix: fallback
+  key_count: 9
+  keys_sha256: 70ed15aa7e2dcb800590027d94dd9439c874f1eb
+  leaf_unused: 1
+  leaf_weak: 8
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 域档案缺失时的通用兜底渲染块。装配器回落读取。
+- id: harness.yaml#collapse
+  file: harness.yaml
+  prefix: collapse
+  key_count: 9
+  keys_sha256: 19fef18599870a248e49986d2e272a53d8f8d111
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 坍缩契约（理由填写方/确认态等）。
+- id: visual-rules.yaml#checks
+  file: visual-rules.yaml
+  prefix: checks
+  key_count: 8
+  keys_sha256: 0d5107de89e4cc99d824fd539d47c7c614ed1b51
+  leaf_unused: 0
+  leaf_weak: 8
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: 门禁检查项清单与建议级。门禁判据。
+- id: visual-rules.yaml#hours_page_range_single_ppt
+  file: visual-rules.yaml
+  prefix: hours_page_range_single_ppt
+  key_count: 8
+  keys_sha256: 82c6f152a2374d941e71590e8a712abccf424236
+  leaf_unused: 0
+  leaf_weak: 8
+  consumer: 脚本
+  disposition: 禁止新增（冻结）
+  note: 单 PPT 变体的课时换算表。门禁判据。
+- id: guard.yaml#cross_review_mapping
+  file: guard.yaml
+  prefix: cross_review_mapping
+  key_count: 7
+  keys_sha256: 8d62a83e0f0c6de1d3bce5088ae3241660f01403
+  leaf_unused: 4
+  leaf_weak: 3
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须接线
+  note: 闸3 交叉复检映射（改动类型 → 复检人）。第 22 项守卫比对。
+- id: harness.yaml#budgets
+  file: harness.yaml
+  prefix: budgets
+  key_count: 7
+  keys_sha256: 670c8d4fc615b39acb8f7e3bd5a93952f020a12e
+  leaf_unused: 0
+  leaf_weak: 7
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 各类预算与阈值（三源/轮次/降密等）。harness budget check 逐键读取。
+- id: visual-rules.yaml#theme
+  file: visual-rules.yaml
+  prefix: theme
+  key_count: 7
+  keys_sha256: 534f553629cf8a5460818d9d896778f9f2858c2b
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 会话层+主理人
+  disposition: 新增键须登记
+  note: 主题色**令牌槽位**定义（值不在此定义）。消费方是会话层与工作区 theme.yaml。
+- id: external-tools.yaml#domains_without_knowledge_bases
+  file: external-tools.yaml
+  prefix: domains_without_knowledge_bases
+  key_count: 6
+  keys_sha256: 6a4284fe12d2666a522530e49e167968fffcd976
+  leaf_unused: 0
+  leaf_weak: 6
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 声明「本就无账号内库」的域清单。装配器按此分支渲染。
+- id: language-profile.yaml#english_allowed_when
+  file: language-profile.yaml
+  prefix: english_allowed_when
+  key_count: 6
+  keys_sha256: 57d684eab3a4552a8b3724da8c402b75e776d557
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 允许英语的场景判据。消费方是会话层（成员据此决定交付语言）。
+- id: domain_config.yaml#image_fetch
+  file: domain_config.yaml
+  prefix: image_fetch
+  key_count: 5
+  keys_sha256: 2f70aee2d58968326a354cd48aa4867dab2e1ead
+  leaf_unused: 0
+  leaf_weak: 1
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 图片抓取参数（许可标记等）。
+- id: harness.yaml#gate_exit_codes
+  file: harness.yaml
+  prefix: gate_exit_codes
+  key_count: 5
+  keys_sha256: 13dbd1435712476faf3a8d77432d285f15c205f6
+  leaf_unused: 0
+  leaf_weak: 5
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 门禁退出码语义（0–4）。唯一源；文档侧镜像块由 test_arch_drift.py 强制一致。
+- id: language-profile.yaml#terminology
+  file: language-profile.yaml
+  prefix: terminology
+  key_count: 4
+  keys_sha256: f72b2f6d801f83020c6220a4fbbaf1ad7af8a556
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 术语标注规则（形态/格式）。消费方是会话层（成员据此标注术语）。
+- id: visual-rules.yaml#chart
+  file: visual-rules.yaml
+  prefix: chart
+  key_count: 4
+  keys_sha256: 2e0069aa0710f4f3d1813a7a8ab6e4446128755f
+  leaf_unused: 0
+  leaf_weak: 4
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 图表类检查项（未实现项已登记）。
+- id: visual-rules.yaml#density
+  file: visual-rules.yaml
+  prefix: density
+  key_count: 4
+  keys_sha256: 2773f92b646914e8d1ec706b53743e12e372a452
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 会话层+主理人
+  disposition: 新增键须登记
+  note: 降密策略与执行顺序。执行顺序是**给成员的指令**，不由脚本判定。
+- id: visual-rules.yaml#overlay_injection
+  file: visual-rules.yaml
+  prefix: overlay_injection
+  key_count: 4
+  keys_sha256: 270ab8a8f36ab1f36ba055477041ae25da94cf98
+  leaf_unused: 0
+  leaf_weak: 4
+  consumer: 脚本
+  disposition: 新增键须接线
+  note: 备注注入参数（重叠率/审计等）。inject_notes.py 真正读取。
+- id: language-profile.yaml#consistency
+  file: language-profile.yaml
+  prefix: consistency
+  key_count: 3
+  keys_sha256: a3421c929fa975268d399df1ac8335b3732b5300
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 脚本+会话层+主理人
+  disposition: 新增键须登记
+  note: 语言一致性策略。消费方是会话层。
+- id: harness.yaml#context
+  file: harness.yaml
+  prefix: context
+  key_count: 2
+  keys_sha256: a3d40be22cf997a1daac02b25e33bb2abae6b8bf
+  leaf_unused: 0
+  leaf_weak: 2
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 上下文装配参数。
+- id: harness.yaml#fallback
+  file: harness.yaml
+  prefix: fallback
+  key_count: 2
+  keys_sha256: b576cdbef707a16380e898aa97175436c86dc3e6
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 会话层+主理人
+  disposition: 新增键须登记
+  note: 降级通道（spawn 失败/不可用时的处置）。与 domain-profiles.yaml#fallback **同名但不同语义**（ADR-6）。
+- id: visual-rules.yaml#font
+  file: visual-rules.yaml
+  prefix: font
+  key_count: 2
+  keys_sha256: 0185ebe703788c2ce314b2dc37c57eb361c384c2
+  leaf_unused: 0
+  leaf_weak: 2
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 字体规格约束。
+- id: visual-rules.yaml#gate
+  file: visual-rules.yaml
+  prefix: gate
+  key_count: 2
+  keys_sha256: 07448f7f0ca860d781886817740a8d4e5a5cd60f
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 会话层+主理人
+  disposition: 新增键须登记
+  note: 门禁档位说明（写回/交付）。消费方是会话层。
+- id: harness.yaml#delta_gate
+  file: harness.yaml
+  prefix: delta_gate
+  key_count: 1
+  keys_sha256: bd99090378047f7942e3f8b68b7c3d01db2b7bdf
+  leaf_unused: 0
+  leaf_weak: 0
+  consumer: 会话层+主理人
+  disposition: 新增键须登记
+  note: Delta 门禁判据。多数键已接线；`insert_font_at_creation` 属**结构性不可判定**（写入时行为，成品无痕迹）。
