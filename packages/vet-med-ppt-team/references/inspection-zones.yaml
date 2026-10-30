@@ -112,9 +112,9 @@ segments:
 - id: domain-profiles.yaml#domains
   file: domain-profiles.yaml
   prefix: domains
-  key_count: 794
-  keys_sha256: 4f57817fcd8f266e44057c6633db0e5350f4a590
-  leaf_unused: 18
+  key_count: 784
+  keys_sha256: 21099c04a210c21bd5e8d3d6f4ff6f70e3e039cd
+  leaf_unused: 8
   leaf_weak: 610
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记

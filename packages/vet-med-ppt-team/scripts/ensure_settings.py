@@ -113,7 +113,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 26  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对；v3.27.0 L-7：26 根⇄镜像提交态一致性）
+N = 27  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对；v3.27.0 L-7：26 根⇄镜像提交态一致性；v3.28.2 D17：27 YAML 1.1 布尔键陷阱）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -2526,6 +2526,117 @@ def check_dead_config_keys(expert_dir):
     return 1 if (dead or weak_list) else 0
 
 
+#: YAML 1.1 里会被解析成**布尔**的裸标量（YAML 1.2 core schema 已移除 y/n）。
+#: ⚠ 这些词作**值**是正当的（enabled: no），作**键**则**几乎必然是误写**
+#:   —— 作者想写「序号 no」/「开关 on」，PyYAML 却给了一个 `False`/`True` 的键
+#:   ⇒ 此后任何 `cfg.get("no")` **恒返回 None**，且**不报错**（静默失效）。
+_YAML11_BOOL_WORDS = frozenset({
+    "yes", "no", "on", "off", "true", "false", "y", "n",
+})
+
+
+def scan_yaml_bool_keys(cfg_dir):
+    """扫 cfg_dir 下全部 yaml，返回「被 YAML 1.1 解析成布尔的**键**」清单。
+
+    返回 [(文件名, 行号, 列号, 原文)]，按 (文件, 行) 排序。
+
+    ⚠ **为什么用 `compose_all` 而不是 `safe_load`**：
+      `safe_load` 只给结果，拿不到**位置**；而这条守卫的价值恰在
+      「告诉作者**哪一行**写错了」⇒ 必须走**节点树**（`yaml.Node` 带 `start_mark`）。
+    ⚠ **只看键位**：MappingNode 的 key 子节点才检查
+      ⇒ 值位写 `enabled: no` 是**正当**的，不得误报（假阳性必须为零）。
+    """
+    try:
+        import yaml as _y
+    except Exception:
+        return []
+    hits = []
+    cur_file = [""]
+
+    def walk_node(node):
+        if isinstance(node, _y.MappingNode):
+            for k_node, v_node in node.value:
+                if (isinstance(k_node, _y.ScalarNode)
+                        and k_node.tag == "tag:yaml.org,2002:bool"
+                        and k_node.value.lower() in _YAML11_BOOL_WORDS):
+                    hits.append((cur_file[0], k_node.value,
+                                 k_node.start_mark.line + 1,
+                                 k_node.start_mark.column + 1))
+                walk_node(v_node)
+        elif isinstance(node, _y.SequenceNode):
+            for c in node.value:
+                walk_node(c)
+
+    for cf in sorted(os.listdir(cfg_dir)):
+        if not cf.endswith((".yaml", ".yml")):
+            continue
+        fp = os.path.join(cfg_dir, cf)
+        try:
+            text = open(fp, encoding="utf-8").read()
+        except Exception:
+            continue
+        try:
+            roots = list(_y.compose_all(text, Loader=_y.SafeLoader))
+        except Exception:
+            continue  # 解析失败由第 18 项自己的分支报，这里不重复报
+        cur_file[0] = cf
+        for r in roots:
+            walk_node(r)
+    # 按 (文件, 行, 列) 排序 ⇒ 输出稳定可比对
+    return sorted(hits, key=lambda t: (t[0], t[1], t[2]))
+
+
+def check_yaml_bool_keys(expert_dir):
+    """第 27 项：YAML 1.1 **布尔键陷阱**巡检（阻断）。
+
+    病灶（本轮实测，可证伪）：
+      `config/domain-profiles.yaml:199-208` 十处写作 `{no: 1, name: ..., focus: ...}`
+      —— 作者意图是「**序号** no」，而 PyYAML 按 **YAML 1.1** 把裸 `no` 解析成
+      **布尔 False** ⇒ 键名变成 `False` ⇒ 此后任何 `m.get("no")` **恒返回 None**。
+      ⇒ 它同时是**两重缺陷**：① 静默失效的键；② 在第 18 项里显示为
+        一个名为 `False` 的「待人工定性候选」（把解析事故伪装成待办）。
+      ⇒ 全仓实证：`.get("no")` / `["no"]` 读取点 **0 处** ⇒ 删掉零信息损失。
+
+    ⚠ **为什么判阻断而不是提示**：
+      布尔键**没有正当用途**（布尔作**值**才正当，本项只看键位）
+      ⇒ 命中即事故，不是待办。且当前仓库命中数 **0** ⇒ 判阻断不会制造假阳性。
+
+    ⚠ **措辞纪律**：命中时明确写出「**原意图键名**」与「**实际键名**」
+      ⇒ 让作者一眼看懂「我写的 no 变成了 False」。
+    """
+    cfg_dir = os.path.join(expert_dir, "config")
+    if not os.path.isdir(cfg_dir):
+        print(f"[27/{N}] – 无 config/ 目录，跳过")
+        return 0
+    try:
+        hits = scan_yaml_bool_keys(cfg_dir)
+    except Exception as e:
+        # ⚠ 与既有纪律一致：体检项崩溃 = 掩盖真实失败，比误判红更危险 ⇒ 显式报错并判红
+        print(f"[27/{N}] 🔴 布尔键巡检异常：{e}")
+        return 1
+
+    if hits:
+        print(f"[27/{N}] 🔴 YAML 1.1 布尔键陷阱 {len(hits)} 处（**键位**被误解析成布尔）：")
+        for cf, raw, line, col in hits[:20]:
+            actual = {"yes": True, "no": False, "on": True, "off": False,
+                      "true": True, "false": False, "y": True, "n": False}.get(
+                          raw.lower(), raw)
+            print(f"     config/{cf}:{line}:{col}  原意图键名 {raw!r} "
+                  f"→ 实际键名 {actual!r}")
+        if len(hits) > 20:
+            print(f"     …… 另 {len(hits) - 20} 处省略")
+        print("     → 后果：任何 `cfg.get("
+              + repr(hits[0][1]) + ")` **恒返回 None**，且不报错（静默失效）。")
+        print("     → 修法二选一：")
+        print("        ① 该字段只是作者备注（如序号）⇒ **删掉**该键；")
+        print(f"        ② 该字段确有语义 ⇒ **加引号**写成 {{\"{hits[0][1]}\": …}} 保住字符串键名。")
+        return 1
+
+    print(f"[27/{N}] ✓ 无 YAML 1.1 布尔键陷阱"
+          f"（config/ 下全部映射键均为字符串/数字，无裸 yes/no/on/off/true/false/y/n）")
+    return 0
+
+
 def collect_block_segments(expert_dir):
     """返回「免检区（块级消费段）」清单（v3.25.0 · 供登记表守卫与 dump 开关复用）。
 
@@ -3975,6 +4086,8 @@ def main():
     rc |= check_harness_fallback_structure(path)
     # v3.27.0（L-7）：根 ⇄ 分发镜像 提交态一致性（阻断；防镜像漂移进入发布）
     rc |= check_mirror_committed_parity(path)
+    # v3.28.2（D17）：YAML 1.1 布尔键陷阱（阻断；防「写 no: 得到 False 键」静默失效）
+    rc |= check_yaml_bool_keys(path)
 
     print()
     #: ⚠ **v3.27.0 收尾：把「未验证」透传到最终结论**。

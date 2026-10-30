@@ -28,13 +28,41 @@
 ⇒ 登记若写大写 `"M8A1"`，则 `'m8a1' in kt` **恒为 False** ⇒ 登记**静默失效**（无任何报错）。
 **纪律：登记一律写小写**，且登记后必须用实时计数验证（数没变 ⇒ 登记没生效）。
 
+### 批 B 类 — 删 10 处 `no:` 键（D17 · YAML 1.1 布尔陷阱）· 已落地
+
+**病灶**：`config/domain-profiles.yaml:199-208` 十处写作 `{no: 1, name: …, focus: …}`
+—— 作者意图是「**序号** `no`」，而 PyYAML 按 **YAML 1.1** 把裸 `no` 解析成 **布尔 `False`**
+⇒ 键名实际变成 `False`。
+
+★ **这是「静默的形态篡改」，两重危害**：
+  ① 此后任何 `m.get("no")` **恒返回 None** 且**不报错** ⇒ 问题被推迟到更远处爆炸；
+  ② 在第 18 项里显示为一个叫 `False` 的「待人工定性候选」
+     ⇒ **把解析事故伪装成待办**，按流程走下去会去「人工定性一个布尔值」。
+
+**裁定**：删（用户拍板）。实证依据 —— 全仓 `.get("no")` / `["no"]` 读取点 **0 处**；
+装配器只渲染 `name`/`focus`（`assemble_domain_prompt.py:591-593`）⇒ 删键零信息损失；
+序号由**列表顺序**隐含。
+
+**量化**：免检区 **1514 → 1504 键**（−10）；`leaf_unused` **28 → 18**；
+三桶闭合 **`457 + 18 + 1029 = 1504`** ✓；死键 0。
+
+**新增守卫（第 27 项 `check_yaml_bool_keys`，阻断级）**：
+扫描 `config/*.yaml` 全部**映射键位**，检出被 YAML 1.1 解析成布尔的键
+（`yes`/`no`/`on`/`off`/`true`/`false`/`y`/`n`），报 `file:line:col` + 原意图键名 → 实际键名。
+⚠ **只看键位**：值位写 `enabled: no` 是正当用法 ⇒ 不得误报（守卫自身不得制造假阳性）。
+配套红证明 `scripts/test_yaml_bool_key_guard.py`（**4 用例**，三层：正向检出 → 端到端 rc=1 → 变异反证）。
+★ 正向对照实测：把 10 处陷阱还原回去 ⇒ 第 27 项立即报 **10 处**且行列精确；还原后 md5 一致 ✓。
+
 ### 待办（下一批）
 
-- **B 类（10 键）** —— `False` 键 = YAML 1.1 布尔陷阱（`{no: 1}` 被解析成布尔键 `False`）。
-  修法**二选一待拍板**：① 删 `no:` 键（序号由列表顺序隐含）② 改写 `{"no": N}` 加引号保键。
-  改 `config/*.yaml` 真源 ⇒ 须管家节点确认后才动。
-- **C 类（18 键 · 4 处接线）** —— `assemble_domain_prompt.py` 8 键漏渲染、第 22 项守卫 4 键下沉、
-  `case_extract.py` 4 键 `active` 开关、`harness.py` + 装配器 2 键。每处独立 commit 可回滚。
+- **C 类（18 键 · 4 处接线）** —— 进行中：
+  - **C1** `assemble_domain_prompt.py` 8 键漏渲染：`inaccessible_rule`×3（二之五段）、
+    `interaction_forms`×2（二之三段）、`sibling_architecture`+`trim_priority`（二之四段）、
+    `image_science_ownership`（四段）
+  - **C2** 第 22 项守卫 4 键：`md_area_terms` 把 `test_arch_drift` T8 断言下沉为生产校验
+  - **C3** `case_extract.py` 4 键：`active` 开关（加载时跳过 `active=false` 的域）
+  - **C4** `harness.py` + 装配器 2 键：`on_profile_missing`、`is_user_default`
+  - 每处独立 commit 可回滚，每处配能红判据。
 
 ---
 
