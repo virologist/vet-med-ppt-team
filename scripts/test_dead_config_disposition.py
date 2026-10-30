@@ -397,6 +397,17 @@ class TestInspectionZoneRegistry(unittest.TestCase):
       R3 比的是「段内叶子路径**集合**是否变化」，不是「谁读了它」
       ⇒ 不需要叶子级白名单（那等于又一份声明源）
       ⇒ 段内新增一个键 ⇒ 必红 ⇒ 必须显式登记处置规则（新增键须登记/须接线/禁止新增）。
+
+    ⚠ **v3.28.2：R3/R4 按登记表顶层的 `digest_scheme` 分派口径**：
+      · `indexed-set-v2`（**新口径**，当前登记表）：对「**带下标**的叶子路径
+        **集合**」求指纹 ⇒ 段内某元素的**内容**改变也能检出
+        （旧口径下改内容不改指纹 ⇒ 假阴性）。
+      · `folded-multiset-v1`（**旧口径**，缺省）：对「折叠路径多重集」求指纹
+        ⇒ **向后兼容**：没升级的登记表**仍能过**（不会被误判成「脱节」）。
+      ⇒ 登记表**未**声明 `digest_scheme` ⇒ 按**旧口径**解释（缺省 = 旧口径）。
+      ⚠ **判据语义本身未被削弱**（用户对判据有拍板权）：R3 仍是
+        「实时 digest == 登记 digest」⇒ 不一致即判红；只是**按登记表自己声明的
+        口径**去算「实时 digest」⇒ 旧登记表的判据含义**不变**。
     """
 
     REGISTRY = PKG / "references" / "inspection-zones.yaml"
@@ -440,6 +451,10 @@ class TestInspectionZoneRegistry(unittest.TestCase):
     def test_T9_registry_segments_match_live(self):
         """R2+R3+R4+R5：登记的每段都必须与实时状态**完全一致**。"""
         problems = []
+        # ⚠ **v3.28.2：指纹口径按登记表顶层的 `digest_scheme` 分派**。
+        #   缺省 = 旧口径（`folded-multiset-v1`）⇒ **旧口径登记表仍能过**
+        #   （向后兼容：登记表没升级时，守卫按旧算法比对，不误判「脱节」）。
+        scheme = self.reg.get("digest_scheme") or self.es.DEFAULT_DIGEST_SCHEME
         for s in self.reg.get("segments") or []:
             sid = s.get("id")
             live = self.live.get(sid)
@@ -447,16 +462,21 @@ class TestInspectionZoneRegistry(unittest.TestCase):
                 problems.append(f"{sid}：登记的段在实时 config 中**不存在**（R2）")
                 continue
             # R3：键集合 digest（集合相等 ⇒ 段内增/删/改名任一 ⇒ 判红）
-            live_sha = self.es.segments_digest(live["keys"])
+            live_sha = self.es.segments_digest(
+                self.es.segment_digest_inputs(live, scheme), scheme=scheme)
             if live_sha != s.get("keys_sha256"):
                 problems.append(
                     f"{sid}：键集合已变（登记 {s.get('keys_sha256')} ≠ 实时 {live_sha}）"
                     f"——段内新增/删除/改名了键，请更新登记表或显式处置该新增键（R3）")
             # R4：键数（与 R3 交叉核对，防只改一个字段）
-            if int(live and len(live["keys"])) != int(s.get("key_count", -1)):
+            # ⚠ `key_count` 与 `keys_sha256` **同口径**（`segment_key_count`）
+            #   ⇒ 两条判据不会互相打架（口径不一致会让「只改一个字段」有可乘之机）。
+            live_count = self.es.segment_key_count(
+                self.es.segment_digest_inputs(live, scheme), scheme=scheme)
+            if int(live_count) != int(s.get("key_count", -1)):
                 problems.append(
                     f"{sid}：键数不一致（登记 {s.get('key_count')} ≠ "
-                    f"实时 {len(live['keys'])}）（R4）")
+                    f"实时 {live_count}）（R4）")
         # R5：双向集合相等
         reg_ids = {s.get("id") for s in self.reg.get("segments") or []}
         live_ids = set(self.live)
@@ -705,10 +725,12 @@ def _load_es_from(root: Path, name: str):
 
 
 #: **修复后**（当前）的判定分支片段 —— 变异体的替换源。
+#: ⚠ **v3.28.2 更新**：`_is_textual(fname, full)` 改为 `_is_textual(fname, _plain)`
+#:   （判定用**剥下标**路径 ⇒ 判定口径与修复前逐字一致；下标只进段键集合）。
 FIXED_BRANCH_BLOCK = '''            _full_hit = bool(n_full and n_full in norm_reads)
             if _full_hit or _a_path:
                 alive += 1
-            elif _is_textual(fname, full):
+            elif _is_textual(fname, _plain):
                 textual += 1          # 人读型登记在案，无代码读取者是合理的
                 if _b_block:
                     # 块级证据与人读型**同时成立** ⇒ 保留段归属，但不算「待人工定性候选」。
@@ -718,8 +740,12 @@ FIXED_BRANCH_BLOCK = '''            _full_hit = bool(n_full and n_full in norm_r
                     _seg_key = f"{fname}#{_b_prefix}"
                     _seg = block_segments.setdefault(
                         _seg_key,
-                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                        {"file": fname, "prefix": _b_prefix, "keys": [],
+                         "idents": [], "leaf_unused": 0})
+                    # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                    #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                     _seg["keys"].append(full)
+                    _seg["idents"].append(_ident)
             elif _b_block:
 '''
 
@@ -957,6 +983,418 @@ class TestJudgementBranchOrder(unittest.TestCase):
         self.assertEqual(mut_txt, base_txt,
                          "T34：变异体下 textual 计数仍 +1 —— "
                          "变异未生效（人读型判定没被短路掉），本反例无效")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# T35–T38：免检区段指纹的「**元素身份**」守卫（带下标 + 带值）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 病灶（真实判据缺陷，已实测复现）：
+#   第 18 项的 `walk()` 遍历列表时把每个元素**折叠成同一条路径**
+#   （`walk(item, path, fname)` —— 不加下标）⇒ 段内叶子路径**集合丢失了元素身份**。
+#   而 `segments_digest()` 吃的是「折叠后的路径**多重集**」⇒
+#   改**某个元素的内容**（把 `expert_panel[2].id` 从 A 改成 B）
+#   **不改变**折叠后的路径多重集 ⇒ 指纹**不变** ⇒ 守卫 R3 判绿 ⇒ **假阴性**。
+#
+# ⚠ **实测得出的关键结论（本组判据的设计依据，逐条列明）**：
+#   ① **只带下标**的路径指纹**检测不到「值变更」**——因为改**值**时
+#      路径（`p[1].ident`）**一个字都没变** ⇒ 任何「纯路径」指纹都不变。
+#      ⇒ 「值」必须进入指纹身份，否则「内容变更可检出」这条核心判据是**假的**。
+#   ② **只带值、不带下标**的身份指纹**检测不到「元素换序」**——
+#      换序后同一批「路径折叠后+值」不变 ⇒ 折叠+值 的指纹不变。
+#      ⇒ 「下标」必须进入身份，否则「换序可检出」是假的。
+#   ⇒ 结论：**下标与值缺一不可** ⇒ 新口径 = 「带下标 + 带值」的叶子**身份集合**。
+#
+# ★ **本组判据全部自造隔离 fixture**（临时目录 + 自己的 config + 自己的 script）：
+#   不依赖仓库现有 config 的具体值 ⇒ 后续任何配置变动都不会让判据失效或假绿。
+# ⚠ **不写生产 config、不写生产 script**：全部改动都发生在 `tempfile.mkdtemp()`
+#   造的临时目录里，用完即删 ⇒ 并发下不会污染真包。
+
+#: fixture 的段名（被 fixture 里的脚本整块取走 ⇒ 产生**块级证据**）。
+DIGEST_FIXTURE_SEG = "probe_digest"
+#: fixture 列表里元素的键名（改名判据用它）。
+DIGEST_FIXTURE_KEY = "ident"
+#: fixture 列表里元素的另一个键名（用于「只改某个键的值」的精确打击）。
+DIGEST_FIXTURE_KEY2 = "mark"
+
+
+def _build_digest_fixture(root: Path, items=None):
+    """造一个「块级消费段 + 列表元素」的**最小隔离 fixture**。
+
+    目录形态：
+        <root>/config/probe.yaml       —— 段 `probe_digest` 里含一个**列表**
+        <root>/scripts/probe_reader.py —— 整块取走 `probe_digest`（⇒ 块级证据）
+
+    ⚠ 探针脚本**不**以 `test_` 开头 ⇒ 其读取点被 AST/链式读取点采集器计入
+      （否则 fixture 造不出块级证据，判据就失去意义）。
+    """
+    import yaml
+
+    if items is None:
+        items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "probe.yaml").write_text(
+        yaml.safe_dump({DIGEST_FIXTURE_SEG: {"entries": items}},
+                       allow_unicode=True, sort_keys=False),
+        encoding="utf-8")
+    (root / "scripts" / "probe_reader.py").write_text(
+        'def _read(cfg):\n'
+        '    return cfg["probe_digest"]\n',
+        encoding="utf-8")
+    return root
+
+
+def _revert_to_folded_walk(src: str) -> str:
+    """把 `walk()` 的**列表分支**换成**原形态**（折叠路径、不加下标）。
+
+    ⚠ 这是**变异体构造器**：它复刻的是**原缺陷形态**（列表元素被折叠）。
+    ⚠ **必须逐字**替换 ⇒ 匹配不上直接抛错（而不是静默变成
+      「什么也没改」的假 mutant ⇒ 那样变异证明会恒真）。
+    ⚠ **自足**：以**真包当前源码**为基（不读 git、不依赖 HEAD 历史）
+      ⇒ 真包本身处于变异态时本构造器**依然**有效。
+    """
+    old = '''        elif isinstance(node, list):
+            # ⚠ **v3.28.2**：列表元素**带下标**（修复前折叠 ⇒ 元素身份丢失）。
+            for _i, item in enumerate(node):
+                walk(item, f"{path}[{_i}]" if path else f"[{_i}]", fname)'''
+    new = '''        elif isinstance(node, list):
+            for item in node:
+                walk(item, path, fname)'''
+    if old not in src:
+        raise AssertionError(
+            "变异体锚点未逐字匹配（ensure_settings.py 的列表分支结构变了？）")
+    if src.count(old) != 1:
+        raise AssertionError("变异体锚点不唯一（ensure_settings.py 的列表分支结构变了？）")
+    return src.replace(old, new, 1)
+
+
+def _revert_to_path_only_identity(src: str) -> str:
+    """把「叶子身份」改成「**只带路径、不带值**」（第二个变异体）。
+
+    ⚠ 复刻的是「只做了下标、没做值」这个**半修**形态
+      ⇒ 它能检出「换序 / 增删 / 改名」，但**检不出「值变更」**
+      ⇒ 用来证明 T35（值变更判据）对它**有鉴别力**。
+    """
+    old = '''    if value is None:
+        return str(path)
+    return f"{path}={value!r}"'''
+    new = '''    return str(path)'''
+    if old not in src:
+        raise AssertionError(
+            "变异体锚点未逐字匹配（ensure_settings.py 的 leaf_identity 结构变了？）")
+    if src.count(old) != 1:
+        raise AssertionError("变异体锚点不唯一（ensure_settings.py 的 leaf_identity 结构变了？）")
+    return src.replace(old, new, 1)
+
+
+def _run_digest_fixture(root: Path):
+    """在 fixture 上跑第 18 项，返回 (rc, 输出, 段清单, 被测模块)。"""
+    es = _load_es_from(root, "es_t35_fixture")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = es.check_dead_config_keys(str(root))
+    return rc, buf.getvalue(), es.last_block_segments(), es
+
+
+class TestSegmentDigestElementIdentity(unittest.TestCase):
+    """T35–T38：免检区段指纹的「**元素身份**」守卫。
+
+    ★ 本组的价值：钉住的是「指纹**能否分辨元素的哪一次出现、哪个值**」
+      ⇒ 不会被配置演进打穿（判据自造 fixture，不依赖真实 config 的值）。
+    """
+
+    #: fixture 段的段键。
+    SEG_KEY = f"probe.yaml#{DIGEST_FIXTURE_SEG}"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.es = _load_es()
+
+    def _fixture_digest(self, items=None, es_src=None, name="es_t35"):
+        """造 fixture → 跑第 18 项 → 返回该段的 (keys, digest)。
+
+        ⚠ `es_src` 非空 ⇒ 用它当被测模块源码（供变异体使用）。
+        """
+        import shutil
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="vetmed-t35-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        _build_digest_fixture(root, items)
+        if es_src is None:
+            shutil.copy2(ES, root / "scripts" / "ensure_settings.py")
+        else:
+            (root / "scripts" / "ensure_settings.py").write_text(es_src,
+                                                                encoding="utf-8")
+        es = _load_es_from(root, name)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            es.check_dead_config_keys(str(root))
+        segs = es.last_block_segments()
+        self.assertIn(self.SEG_KEY, segs,
+                      "fixture 未造出免检区段——判据前提失效（块级证据没生效？）")
+        seg = segs[self.SEG_KEY]
+        return seg["keys"], es.segments_digest(
+            es.segment_digest_inputs(seg)), es
+
+    # ── T35：核心判据（**值变更** ⇒ 指纹必须变）────────────────
+    def test_T35_element_value_change_changes_digest(self):
+        """T35：段内某元素的**内容**（值）改变 ⇒ 指纹**必须变**。
+
+        ★ **本组的核心判据**。修复前（折叠路径多重集）它**必然 FAIL**：
+          改 `probe_digest.entries[1].ident` 的**值**（e1→CHANGED）时，
+          折叠后的路径集是「`entries.ident` 出现 2 次」——**一个字都没变**
+          ⇒ 指纹不变 ⇒ R3 判绿 ⇒ **假阴性**。
+
+        ⚠ **判据不依赖「当前数据恰好如此」**：fixture 完全自造
+          （临时目录 + 自己的 config + 自己的 script）。
+        """
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        changed_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "CHANGED", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        keys0, d0, _es = self._fixture_digest(base_items)
+        keys1, d1, _es2 = self._fixture_digest(changed_items)
+
+        self.assertNotEqual(
+            d0, d1,
+            "T35：段内元素的**值**改了，指纹却没变 ⇒ R3 检不出「内容变更」"
+            "（免检区段指纹的假阴性仍在）")
+
+        # ★ 对照：确认**变的是值**而不是别的（键路径集合必须完全相同）
+        #   ⇒ 证明本判据**精确命中**「值变更」，不是「别的也变了」的假通过。
+        self.assertEqual(
+            keys0, keys1,
+            "T35 对照组：两组 fixture 的**键路径集合**应完全相同"
+            "（唯一差异是值）——否则本判据证明的不是「值变更可检出」")
+
+    # ── T36：列表长度 ±1 ⇒ 指纹变 ──────────────────────────────
+    def test_T36_list_length_change_changes_digest(self):
+        """T36：段内列表长度 +1 / -1 ⇒ 指纹**必须变**。
+
+        防的是「有人把列表改短了/加长了，免检区却看不出来」。
+        """
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        longer = base_items + [{DIGEST_FIXTURE_KEY: "e2", DIGEST_FIXTURE_KEY2: "m2"}]
+        shorter = base_items[:1]
+
+        _k0, d0, _es = self._fixture_digest(base_items)
+        _k1, d1, _es1 = self._fixture_digest(longer)
+        _k2, d2, _es2 = self._fixture_digest(shorter)
+
+        self.assertNotEqual(d0, d1, "T36：列表长度 +1 但指纹未变 ⇒ 判据失效")
+        self.assertNotEqual(d0, d2, "T36：列表长度 -1 但指纹未变 ⇒ 判据失效")
+
+    # ── T37：元素**改名**（键名改名）⇒ 指纹变 ────────────────────
+    def test_T37_element_key_rename_changes_digest(self):
+        """T37：段内某元素的**键名**改名 ⇒ 指纹**必须变**。
+
+        防的是「把 `ident` 改成 `id`」这类改动（路径变了 ⇒ 身份变了）。
+        """
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        renamed = [
+            {"renamed_" + DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {"renamed_" + DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        _k0, d0, _es = self._fixture_digest(base_items)
+        _k1, d1, _es1 = self._fixture_digest(renamed)
+        self.assertNotEqual(d0, d1, "T37：元素键名改名但指纹未变 ⇒ 判据失效")
+
+    # ── T38：变异体必须能红（折叠形态 ⇒ 「顺序/重复元素」判据必须 FAIL）──
+    def test_T38_reverse_example_folded_walk_makes_identity_criteria_fail(self):
+        """T38 反例：把 `walk()` 改回**折叠路径**形态 ⇒ 「身份类」判据**必须失效**。
+
+        ★ 这是「判据能红」的证明：若这些判据在错误实现下也通过，
+          那它们就是恒真守卫 ⇒ 本组整体假绿。
+
+        ⚠ **为什么本变异体由「顺序/重复元素」判据来杀**（**实测结论，如实标注**）：
+          折叠形态下，段内键的**路径**不再带下标 ⇒
+            · 元素**换序** ⇒ 身份串集合**完全相同**（路径折叠了、值没变）
+              ⇒ 指纹**不变** ⇒ **检出不了**（这正是折叠的病根）。
+            · 新增一个**内容与已有元素相同**的元素 ⇒ 身份串集合**不变**
+              ⇒ 指纹**不变** ⇒ **检出不了**。
+          而「改元素**值**」这一类，折叠形态**仍能**检出（因为身份串里**含值**，
+          值变了身份就变了）⇒ 杀折叠形态的**不是**「值变更」判据。
+          ⇒ 故本组把两维判据**分工**（各自杀各自的变异体）：
+            · **值变更**判据（T35）⇒ 杀「只带路径、不带值」的**半修**形态（T38b）；
+            · **顺序/重复元素**判据（本条）⇒ 杀「折叠路径」形态（本条）。
+          ⇒ 两维各自有判据 ⇒ 缺任何一维的形态都**存活不了**。
+
+        ⚠ **变异体自足**：以**真包当前源码**为基（不读 git、不依赖 HEAD 历史）
+          ⇒ ① 提交后 HEAD 就变了，早版写法会失效——已踩；
+          ⇒ ② 真包本身处于变异态时（外部做变异测试）本用例**依然**有效。
+        ⚠ 变异**只发生在临时目录的副本里**（不改真包、不改生产 config）。
+        """
+        src = ES.read_text(encoding="utf-8")
+        mutant_src = _revert_to_folded_walk(src)
+
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        swapped = [
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+        ]
+        # 新增一个「内容与已有元素**完全相同**」的元素（折叠形态下集合不变）
+        duplicated = base_items + [
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"}]
+
+        # ① 变异体下：换序 ⇒ 指纹**不变**（复现原缺陷 ⇒ 判据必然失败）
+        _mk, d_mut, _esm = self._fixture_digest(base_items, es_src=mutant_src,
+                                                name="es_t38_mut")
+        _mk2, d_mut2, _esm2 = self._fixture_digest(swapped, es_src=mutant_src,
+                                                   name="es_t38_mut2")
+        self.assertEqual(
+            d_mut, d_mut2,
+            "T38：变异体（列表折叠回原形态）下，元素**换序**竟然改变了指纹 —— "
+            "说明变异未生效或该形态仍能检出换序 ⇒ 本反例无效")
+
+        # ② 变异体下：新增「重复内容」元素 ⇒ 指纹**不变**（同型漏检）
+        _mk3, d_mut3, _esm3 = self._fixture_digest(duplicated,
+                                                   es_src=mutant_src,
+                                                   name="es_t38_mut3")
+        self.assertEqual(
+            d_mut, d_mut3,
+            "T38：变异体（列表折叠回原形态）下，新增**重复内容**的元素竟然"
+            "改变了指纹 —— 说明该形态仍能检出重复元素 ⇒ 本反例无效")
+
+        # ③ 对照组：正确实现下，换序**必须**改指纹
+        #   （证明 ① 的「不变」确由变异引起，不是恒真）
+        _k0, d_ok, _es = self._fixture_digest(base_items)
+        _k1, d_ok2, _es1 = self._fixture_digest(swapped)
+        self.assertNotEqual(
+            d_ok, d_ok2,
+            "T38 对照组：正确实现下元素换序未改指纹 ⇒ 「下标」这一维失效，"
+            "本反例无法证明判据能红")
+
+        # ④ 对照组：正确实现下，新增「重复内容」元素**必须**改指纹
+        _k2, d_ok3, _es2 = self._fixture_digest(duplicated)
+        self.assertNotEqual(
+            d_ok, d_ok3,
+            "T38 对照组：正确实现下新增重复内容元素未改指纹 ⇒ "
+            "「元素身份可辨」失效，本反例无法证明判据能红")
+
+    # ── T38b：第二个变异体（只带下标、**不带值**）必须被 T35 杀掉 ──
+    def test_T38b_reverse_example_path_only_identity_makes_T35_fail(self):
+        """T38b 反例：把身份改成「**只带路径、不带值**」⇒ T35 必须失效。
+
+        ★ 这条针对的是「**半修**」形态：只做了下标、没做值。
+          它**能**检出换序 / 增删 / 改名，但**检不出值变更**
+          ⇒ 若 T35 只测「换序 / 增删 / 改名」，这个半修形态就会**存活**
+          ⇒ 本用例证明 T35 的判据**精确命中「值变更」**这一维。
+        """
+        src = ES.read_text(encoding="utf-8")
+        mutant_src = _revert_to_path_only_identity(src)
+
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        changed_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "CHANGED", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        _k0, d_mut, _esm = self._fixture_digest(base_items, es_src=mutant_src,
+                                                name="es_t38b_mut")
+        _k1, d_mut2, _esm2 = self._fixture_digest(changed_items,
+                                                   es_src=mutant_src,
+                                                   name="es_t38b_mut2")
+        self.assertEqual(
+            d_mut, d_mut2,
+            "T38b：变异体（身份只带路径、不带值）下，改元素**值**竟然改变了指纹 —— "
+            "说明该半修形态仍能检出值变更 ⇒ T35 的判据没有精确命中「值变更」")
+
+    # ── T38c：重复内容元素 ⇒ 正确实现必须检出（折叠形态检不出）────
+    def test_T38c_reverse_example_folded_walk_misses_duplicate_element(self):
+        """T38c 反例：新增一个「**内容与已有元素完全相同**」的元素 ⇒
+        正确实现必须检出，折叠形态**检不出**。
+
+        ⚠ **为什么单独一条**：这是「**集合 vs 多重集**」这一维的判据。
+          折叠形态下，新元素的「折叠路径 + 值」与已有元素**完全相同**
+          ⇒ 身份串**集合**不变 ⇒ 指纹不变 ⇒ 漏检。
+          而带下标的正确实现下，新元素是 `entries[2].ident='e1'`
+          ⇒ 与 `entries[1].ident='e1'` **不同** ⇒ 集合变大 ⇒ 指纹变。
+        """
+        base_items = [
+            {DIGEST_FIXTURE_KEY: "e0", DIGEST_FIXTURE_KEY2: "m0"},
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"},
+        ]
+        duplicated = base_items + [
+            {DIGEST_FIXTURE_KEY: "e1", DIGEST_FIXTURE_KEY2: "m1"}]
+
+        # 正确实现 ⇒ 必须检出
+        _k0, d_ok, _es = self._fixture_digest(base_items)
+        _k1, d_ok2, _es1 = self._fixture_digest(duplicated)
+        self.assertNotEqual(
+            d_ok, d_ok2,
+            "T38c：正确实现下新增「重复内容」元素未改指纹 ⇒ "
+            "「元素身份可辨」这一维失效")
+
+        # 折叠形态 ⇒ 检不出（复现原缺陷）
+        src = ES.read_text(encoding="utf-8")
+        mutant_src = _revert_to_folded_walk(src)
+        _k2, d_mut, _esm = self._fixture_digest(base_items, es_src=mutant_src,
+                                                name="es_t38c_mut")
+        _k3, d_mut2, _esm2 = self._fixture_digest(duplicated,
+                                                  es_src=mutant_src,
+                                                  name="es_t38c_mut2")
+        self.assertEqual(
+            d_mut, d_mut2,
+            "T38c：变异体（折叠形态）下，新增「重复内容」元素竟然改变了指纹 —— "
+            "说明该形态仍能检出重复元素 ⇒ 本反例无效")
+
+    # ── T39：向后兼容——旧口径登记表仍能过（**不新增判据编号**）────
+    def test_T39_backward_compatible_old_scheme_registry_still_passes(self):
+        """T39：登记表**没写** `digest_scheme`（= 旧口径）⇒ 仍能过 R3/R4。
+
+        ★ **向后兼容的证明**：旧口径的 `keys_sha256` 是按「折叠路径多重集」算的。
+          本次把 `walk()` 改成带下标后，若不能**精确复现**旧值，
+          旧登记表会被误判成「脱节」⇒ 升级就会**逼所有人**重登一遍。
+        ⚠ 本用例**不写生产登记表**：只验证**算法层**能复现旧值
+          （真实登记表已升级为新口径，此处用 HEAD 原值做对照）。
+        """
+        import yaml
+        import subprocess
+
+        # ① 旧口径复现：把新口径的键**折回**旧形态后算指纹 ⇒ 必须等于旧登记值
+        old_reg = yaml.safe_load(
+            subprocess.run(
+                ["git", "show", "HEAD:references/inspection-zones.yaml"],
+                cwd=str(PKG), capture_output=True, text=True, check=True).stdout)
+        old_map = {s["id"]: s for s in old_reg["segments"]}
+        live = self.es.collect_block_segments(str(PKG))
+        bad = []
+        for sid, seg in live.items():
+            sha = self.es.segments_digest(seg["keys"],
+                                         scheme=self.es.DIGEST_SCHEME_FOLDED)
+            cnt = self.es.segment_key_count(seg["keys"],
+                                            scheme=self.es.DIGEST_SCHEME_FOLDED)
+            if sha != old_map[sid]["keys_sha256"] or cnt != old_map[sid]["key_count"]:
+                bad.append(sid)
+        self.assertEqual(
+            bad, [],
+            "旧口径无法复现 HEAD 原登记表的值 ⇒ 向后兼容是假的"
+            f"（{len(bad)} 段对不上）：{bad[:5]}")
+
+        # ② 缺省口径 = 旧口径（登记表不写 `digest_scheme` ⇒ 按旧口径解释）
+        self.assertEqual(self.es.DEFAULT_DIGEST_SCHEME,
+                         self.es.DIGEST_SCHEME_FOLDED,
+                         "缺省口径必须是旧口径，否则旧登记表会被误判成脱节")
 
 
 if __name__ == "__main__":

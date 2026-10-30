@@ -384,7 +384,8 @@ class TestRegistryJudgementsGoRed(unittest.TestCase):
 #:   静默变成「什么也没改」的假 mutant ⇒ 那样变异证明会恒真）。
 MUTANTS = {
     "R3_digest_branch_removed": (
-        '''            live_sha = self.es.segments_digest(live["keys"])
+        '''            live_sha = self.es.segments_digest(
+                self.es.segment_digest_inputs(live, scheme), scheme=scheme)
             if live_sha != s.get("keys_sha256"):
                 problems.append(
                     f"{sid}：键集合已变（登记 {s.get('keys_sha256')} ≠ 实时 {live_sha}）"
@@ -392,10 +393,12 @@ MUTANTS = {
         '''            pass  # MUTANT: R3 判据分支被整段删除''',
     ),
     "R4_key_count_branch_removed": (
-        '''            if int(live and len(live["keys"])) != int(s.get("key_count", -1)):
+        '''            live_count = self.es.segment_key_count(
+                self.es.segment_digest_inputs(live, scheme), scheme=scheme)
+            if int(live_count) != int(s.get("key_count", -1)):
                 problems.append(
                     f"{sid}：键数不一致（登记 {s.get('key_count')} ≠ "
-                    f"实时 {len(live['keys'])}）（R4）")''',
+                    f"实时 {live_count}）（R4）")''',
         '''            pass  # MUTANT: R4 判据分支被整段删除''',
     ),
     "R6_enum_branch_removed": (

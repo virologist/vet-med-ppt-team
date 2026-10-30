@@ -16,7 +16,31 @@
 # 本登记表把「免检区」从**一个总数**变成**可行动清单**：
 #   · `consumer`       —— 这段由谁消费（脚本 / 会话层 / 主理人）
 #   · `disposition`    —— 这段里**新增键**该怎么处置
-#   · `keys_sha256`    —— 段内叶子路径集合的指纹（**集合相等**语义）
+#   · `keys_sha256`    —— 段内叶子**身份集合**的指纹（**集合相等**语义）
+#
+# ⚠ **`digest_scheme` 字段（顶层）—— 指纹口径声明**：
+#   · `indexed-set-v2` —— **当前口径**：对「**带下标 + 带值**的叶子**身份集合**」
+#     求指纹。身份串形态 = `<路径>=<值的 repr>`（如
+#     `domains[0].expert_panel[2].id='avian_virologist'`）。
+#     ⇒ **带下标**：元素身份可辨（换序 ⇒ 下标变 ⇒ 身份变；
+#       新增「内容重复」的元素 ⇒ 下标变 ⇒ 身份变）。
+#     ⇒ **带值**：内容变更可辨（改 id 的**值** ⇒ 身份变）。
+#     ⚠ 实测证明：**只带路径**的指纹（哪怕带下标）**检测不到值变更**
+#       （改值时路径一个字都没变）⇒ 值必须进身份，否则核心判据是假的。
+#   · `folded-multiset-v1` —— **旧口径**（缺省）：对「**折叠路径多重集**」求指纹。
+#     ⚠ 旧口径**漏检**三类改动（折叠后路径集不变 ⇒ 指纹不变 ⇒ 假阴性）：
+#       ① 元素**改内容**（值变）；② 元素**换序**；③ 新增**内容重复**的元素。
+#     ⇒ 这正是本次升级要修的缺陷。
+#   ⇒ **缺省 = 旧口径** ⇒ 登记表若**未**声明本字段，守卫按旧口径解释
+#     ⇒ **旧口径登记表仍能过**（向后兼容，不会被误判成「脱节」）。
+#   ⇒ 升级口径后**必须**重新生成 `keys_sha256`（39 段的值全部会变）。
+#
+# ⚠ **`key_count` 与 `keys_sha256` 必须同口径**：
+#   `key_count` = **带下标**叶子身份**去重后**的数量（与 `indexed-set-v2` 一致）
+#   ⇒ 否则「只改一个字段就蒙混过关」这条交叉核对会出现口径缺口
+#   （R3 与 R4 互相打架 ⇒ 误以为有双保险）。
+#   ⚠ 实测：本次升级后 39 段的 `key_count` **全部不变**（路径数没变，
+#     只是身份串多了「=值」部分 ⇒ 数量不变）⇒ 旧 `key_count` 值继续有效。
 #
 # ⚠ **`leaf_unused` 字段的口径**（本次修复后已变，看清楚再读）：
 #   `leaf_unused` = 该段里「**末段键名在代码中 0 出现**」的键数
@@ -27,12 +51,16 @@
 #     本段的 `keys_sha256` 覆盖范围内（段级增量守卫 R3 不被削弱）。
 #   ⇒ 因此本次修复让 `leaf_unused` 合计从 211 降到 145（**66 键**是
 #     「早被登记定性、却被判定顺序短路成假候选」的那一批）。
+#   ⚠ **带下标 + 带值改造后 `leaf_unused` 合计仍是 145**（口径未变：仍按
+#     「末段键名在代码中 0 出现」计，与元素下标、与值都无关）。
 #
 # ── 守卫（`scripts/test_dead_config_disposition.py::TestInspectionZoneRegistry`）──
 #   R1  文件存在且含全部段（缺即 FAIL——它是必交付物）
 #   R2  登记的段在实时 config 中仍存在
-#   R3  实时叶子路径集合 digest == 登记 `keys_sha256`（段内增/删/改名任一键 ⇒ 判红）
-#   R4  实时 `key_count` == 登记 `key_count`（与 R3 交叉核对）
+#   R3  实时叶子身份集合 digest == 登记 `keys_sha256`（段内增/删/改名任一键 ⇒ 判红）
+#       ⚠ 按顶层 `digest_scheme` 声明的口径计算「实时 digest」
+#         （缺省 = 旧口径 ⇒ 向后兼容）
+#   R4  实时 `key_count` == 登记 `key_count`（与 R3 交叉核对，**同口径**）
 #   R5  实时段集合 == 登记段集合（双向：新段未登记 / 登记了不存在的段 ⇒ 判红）
 #   R6  `consumer` / `disposition` ∈ 枚举
 #
@@ -46,6 +74,7 @@
 # `keys_sha256`（否则 R3 判红——这是刻意的：升级必须重新审视免检区）。
 # ═══════════════════════════════════════════════════════════════════════
 
+digest_scheme: "indexed-set-v2"
 version: "3.28.1"
 
 segments:
@@ -53,7 +82,7 @@ segments:
     file: "domain-profiles.yaml"
     prefix: "domains"
     key_count: 794
-    keys_sha256: "0bf11a68a391f6f75b5328b4b25046e0acaa2ea1"
+    keys_sha256: "4f57817fcd8f266e44057c6633db0e5350f4a590"
     leaf_unused: 112
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -62,7 +91,7 @@ segments:
     file: "external-tools.yaml"
     prefix: "channels"
     key_count: 83
-    keys_sha256: "0b2fdbaa3ebf616bbbf060acd5778339cf5bfcfc"
+    keys_sha256: "2de5a099abc31527371c0aa7f5d0afd4f0bc34dd"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -71,7 +100,7 @@ segments:
     file: "hygiene-words.yaml"
     prefix: "domain_specific_terms"
     key_count: 78
-    keys_sha256: "452d3cb4a03e881f0c624425d2c013a084820b34"
+    keys_sha256: "0d68db332489b5cc0c7a8195c71f7510857a0317"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -80,7 +109,7 @@ segments:
     file: "domain_config.yaml"
     prefix: "three_source_check"
     key_count: 71
-    keys_sha256: "88f3e8fe4d3a439972cd7481232dec63d93e0fc0"
+    keys_sha256: "84b0043a5999dbd04b8620892badf13cf5db1d2b"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须接线"
@@ -89,7 +118,7 @@ segments:
     file: "harness.yaml"
     prefix: "gate1_freeze"
     key_count: 40
-    keys_sha256: "1dde22d08874b3ef364a3ba4a0344b45d39ff5b1"
+    keys_sha256: "45b5e4ffe6c8f515d330b6bc79501b53ed53f6db"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -98,7 +127,7 @@ segments:
     file: "harness.yaml"
     prefix: "members"
     key_count: 39
-    keys_sha256: "b81af728d2e4205cebffb8b8acdc45182bfc5679"
+    keys_sha256: "0cb4d1fd977b4891613224850477364c28fa5e72"
     leaf_unused: 19
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -107,7 +136,7 @@ segments:
     file: "external-tools.yaml"
     prefix: "knowledge_bases"
     key_count: 38
-    keys_sha256: "aae46969f2e6b909362055969fe0946234bfb51d"
+    keys_sha256: "0aa80a29212af6f71d31e6251aa988ffe0ec7efc"
     leaf_unused: 1
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -116,7 +145,7 @@ segments:
     file: "harness.yaml"
     prefix: "loop_b"
     key_count: 38
-    keys_sha256: "b337ff2f2c9833b8488b8d1bc262eadb9e294118"
+    keys_sha256: "a0bdc7099262b3a075d6e7f885719e4a13637859"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -125,7 +154,7 @@ segments:
     file: "domain_config.yaml"
     prefix: "disease_modules"
     key_count: 37
-    keys_sha256: "dad9b5cfbf6294a6a6f9eb52bd782415e64103a6"
+    keys_sha256: "ec926f2532ed0cf498037bed2c93ca8843c462d6"
     leaf_unused: 4
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -134,7 +163,7 @@ segments:
     file: "external-tools.yaml"
     prefix: "ima"
     key_count: 35
-    keys_sha256: "3eb52ff4ab8b83140c597503827ff6e2aec5a188"
+    keys_sha256: "3185814731730b70bc8480fd9b31a65faee90d7c"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -143,7 +172,7 @@ segments:
     file: "hygiene-words.yaml"
     prefix: "scan"
     key_count: 32
-    keys_sha256: "f8840374ea6eabbb981fa93e0aeec83214ad69af"
+    keys_sha256: "36c24863f6bb83538aaa5a83a21737eda5875843"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -152,7 +181,7 @@ segments:
     file: "domain_config.yaml"
     prefix: "domains"
     key_count: 28
-    keys_sha256: "6fc8a70e625b173ff8408e1f86e2140c81a5c4e2"
+    keys_sha256: "a000b50e441e23e21eb7e950958d7ae87d222980"
     leaf_unused: 4
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -161,7 +190,7 @@ segments:
     file: "harness.yaml"
     prefix: "stages"
     key_count: 27
-    keys_sha256: "bcb2bfea55967950a8d391385d96a57467e9dcc8"
+    keys_sha256: "e40d2441e66c5a8913bfeafa02f6b7354054006c"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -170,7 +199,7 @@ segments:
     file: "harness.yaml"
     prefix: "routing"
     key_count: 24
-    keys_sha256: "9da5dc807ec74d34c3ee2773213a884f5902e1f8"
+    keys_sha256: "eb3fc29a4c352acdf42a7909b2cdfe3e3b05f9b8"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -179,7 +208,7 @@ segments:
     file: "harness.yaml"
     prefix: "observability"
     key_count: 14
-    keys_sha256: "a5448b814233404aac86b87099c2882e7e0c2c47"
+    keys_sha256: "f25522ec7a504bc62733c8d243853ae9e7302bf9"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -188,7 +217,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "severity"
     key_count: 11
-    keys_sha256: "83fdeb0aefa3f5e31f4f9344e9bb8cd24e3c1d87"
+    keys_sha256: "bfca5f7ff790bf748caa909f51f83dd5c78712d7"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -197,7 +226,7 @@ segments:
     file: "harness.yaml"
     prefix: "loop_a"
     key_count: 10
-    keys_sha256: "44cb4c4621e624be11670f8fd2cc5a4ca732f209"
+    keys_sha256: "d127175aa192f6ef917227ec583ea3c697a2075f"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -206,7 +235,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "hours_page_range"
     key_count: 10
-    keys_sha256: "90346124eac5cc5ec908a434df81c9baba755db9"
+    keys_sha256: "38d8501f8dbd97f21f780fec606b7b0bc7367446"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -215,7 +244,7 @@ segments:
     file: "domain-profiles.yaml"
     prefix: "fallback"
     key_count: 9
-    keys_sha256: "db3d2d043048d5fa5252bf3c7b5ece4d4bacc973"
+    keys_sha256: "70ed15aa7e2dcb800590027d94dd9439c874f1eb"
     leaf_unused: 1
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -224,7 +253,7 @@ segments:
     file: "harness.yaml"
     prefix: "collapse"
     key_count: 9
-    keys_sha256: "98321a6e91065daf5308ff34d6f8f25640a62aeb"
+    keys_sha256: "19fef18599870a248e49986d2e272a53d8f8d111"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -233,7 +262,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "checks"
     key_count: 8
-    keys_sha256: "6f0e63be2d5ee12491af571adec0727f42efd62c"
+    keys_sha256: "0d5107de89e4cc99d824fd539d47c7c614ed1b51"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -242,7 +271,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "hours_page_range_single_ppt"
     key_count: 8
-    keys_sha256: "c6648c3420b0e739faaf63294f1ebce69c6b897a"
+    keys_sha256: "82c6f152a2374d941e71590e8a712abccf424236"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "禁止新增（冻结）"
@@ -251,7 +280,7 @@ segments:
     file: "guard.yaml"
     prefix: "cross_review_mapping"
     key_count: 7
-    keys_sha256: "9819aedb458dcc1338c368fc4265da4f51554975"
+    keys_sha256: "8d62a83e0f0c6de1d3bce5088ae3241660f01403"
     leaf_unused: 4
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须接线"
@@ -260,7 +289,7 @@ segments:
     file: "harness.yaml"
     prefix: "budgets"
     key_count: 7
-    keys_sha256: "1012d460a19733f86b949e87a7e6cefc0c0c3e43"
+    keys_sha256: "670c8d4fc615b39acb8f7e3bd5a93952f020a12e"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -269,7 +298,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "theme"
     key_count: 7
-    keys_sha256: "d045a3777624b5ceb0c034f320db0ff357734fc8"
+    keys_sha256: "534f553629cf8a5460818d9d896778f9f2858c2b"
     leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
@@ -278,7 +307,7 @@ segments:
     file: "external-tools.yaml"
     prefix: "domains_without_knowledge_bases"
     key_count: 6
-    keys_sha256: "4909ebf40b8e0f91842f21fca8caed8c98c313b7"
+    keys_sha256: "6a4284fe12d2666a522530e49e167968fffcd976"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -287,7 +316,7 @@ segments:
     file: "language-profile.yaml"
     prefix: "english_allowed_when"
     key_count: 6
-    keys_sha256: "6045b7476de85e4cc9db2b0be06cbcac3d46a9f8"
+    keys_sha256: "57d684eab3a4552a8b3724da8c402b75e776d557"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -296,7 +325,7 @@ segments:
     file: "domain_config.yaml"
     prefix: "image_fetch"
     key_count: 5
-    keys_sha256: "bdbe125d961c9e4cc9ca115e78cabd0a69af297f"
+    keys_sha256: "2f70aee2d58968326a354cd48aa4867dab2e1ead"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -305,7 +334,7 @@ segments:
     file: "harness.yaml"
     prefix: "gate_exit_codes"
     key_count: 5
-    keys_sha256: "290555dc8852f4ab5719761fa5c55041def100c8"
+    keys_sha256: "13dbd1435712476faf3a8d77432d285f15c205f6"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -314,7 +343,7 @@ segments:
     file: "language-profile.yaml"
     prefix: "terminology"
     key_count: 4
-    keys_sha256: "046227956794784c6abee7cfd7f2f2c3561dddf6"
+    keys_sha256: "f72b2f6d801f83020c6220a4fbbaf1ad7af8a556"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -323,7 +352,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "chart"
     key_count: 4
-    keys_sha256: "43ee63afe21462803a4df400380b2cf5b095d04a"
+    keys_sha256: "2e0069aa0710f4f3d1813a7a8ab6e4446128755f"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -332,7 +361,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "density"
     key_count: 4
-    keys_sha256: "77ec4eda4886b8e584f2f71a5984a03fd94c9601"
+    keys_sha256: "2773f92b646914e8d1ec706b53743e12e372a452"
     leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
@@ -341,7 +370,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "overlay_injection"
     key_count: 4
-    keys_sha256: "a3c7bedcd01982dd5eb49ad68cb61ac87d8a79ad"
+    keys_sha256: "270ab8a8f36ab1f36ba055477041ae25da94cf98"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须接线"
@@ -350,7 +379,7 @@ segments:
     file: "language-profile.yaml"
     prefix: "consistency"
     key_count: 3
-    keys_sha256: "494ef9e48cd249a3fbd3300269b56c27fe732e8f"
+    keys_sha256: "a3421c929fa975268d399df1ac8335b3732b5300"
     leaf_unused: 0
     consumer: "脚本+会话层+主理人"
     disposition: "新增键须登记"
@@ -359,7 +388,7 @@ segments:
     file: "harness.yaml"
     prefix: "context"
     key_count: 2
-    keys_sha256: "6b78df3e8176cce196b75f691807bc28a2260075"
+    keys_sha256: "a3d40be22cf997a1daac02b25e33bb2abae6b8bf"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -368,7 +397,7 @@ segments:
     file: "harness.yaml"
     prefix: "fallback"
     key_count: 2
-    keys_sha256: "6fd251b3d45af93fbd6deb52107f5cce7635c826"
+    keys_sha256: "b576cdbef707a16380e898aa97175436c86dc3e6"
     leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
@@ -377,7 +406,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "font"
     key_count: 2
-    keys_sha256: "f87ce7e88e021fd168e7b1760487bf22cd2a68f2"
+    keys_sha256: "0185ebe703788c2ce314b2dc37c57eb361c384c2"
     leaf_unused: 0
     consumer: "脚本"
     disposition: "新增键须登记"
@@ -386,7 +415,7 @@ segments:
     file: "visual-rules.yaml"
     prefix: "gate"
     key_count: 2
-    keys_sha256: "64906f3d5de4814004a7802c7d0aca45bfd26cb6"
+    keys_sha256: "07448f7f0ca860d781886817740a8d4e5a5cd60f"
     leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"
@@ -395,7 +424,7 @@ segments:
     file: "harness.yaml"
     prefix: "delta_gate"
     key_count: 1
-    keys_sha256: "b35ee5584cceba5e5b926966fcde4bd978b26b27"
+    keys_sha256: "bd99090378047f7942e3f8b68b7c3d01db2b7bdf"
     leaf_unused: 0
     consumer: "会话层+主理人"
     disposition: "新增键须登记"

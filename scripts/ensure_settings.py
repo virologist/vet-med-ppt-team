@@ -1880,6 +1880,33 @@ def check_dead_config_keys(expert_dir):
     # 使"这条配置路径是否真被访问"有了路径级判据，而不再依赖末段键名是否撞车。
     chain_reads = _collect_chain_reads(scripts_dir)
 
+    # ── v3.28.2：列表下标工具 ──────────────────────────────────
+    # 为什么需要（**真实判据缺陷**，已实测复现）：
+    #   `walk()` 遍历列表时，原实现把每个元素**折叠成同一条路径**
+    #   （`walk(item, path, fname)` —— 不加下标）⇒
+    #   段内叶子路径**集合丢失了元素身份**：
+    #   `expert_panel[2].id` 与 `expert_panel[0].id` 变成同一个 `expert_panel.id`。
+    #   ⇒ 改**某个元素的内容**（如把 `expert_panel[2].id` 从 A 改成 B）
+    #     **不会**改变折叠后的路径多重集 ⇒ 指纹**不变** ⇒ 守卫 R3 判绿
+    #     ⇒ **假阴性**（第 18 项「死配置巡检」的免检区段指纹漏检）。
+    #   实测：列表长度 ±1 ⇒ 指纹变；元素**改名** ⇒ 指纹变（路径变了）；
+    #         元素**改内容** ⇒ 指纹**不变**（这就是那个洞）。
+    # ⇒ 修法：列表元素改用**带下标**路径（`expert_panel[2].id`），
+    #   让指纹承载**元素身份**。
+    #
+    # ⚠ **段归属语义不变**（ADR-6：段键 = `<config 文件名>#<触发前缀>`）：
+    #   触发前缀仍是**不带下标的点号路径**（如 `domains`、`expert_panel`）
+    #   ⇒ 段前缀匹配时必须把下标**剥掉**再比。
+    _IDX_RE = re.compile(r"\[(\d+)\]")
+
+    def _strip_idx(path: str) -> str:
+        """剥掉路径里的数组下标：`a[0].b[2].c` → `a.b.c`。"""
+        return _IDX_RE.sub("", str(path))
+
+    def _strip_idx_segs(segs):
+        """剥掉**每个路径段**里的数组下标（段本身可能带下标，如 `domains[0]`）。"""
+        return [_strip_idx(s) for s in segs]
+
     def walk(node, path, fname):
         """递归收集叶子键。
 
@@ -1887,24 +1914,40 @@ def check_dead_config_keys(expert_dir):
         `cfg["domains"]["animal-medicine"]["label_zh"]`，末段 `label_zh`
         在别的分支下也可能出现，只查末段会误报；反过来，只查整条路径会漏报
         「代码读了同名字段但走的是另一条分支」，故**两段都查，任一命中即算有读取者**。
+
+        ⚠ **v3.28.2：列表元素走「带下标」路径**（`foo[0].bar`）。
+          语义分层（**三者必须分清**）：
+            · `full`  —— **带下标**的完整叶子路径 ⇒ 落进 `_seg["keys"]`
+                        ⇒ 指纹承载**元素身份**（修复前折叠 ⇒ 改内容不报）。
+            · `_segs` —— **剥下标**后的路径段 ⇒ 供 `norm_reads` / `chain_reads`
+                        匹配与段前缀判定使用（**判定逻辑逐字不变**）。
+            · `leaf`  —— 剥下标后的**末段键名**（`activation_hints`）⇒ `norm_reads`
+                        命中判定逻辑不变。
+          ⇒ 下标只影响**身份**，不影响**谁读了它**的判定。
         """
         nonlocal alive, textual, block, weak, weak_reg, block_textual
         if isinstance(node, dict):
             for k, v in node.items():
                 walk(v, f"{path}.{k}" if path else str(k), fname)
         elif isinstance(node, list):
-            for item in node:
-                if isinstance(item, (dict, list)):
-                    walk(item, path, fname)
-                else:
-                    walk(item, path, fname)
+            # ⚠ **v3.28.2**：列表元素**带下标**（修复前折叠 ⇒ 元素身份丢失）。
+            for _i, item in enumerate(node):
+                walk(item, f"{path}[{_i}]" if path else f"[{_i}]", fname)
         else:
             full = str(path)
-            leaf = full.split(".")[-1]
-            # 去掉数组下标（YAML 里不会有，这里防御性处理）
-            leaf = leaf.split("[")[0]
-            n_full, n_leaf = norm(full), norm(leaf)
-            _segs = full.split(".")
+            # ── 判定用的路径：剥掉全部下标（**判定逻辑逐字不变**）────────
+            #   原实现里列表元素的路径本来就不含下标 ⇒ 剥下标后与修复前**完全一致**
+            #   ⇒ alive / textual / block / dead 四个计数器的取值**不受**本次修复影响。
+            #   ⚠ 剥下标后**丢弃空段**（根级列表元素会产生 `""` 段）
+            #     ⇒ 与修复前「根级列表元素走 `str(k)` 路径」的形态对齐。
+            _segs = [s for s in _strip_idx_segs(full.split(".")) if s]
+            _plain = ".".join(_segs)
+            leaf = _segs[-1] if _segs else ""
+            n_full, n_leaf = norm(_plain), norm(leaf)
+            # ⚠ **v3.28.2**：段内键集合存**叶子身份串**（带下标的路径 + 值）。
+            #   ⇒ 指纹承载「**是哪个元素的哪个值**」，而不只是「有哪些路径」。
+            #   ⇒ 改**元素内容**（值变）⇒ 身份变 ⇒ 指纹变（核心判据）。
+            _ident = leaf_identity(full, node)
             # 路径段命中：逐段检查 `domains.active` → `.domains.active`、`.domains`、`.active`
             # （v3.13.0 曾写成只拼 segs[i:]，漏掉 i=0 的单段前缀 `.domains`，导致白名单整条失效）
             seg_hit = any("." + ".".join(_segs[:i + 1]) in path_prefixes
@@ -1965,7 +2008,7 @@ def check_dead_config_keys(expert_dir):
             _full_hit = bool(n_full and n_full in norm_reads)
             if _full_hit or _a_path:
                 alive += 1
-            elif _is_textual(fname, full):
+            elif _is_textual(fname, _plain):
                 textual += 1          # 人读型登记在案，无代码读取者是合理的
                 if _b_block:
                     # 块级证据与人读型**同时成立** ⇒ 保留段归属，但不算「待人工定性候选」。
@@ -1975,8 +2018,12 @@ def check_dead_config_keys(expert_dir):
                     _seg_key = f"{fname}#{_b_prefix}"
                     _seg = block_segments.setdefault(
                         _seg_key,
-                        {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                        {"file": fname, "prefix": _b_prefix, "keys": [],
+                         "idents": [], "leaf_unused": 0})
+                    # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                    #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                     _seg["keys"].append(full)
+                    _seg["idents"].append(_ident)
             elif _b_block:
                 alive += 1
                 block += 1
@@ -1986,23 +2033,30 @@ def check_dead_config_keys(expert_dir):
                 _seg_key = f"{fname}#{_b_prefix}"
                 _seg = block_segments.setdefault(
                     _seg_key,
-                    {"file": fname, "prefix": _b_prefix, "keys": [], "leaf_unused": 0})
+                    {"file": fname, "prefix": _b_prefix, "keys": [],
+                     "idents": [], "leaf_unused": 0})
+                # ⚠ **v3.28.2**：段键集合存**带下标**的路径（元素身份可辨）
+                #   ⇒ 另存**身份串**（路径+值）供指纹用 ⇒ 值变更也可检出。
                 _seg["keys"].append(full)
+                _seg["idents"].append(_ident)
                 # 「末段键名归一化后不在 AST 读取集」⇒ 该键连同名都没撞上 ⇒
                 # 连**弱证据**都没有 ⇒ 属「待人工定性候选」（不是死配置）。
                 if not (n_leaf and n_leaf in norm_reads):
                     _seg["leaf_unused"] += 1
-            elif seg_hit or _is_guard_consumed(fname, full):
+            elif seg_hit or _is_guard_consumed(fname, _plain):
                 textual += 1          # 人读型：登记在案，无代码读取者是合理的
             elif n_leaf and n_leaf in norm_reads:
                 # 弱证据：仅末段键名撞车。**不算已接线**，必须登记理由。
-                if _is_weak_registered(fname, full):
+                if _is_weak_registered(fname, _plain):
                     weak_reg += 1
                 else:
                     weak += 1
-                    weak_list.append((fname, full, node))
+                    # ⚠ 展示路径用**剥下标**形态（与修复前逐字一致 ⇒ 展示口径不变；
+                    #   下标只用于段内指纹的**身份**，不用于人读的「这个键在哪」）。
+                    weak_list.append((fname, _plain, node))
             else:
-                dead.append((fname, full, node))
+                # ⚠ 展示路径用**剥下标**形态（与修复前逐字一致 ⇒ 展示口径不变）。
+                dead.append((fname, _plain, node))
 
     cfg_files = [f for f in sorted(os.listdir(cfg_dir))
                  if f.endswith((".yaml", ".yml"))]
@@ -2194,18 +2248,148 @@ def last_block_segments():
 _LAST_BLOCK_SEGMENTS = {}
 
 
-def segments_digest(keys):
-    """段内叶子路径集合的 sha256 指纹（前 40 hex）。
+#: 免检区段指纹的口径代号。
+#:
+#: ⚠ **口径演进（本仓纪律：一个版本号只能在一个 commit 里被指名）**：
+#:   · `folded-multiset-v1` —— **旧口径**（≤ 3.28.1）：对「**折叠后**的叶子路径
+#:     **多重集**」求指纹（列表元素被折叠成同一条路径 ⇒ **元素身份丢失**）。
+#:   · `indexed-set-v2` —— **新口径**（本次引入）：对「**带下标**的叶子**身份**
+#:     **集合**」求指纹（去重 ⇒ **集合语义**；带下标 ⇒ **元素身份可辨**）。
+#:
+#: 旧口径**仅在 3.28.1 及之前有效**：它的 `keys_sha256` 与 `key_count`
+#: 是按「折叠路径多重集」算出来的，与新口径**不可比**。
+#: ⇒ 登记表顶层用 `digest_scheme` 字段声明自己用的是哪套口径；
+#:   守卫据此**分派**到对应的算法 ⇒ **旧口径登记表仍能过**（向后兼容）。
+DIGEST_SCHEME_FOLDED = "folded-multiset-v1"
+DIGEST_SCHEME_INDEXED = "indexed-set-v2"
 
-    定义（定稿，防歧义）：
-        sha256( "\\n".join(sorted(叶子完整路径)) ).hexdigest()[:40]
-        叶子完整路径 = "<段前缀>.<子路径>"（不含文件名、不含数组下标）
+#: 缺省口径 = 旧口径（向后兼容：**没写 `digest_scheme` 的登记表按旧口径解释**）。
+DEFAULT_DIGEST_SCHEME = DIGEST_SCHEME_FOLDED
 
-    ⚠ **集合相等**语义：顺序变化不影响（先排序）；
+
+def leaf_identity(path: str, value=None) -> str:
+    """叶子的**身份串**（新口径的指纹输入单元）。
+
+    形态：`<路径>` 或 `<路径>=<值>`（值非空时）。
+
+    ⚠ **为什么身份里必须带「值」（本仓判据的核心要求）**：
+      第 18 项免检区段指纹的**核心判据**是「段内某元素的**内容**改变 ⇒ 指纹变」。
+      实测证明：**只带路径**的指纹**做不到**这件事——
+      改 `expert_panel[2].id` 的**值**（A→B）时，路径 `expert_panel[2].id`
+      **一个字都没变** ⇒ 任何「纯路径」指纹（折叠的、带下标的、还是集合语义的）
+      ⇒ **全部不变** ⇒ 假阴性**依然存在**。
+      ⇒ 只有把**值**也纳入身份，「内容变更」才可能被检出。
+      ⚠ 旧口径（`folded-multiset-v1`）**不含值** ⇒ 它漏检这一类改动（正是本次
+        要修的缺陷）。
+
+    ⚠ **值的规范化**：`repr()` 会把 `1` 与 `True` 都写成不同形态（`1` / `True`），
+      但 `1` 与 `"1"` 分别是 `1` / `'1'` ⇒ 互不混淆（可区分类型），
+      这正是我们要的（`1` 与 `"1"` 在 YAML 里是**不同的值**）。
+    """
+    if value is None:
+        return str(path)
+    return f"{path}={value!r}"
+
+
+def fold_segment_keys(keys):
+    """把「新口径」段键折回「旧口径」形态（向后兼容用）。
+
+    ⚠ 旧口径 = 「**折叠路径多重集**」：剥掉下标、**去掉值**、**不去重**
+      （重复项保留 ⇒ 多重集）。
+    ⚠ **这是向后兼容的桥**：旧口径的 `keys_sha256` 是按「折叠路径多重集」算的
+      ⇒ 要复现旧值，就必须把新口径的带下标身份串**剥掉下标、去掉值**
+      （**不去重**——多重集语义要求重复项保留）。
+
+    ⚠ **为什么必须能精确复现**：登记表里**既有**按旧口径算的 `keys_sha256`，
+      也有按新口径算的 ⇒ 守卫要按 `digest_scheme` 分派到对应算法
+      ⇒ 旧口径这一路**必须**能用同一份带下标键集合算出与旧实现**逐字相同**的值，
+      否则旧登记表会被误判成「脱节」⇒ 向后兼容就是假的。
+    """
+    import re as _re
+    out = []
+    for k in keys:
+        s = str(k)
+        # 先切掉「=值」部分（若有），再剥下标
+        if "=" in s:
+            s = s.split("=", 1)[0]
+        out.append(_re.sub(r"\[\d+\]", "", s))
+    return out
+
+
+def segment_digest_inputs(seg, scheme=DIGEST_SCHEME_INDEXED):
+    """取某段的**指纹输入集合**（按口径分派）。
+
+    ⚠ **新口径**用 `seg["idents"]`（带下标 + 带值的**身份串**）
+      —— 身份串里已含路径与值 ⇒ 指纹承载「哪个元素的哪个值」。
+    ⚠ **旧口径**用 `seg["keys"]`（带下标路径）⇒ 由 `fold_segment_keys`
+      折回「折叠路径多重集」⇒ 与旧实现**逐字一致**（向后兼容）。
+    """
+    if scheme == DIGEST_SCHEME_INDEXED:
+        return seg.get("idents") or seg.get("keys") or []
+    return seg.get("keys") or []
+
+
+def segment_key_count(keys, scheme=DIGEST_SCHEME_INDEXED):
+    """段内键数（口径与 `segments_digest` 严格一致）。
+
+    ⚠ `keys` 参数在**新口径**下应传**身份串集合**（`seg["idents"]`），
+      在**旧口径**下传**段键集合**（`seg["keys"]`，折叠后即得旧值）。
+
+    ⚠ **为什么必须与指纹同口径**：R3（digest）与 R4（key_count）是**交叉核对**——
+      若两者口径不一致（指纹按「带下标集合」算、键数按「折叠多重集」算），
+      则「段内某元素的**内容**变了」这种改动**只改指纹不改键数**
+      ⇒ R3 抓得住（这是我们要的），但「折叠后路径数恰好不变」的改动
+      ⇒ 两条判据**都**可能放过 ⇒ 判据互相打架、误以为有双保险。
+    ⇒ 因此 `key_count` **必须**与 `keys_sha256` **同口径**：
+      · `indexed-set-v2`：带下标路径**去重后**的数量；
+      · `folded-multiset-v1`：折叠路径**多重集**的长度（= 旧口径）。
+    """
+    if scheme == DIGEST_SCHEME_INDEXED:
+        return len(set(keys))
+    # 旧口径：折叠后**多重集**长度（= 旧实现的 len(keys)，重复项保留）
+    return len(fold_segment_keys(keys))
+
+
+def segments_digest(keys, scheme=DIGEST_SCHEME_INDEXED):
+    """段内叶子**身份集合**的 sha256 指纹（前 40 hex）。
+
+    ── 口径一：`indexed-set-v2`（**新口径**，默认）────────────────────
+        sha256( "\\n".join(sorted(set(带下标的叶子身份串))) ).hexdigest()[:40]
+        叶子身份串 = "<段前缀>.<子路径>"（**含数组下标**，如 `expert_panel[2].id`）
+                      + "=" + repr(叶子值)（见 `leaf_identity`）
+
+    ── 口径二：`folded-multiset-v1`（**旧口径**，向后兼容用）────────────
+        sha256( "\\n".join(sorted(折叠后的叶子路径))) ).hexdigest()[:40]
+        叶子路径 = "<段前缀>.<子路径>"，**不含数组下标、不含值**
+        ⚠ **多重集**语义（不去重）⇒ 同一条路径出现 N 次就写 N 遍。
+
+    ⚠ **口径为什么升级（真实判据缺陷，已实测复现）**：
+      旧口径吃的是「**折叠后的路径多重集**」⇒
+        ① 改**某个元素的内容**（把 `expert_panel[2].id` 从 A 改成 B）
+           ⇒ 路径不变 ⇒ 折叠后的多重集不变 ⇒ 指纹**不变** ⇒ 守卫 R3 判绿
+           ⇒ **假阴性**（第 18 项免检区段指纹漏检）。
+        ② 列表元素**换序** ⇒ 折叠后仍是同一批路径 ⇒ 指纹**不变**。
+      ⇒ 新口径用「**带下标 + 带值**的叶子身份**集合**」⇒
+        内容变更（值变）⇒ 身份变 ⇒ 指纹变；
+        换序（下标变）⇒ 身份变 ⇒ 指纹变；
+        增删改名 ⇒ 身份变 ⇒ 指纹变。
+      ⚠ **实测（隔离 fixture）**：纯「带下标路径」口径**仍**检不出「值变更」
+        （路径一个字都没变）⇒ **必须**把值纳入身份，否则核心判据是假的。
+
+    ⚠ **集合相等**语义（两套口径共同遵守）：顺序变化不影响（先排序）；
       段内增/删/改名任一键 ⇒ 指纹变化 ⇒ 守卫判红。
+      ⚠ 新口径额外**去重** ⇒ 同一身份重复登记不改变指纹（多重集→集合）。
     """
     import hashlib
-    blob = "\n".join(sorted(keys)).encode("utf-8")
+    if scheme == DIGEST_SCHEME_INDEXED:
+        items = sorted(set(keys))
+    elif scheme == DIGEST_SCHEME_FOLDED:
+        items = sorted(fold_segment_keys(keys))
+    else:
+        raise ValueError(
+            f"未知指纹口径 {scheme!r}（合法值："
+            f"{DIGEST_SCHEME_INDEXED!r} / {DIGEST_SCHEME_FOLDED!r}）")
+    blob = "\n".join(items).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:40]
 
 
@@ -3378,14 +3562,19 @@ def main():
         print("# 免检区（块级消费段）登记表骨架 —— 由 "
               "`python3 scripts/ensure_settings.py --dump-block-segments` 生成")
         print("# ⚠ key_count 与 keys_sha256 **不要手写**；消费方/处置规则需人工判断后填。")
+        # ⚠ **v3.28.2**：登记表顶层声明**指纹口径**（`digest_scheme`）。
+        #   守卫据此分派算法 ⇒ 旧口径登记表（无此字段）**仍能过**（向后兼容）。
+        print(f"digest_scheme: \"{DIGEST_SCHEME_INDEXED}\"")
         print("version: \"3.28.1\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")
             print(f"    file: \"{v['file']}\"")
             print(f"    prefix: \"{v['prefix']}\"")
-            print(f"    key_count: {len(v['keys'])}")
-            print(f"    keys_sha256: \"{segments_digest(v['keys'])}\"")
+            # ⚠ `key_count` 与 `keys_sha256` **同口径**（`segment_key_count`）
+            _inp = segment_digest_inputs(v)
+            print(f"    key_count: {segment_key_count(_inp)}")
+            print(f"    keys_sha256: \"{segments_digest(_inp)}\"")
             print(f"    leaf_unused: {v['leaf_unused']}")
         return 0
 
