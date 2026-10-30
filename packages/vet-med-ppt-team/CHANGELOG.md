@@ -6,6 +6,121 @@
 
 ---
 
+## [v3.28.1] - 2026-10-30（收口第二轮：D9–D13 五缺陷 + 第 13 项 R9 缺口闭合）
+
+> 依据：v3.28.0 定稿后的**追加收口**（实测复现的 5 个真缺陷 + 第 13 项两处结论更正）。
+> 核心命题不变：**假阳性必须为零**，且每条判据必须有**能红的反例**。
+> ⚠ 本版为**小版本**（patch 位）：不新增机制，只修缺陷、补判据、纠正错误结论。
+
+> ★ **详细实录见 v3.28.0 段落末尾的「收口期第二轮」小节** —— 那里保留了本轮的
+> 逐条实测过程、变异体逐个还原记录与原始数据。本段落是 v3.28.1 的**正式版本记录**，
+> 两处并存不矛盾：一处是版本记录，一处是保留在 v3.28.0 里的追加实录。
+
+### P0 · 两处重大更正（上一轮的结论是错的，若照抄会误导后续维护）
+
+**更正一：第 13 项 R9 缺口 ≠ 「守卫文件不存在」。**
+上一轮结论「`scripts/test_dead_config_disposition.py` 缺失」**不成立** —— 实测该文件
+**早已入库**（v3.25.0 commit `8897db8`，611 行，17 用例全绿）。**真缺口**是
+**守卫自己的守卫**缺位：其 T11/T12/T13 三个反例测的是「机制」而非「判据本体」
+⇒ 把守卫里的 R2/R3/R4/R5/R6 分支删掉，17 个用例**照样全绿**。
+**修法**：新建 `scripts/test_inspection_zone_registry_red.py`（**17 用例**，三层结构：
+判据级红证明 → 变异敏感性反证 → 端到端红证明）⇒ 实测 **6/6 判据的变异体全部被杀**
+（掏空 R3 → 5 failed / R4 → 2 / R6 → 3 / R2 → 3 / R5 → 3 / R1 → 1）⇒ 无假守卫。
+
+**更正二：第 13 项「已 rc=0 无缺口」也不成立。**
+`check_federation_sync()` 的 `skip` 集合**含自身包** ⇒ `vet-med-ppt-team` 自己的 shim
+停在 **v3.4.1 R9**（65 行、无 vendor 兜底），而另 3 包已达 **v3.4.2 P0-1**（102 行、
+有 vendor 兜底）⇒ **断层永远不可见** —— 实测 `tests/test_vendor_core.py` **V6 FAIL**
+（git-clone 态 `exit=3`）。
+**修法**（三处）：① `scripts/assemble_spawn_prompt.py` 自身 shim 由 v3.4.1 R9 升级到
+**v3.4.2 P0-1**（两级解析：联邦真源 → vendor 兜底 → `exit 3`）；②
+`scripts/ensure_settings.py` 的 `check_federation_sync` 重构为**纯函数 + 薄壳**
+（`federation_skip_set` / `scan_federation_shims` / `check_federation_sync`）
+⇒ **skip 不再含自身包**；③ 新建 `scripts/test_federation_sync_guard.py`（**11 用例**，
+G1–G6，每条配能红反例）。
+★ **V6 已从 FAIL 变 PASS**；体检第 13 项现为
+「✓ 联邦同步一致：4 包 shim 均达 v3.4.2 P0-1，vendor 哈希无漂移」
+（★ 该条为**上一轮收口当时**的实测值；本版定稿复跑时该项因**联邦真源被外部改动**
+而转为 ⚠ 漂移告警 —— 详见下文「验证结果」小节末尾的复验差异说明）。
+
+### P0 · D9–D13 五个真缺陷（全部实测复现，全部补齐专属判据）
+
+| 编号 | 缺陷（现象） | 根因 | 修法 |
+|---|---|---|---|
+| **D9** | `switch` 把工具自身的运行时文件（`?? .versionctl/policy.local.json`）误判为「工作区脏」⇒ **功能自锁**（刚设的本机策略就再也切不了版本） | 脏判定未复用 `classify_dirty` | `cmd_switch` 改用 `classify_dirty`（工具自有路径 ⇒ benign，用户真实改动 ⇒ 仍 blocking） |
+| **D10** | 迁移后运行时层丢 `schema_version` ⇒ 迁移**形同虚设**（运行时层自己都读不出自己的 schema） | 覆盖层的「只留不同键」过滤把 `schema_version` 一起滤掉 | 覆盖层**始终自带** `schema_version`（**两处赋值点**都要修） |
+| **D11** | 旧副本里的用户设置被**静默丢弃**（真源该键仍是默认值时旧值被忽略 ⇒ `artifact_dirs` 失效 ⇒ prune 一个产物都不归档） | 「只补真源没有的键」口径太粗 | 新增 `_source_is_default()` ⇒「**真源优先、默认值让位**」兜底 |
+| **D12** | `migrate_policy` 把**迁移源自己**归档（move）掉了 ⇒ 迁移后原路径 `FileNotFound` | `save_policy` 事后把迁移源当「旧版残留」归档 | `save_policy` 新增 `keep_runtime_names`；迁移源**就地升级**成覆盖层 |
+| **D13** | `cmd_prune` 只遍历**一层** ⇒ 深层产物（`artifacts/sub/bundle.zip`）永远找不到 ⇒ **磁盘无限膨胀** | `p.iterdir()` 非递归 | 改 `p.rglob("*")` 递归逐文件；并抽成纯函数 `collect_artifacts()` 供单测 |
+
+★ **D13 曾是「改了代码却没判据」的假阴性** —— 实测把 `rglob` 改回 `iterdir` 时
+`test_versionctl.py` **129 passed 一个都没杀**。本轮为 D9–D13 **各补显式命名判据**
+（`class T28DefectGuards`，**19 个新用例**）。
+
+### P0 · 新增判据（三处，均带能红反例）
+
+| 文件 | 用例数 | 覆盖 |
+|---|---|---|
+| `scripts/test_versionctl.py::class T28DefectGuards` | **19** | D9–D13 五缺陷的显式命名判据 |
+| `scripts/test_federation_sync_guard.py` | **11** | 第 13 项联邦同步守卫（G1–G6） |
+| `scripts/test_inspection_zone_registry_red.py` | **17** | 第 13 项免检区登记表的判据本体（R1–R6） |
+
+### P0 · 变异实测：5 个变异体**全部被杀**
+
+| 变异体 | 杀死判据数 |
+|---|---|
+| D9 `tool_owned_rel_paths` 清空 | **3** |
+| D10 覆盖层丢 `schema_version`（YAML 在场分支） | **2** |
+| D10 覆盖层丢 `schema_version`（只有 JSON ⇒ 提升为真源分支） | **3**（含 2 subtest） |
+| D11 旧副本无条件覆盖真源 | **5** |
+| D12 `save_policy` 忽略 `keep_runtime_names` | **3**（含 2 subtest） |
+| D13 `rglob` → `iterdir` | **5** |
+
+★ **D10 曾漏覆盖一个赋值点**（第 1478 行「只有 JSON ⇒ 提升为真源」分支），本轮补
+`test_D10_promoted_source_overlay_carries_schema_version` 闭合。
+★ D12 的「`migrate_policy` 调用点漏传」实测**会红**
+（`test_D12_migration_source_is_not_archived` 的「归档区无 `*.stale`」断言直击语义）
+⇒ 覆盖已足，不另加判据。
+★ 本轮全部变异均在**真实仓库**里跑（基线 146 passed ⇒ 任何失败只可能由变异体引起，
+**零噪声**），备份 → 替换 → 跑 → **立即还原** → md5 校验逐字节一致。
+
+### P0 · 验证结果
+
+- **`test_versionctl.py`：148 passed + 4 subtests**（基线 119 → 129 → 148）。
+- **回归 37/37 套件全绿**（体检第 7 项 rc=0，含新增的
+  `test_federation_sync_guard.py` / `test_inspection_zone_registry_red.py`）。
+- **体检 26 项**：**23 项 ✓ / 0 项 ✗**；余 2 项为**提示级**且**都在用户个人工作区**
+  （`养禽与禽病防治/`）：[11/26] 旁路版本文件 1 个、[23/26] 域绑定残留 1 处
+  ⇒ ★ **本包纪律不擅动用户个人工作区** ⇒ 只报告，不动手。
+- **镜像同步**：`--confirm` 后 **150 个受管文件逐字节零差异**；
+  `--purge-runtime` 清掉镜像里的运行时残留 `.versionctl/config.json`（先备份）
+  ⇒ 复跑 **rc=0**（根 ⇄ 镜像零差异）。
+
+> ⚠ **本版定稿时的复验差异（如实记录，不掩盖）**：上述「37/37 全绿」「体检 23 ✓ / 0 ✗」
+> 是**上一轮收口当时**的实测值。本版定稿复跑体检时，第 7 项显示
+> **🔴 回归 1/37 套件不通过**、第 13 项显示 **⚠ 3 包 vendor 漂移**。
+> **根因（已实测定位，与本包无关）**：联邦真源
+> `my-experts/plugins/shared-core/assemble_spawn_prompt.py` 在上一轮收口**之后**
+> （mtime 2026-10-30 07:20）被**外部改动**（新增「动态成员层」115 行）⇒ 本包
+> `vendor/shared-core/` 兜底副本（401 行，sha `02a69d1f…`）与之哈希不一致
+> ⇒ `tests/test_vendor_core.py` **V4 FAIL**、`test_federation_sync_guard.py` **G5 FAIL**。
+> ★ **已在 HEAD（未含本轮改动）状态复验：同样失败** ⇒ **不是本轮引入**。
+> ★ **V6 仍 PASS**（git-clone 态走 vendor 兜底，退出码 0）—— 与「更正二」所述一致。
+> ⇒ ★ **处置**：联邦真源**不属于本包仓库**（本仓库只跟踪 `vendor/` 副本），
+> 同步真源会**改变其他 3 个联邦包的运行时行为** ⇒ **本轮不动，只如实报告**；
+> 修复需在**联邦层**（`my-experts/plugins` 仓库）统一处置。
+
+### P0 · 版本号声明位同步（`3.28.0 → 3.28.1`）
+
+本轮同步体检第 14 项巡检的 **13 处声明位** + `scripts/ensure_settings.py` 的
+`--dump-block-segments` **生成器戳**（防止重新生成时把 `references/inspection-zones.yaml`
+的版本回退）⇒ 实测「✓ 版本号 13 处一致：3.28.1」。
+⚠ **只改声明位，不改历史叙述** —— 注释与文案里的「v3.28.0」**历史引用位一律不动**
+（那记的是 v3.28.0 的历史事实，改掉即篡改历史）；CHANGELOG 里 `## [v3.28.0]`
+**段落标题**是历史段落标题，同样不动。
+
+---
+
 ## [v3.28.0] - 2026-10-29（版本迭代机制 + git-tag 版本真源 + 旧产物归档）
 
 > 依据：用户指令「替代当前『每次改动都新建一份』的方案」+ 本地文件综合系统调查。
