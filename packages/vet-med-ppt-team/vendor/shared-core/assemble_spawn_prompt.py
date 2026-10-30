@@ -125,6 +125,96 @@ def load_member_ids(plugin: dict) -> list[str]:
     return [i for i in ids if i]
 
 
+# ---------------------------------------------------------------- 动态成员层
+
+def load_dynamic_members(work_root: str | None) -> dict[str, dict]:
+    """读取 WORK_ROOT 级动态成员注册表（运行态/dynamic-members.yaml）。
+
+    返回 {member_id: entry}；注册表不存在 → 空表（动态层是可选能力，缺失不是错误）。
+    **闸门（安全关键）**：只收录 `confirmed_by_user: true` 的条目——
+    未过用户闸门的提案成员绝不允许进入 spawn 白名单（team-generation skill §1）。
+    解析顺序依赖安全：先判确认标志、后收成员（2026-10-30 首版状态机解析器有顺序 bug
+    导致闸门失效，已改用「解析全量 + 按标志过滤」的确定性两段式）。
+    """
+    if not work_root:
+        return {}
+    reg = Path(work_root) / "运行态" / "dynamic-members.yaml"
+    if not reg.is_file():
+        return {}
+    text = reg.read_text(encoding="utf-8")
+
+    confirmed = False
+    m = re.search(r"^confirmed_by_user\s*:\s*(\S+)", text, re.M)
+    if m:
+        confirmed = m.group(1).lower() in ("true", "yes", "1")
+    if not confirmed:
+        log("⛔ 动态成员注册表 confirmed_by_user 非 true —— 未过用户闸门，动态层不生效")
+        return {}
+
+    members: dict[str, dict] = {}
+    try:
+        import yaml  # PyYAML；缺失时降级为「拒收整个动态层」而不是半解析
+        data = yaml.safe_load(text)
+    except ImportError:
+        log("⛔ PyYAML 不可用，无法安全解析动态成员注册表 —— 动态层不生效（宁可拒绝不猜）")
+        return {}
+    except Exception as e:
+        log(f"⚠️ 动态成员注册表解析失败（按空表处理）：{e}")
+        return {}
+
+    if not isinstance(data, dict):
+        log("⚠️ 注册表顶层不是映射，按空表处理")
+        return {}
+    for entry in data.get("members") or []:
+        if not isinstance(entry, dict):
+            continue
+        mid = entry.get("member_id")
+        if not mid or not re.fullmatch(r"[a-z0-9\-]+", str(mid)):
+            log(f"⚠️ 跳过非法 member_id: {mid!r}（须 kebab-case）")
+            continue
+        members[str(mid)] = entry
+    return members
+
+
+def build_dynamic_member_md(entry: dict, member_id: str) -> str:
+    """由注册表条目即时合成动态成员的「角色定义 MD」（人设注入主体）。
+
+    动态成员没有 agents/*.md 静态文件——这正是「运行时真生成」的实现方式：
+    通用专家骨架 + 注册表声明的 role_name/domain/examines 合成完整角色定义。
+    """
+    role_name = entry.get("role_name", member_id)
+    domain = entry.get("domain", "通用")
+    examines = entry.get("examines", [])
+    ex_lines = "\n".join(f"  - {e}" for e in examines) or "  - 术语精确性"
+    return f"""---
+name: {member_id}
+version: 1.0.0
+description: "动态生成专家成员：{role_name}（{domain}）。来源：运行时团队生成（skills/team-generation）。"
+displayName:
+  zh: "{role_name}"
+---
+
+# {role_name}（动态成员）
+
+> 你是本团队按本章主题**运行时生成**的领域专家成员，聚焦知识域「{domain}」。
+> 与常驻成员同责同权：受 harness 协议全量约束（boundary filter / token budget /
+> 收尾三件套 / 落盘契约），产出仅限你的职责边界。
+
+## 职责（examines——你盯什么）
+{ex_lines}
+
+## 输出要求
+1. 产出以「{domain}」领域专家视角审读与撰写，术语与本学科 profile 的权威源一致
+2. 遵守任务包的 output_format / constraints / task_boundary，缺任一要素回问主理人
+3. 结论附证据位置；不确定处标 [待核实]，禁止编造
+4. 不代行其他成员职责（尤其不代 quality-examiner 审查——生成者与审查者分离）
+
+## 收尾三件套（强制）
+结束时依次：① patch 黑板 ② `python3 scripts/record_trace.py ...` ③ `python3 scripts/progress.py update ...`
+三项缺一 = 任务未完成。
+"""
+
+
 # ---------------------------------------------------------------- 成员 MD 解析
 
 def load_member_md(expert_dir: Path, member_id: str) -> str:
@@ -338,11 +428,25 @@ def main() -> int:
                          "（成员必须把产出写入 <run-dir>/<task_id>__<member-id>.md）")
     ap.add_argument("--list-members", action="store_true",
                     help="列出白名单成员 ID 后退出")
+    ap.add_argument("--work-root", default=None,
+                    help="任务工作根目录（含 运行态/dynamic-members.yaml 时启用动态层）")
+    ap.add_argument("--allow-dynamic-members", action="store_true",
+                    help="允许把已确认的动态成员并入白名单（默认关闭，显式开启防误用）")
     args = ap.parse_args()
 
     expert_dir = resolve_expert_dir(args.expert_dir)
     plugin = load_plugin(expert_dir)
     member_ids = load_member_ids(plugin)
+
+    # 动态层（须显式开启 + 注册表 confirmed_by_user: true）
+    dynamic: dict[str, dict] = {}
+    if args.allow_dynamic_members:
+        dynamic = load_dynamic_members(args.work_root)
+        for did in dynamic:
+            if did not in member_ids:
+                member_ids.append(did)
+        if dynamic:
+            log(f"✅ 动态层并入白名单 {len(dynamic)} 个：{sorted(dynamic)}")
 
     if args.list_members:
         print("\n".join(member_ids))
@@ -355,10 +459,19 @@ def main() -> int:
     # 确定性路由白名单校验：非法成员 ID 直接拒绝，不进入 spawn
     if args.member not in member_ids:
         log(f"❌ 成员 ID 不在白名单：{args.member}")
-        log(f"   白名单（来自 plugin.json teamInfo.memberAgents）：{member_ids}")
+        log(f"   静态白名单（plugin.json teamInfo.memberAgents）：{load_member_ids(plugin)}")
+        if dynamic:
+            log(f"   动态白名单（已确认）：{sorted(dynamic)}")
+        else:
+            log("   动态层未启用（需 --allow-dynamic-members + --work-root + 注册表 confirmed_by_user: true）")
         return 2
 
-    md_text = load_member_md(expert_dir, args.member)
+    # 成员 MD：静态层读文件；动态层由注册表条目即时合成
+    if args.member in dynamic:
+        md_text = build_dynamic_member_md(dynamic[args.member], args.member)
+        log(f"✅ 动态成员「{args.member}」角色定义已由注册表合成")
+    else:
+        md_text = load_member_md(expert_dir, args.member)
     fm, body = parse_frontmatter(md_text)
 
     task_text = None

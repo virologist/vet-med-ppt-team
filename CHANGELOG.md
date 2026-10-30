@@ -110,6 +110,46 @@ G1–G6，每条配能红反例）。
 > 同步真源会**改变其他 3 个联邦包的运行时行为** ⇒ **本轮不动，只如实报告**；
 > 修复需在**联邦层**（`my-experts/plugins` 仓库）统一处置。
 
+### P0 · 追加收口：vendor 跟升联邦真源 + **一次回退的即时修复**
+
+**背景**：上面的「复验差异」在本版定稿后被**联邦层推进**收敛到只剩 1 个漂移。
+实测现况（本包内）：
+
+| 包 | vendor 行数 | 与联邦真源一致 |
+|---|---|---|
+| vet-med-ppt-team（本包） | 514 | ✅ sha `3a502d93…` |
+| smart-textbook-team | 514 | ✅ |
+| research-orchestration-team | 514 | ✅ |
+| triz-invention-team | 401 | ❌ **仍漂移（他包）** |
+
+**本包已跟升**：`vendor/shared-core/assemble_spawn_prompt.py` 与联邦真源**逐字节一致**
+（sha256 `3a502d93c768e5b2…` / 514 行），`VENDOR.json` 的 `sha256` / `lines` /
+`synced_at` 同步更新 ⇒ `tests/test_vendor_core.py` **V1–V6 全 PASS**（含 V4 防漂移）。
+
+#### ★ 同批修掉的一次**回退**（并行会话误覆盖）
+
+**现象**：并行会话在 vendor 分发时，用 **triz 包的旧版** `tests/test_vendor_core.py`
+**覆盖了本包文件** ⇒ `_PKG_NAME` 从 `"vet-med-ppt-team"` 被改回 `"triz-invention-team"`
+⇒ `_INSTALL_DIR` 指向**别的包** ⇒ **V4 防漂移比对的是别人的 vendor 副本**
+⇒ ★ **本包的 vendor 漂移永远发现不了**（与「更正二」修掉的是**同一类**缺陷）。
+另有一处：报告标题会打印 `（triz-invention-team）`。
+
+**修法**：恢复本包值（`_PKG_NAME` / V6 临时目录前缀 `vetmed-clone-sim-` /
+报告标题 / 文件头说明）⇒ 复验 **与 HEAD 逐字节一致**，V1–V6 全 PASS。
+
+> ★ **教训**：vendor 分发工具 `shared-core/scripts/distribute_vendor.py`
+> 是**跨包写操作**且默认即执行（非 dry-run）⇒ 它会把「一份文件」扇出到多个包
+> ⇒ 若源文件本身带着**别的包的包耦合**（如 `_PKG_NAME`），就会**同时污染多个包**。
+> ⇒ **任何 vendor 副本都不得携带其他包的包耦合常量**；
+> 分发后**每个包必须独立复验自己的 V1–V6**（本轮就是这么发现的）。
+
+#### ⚠ 仍未收敛的一项（**他包，本包不越界**）
+
+`triz-invention-team` 的 vendor 副本仍是 401 行 ⇒ `test_federation_sync_guard.py`
+**G5 仍 FAIL**（drift = `['triz-invention-team']`）⇒ 体检第 7 / 13 项仍带此告警。
+⇒ ★ 修复需在**联邦层**（`my-experts/plugins` 仓库）统一处置；
+**本包不替其他包改 vendor 副本**（那会越过包边界、影响其运行时行为）。
+
 ### P0 · 版本号声明位同步（`3.28.0 → 3.28.1`）
 
 本轮同步体检第 14 项巡检的 **13 处声明位** + `scripts/ensure_settings.py` 的
