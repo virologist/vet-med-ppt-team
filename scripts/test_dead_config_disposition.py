@@ -1947,5 +1947,118 @@ class TestSeqLiteralKeyReads(unittest.TestCase):
             f"⇒ 变异证明恒真 ⇒ T40 也就恒真（无鉴别力）")
 
 
+def _known_textual_entries():
+    """从 ensure_settings.py 源码里**静态提取** `known_textual` 的全部登记条目。
+
+    ⚠ 为什么用 AST 解析源码而不是直接取变量：
+      `known_textual` 是 `check_dead_config_keys()` 的**局部变量**（闭包内），
+      测试侧拿不到 ⇒ 只能静态解析（`_is_textual` 同理是嵌套函数）。
+      ⇒ 好处：不为了可测性改动生产代码结构（零回归风险）。
+
+    提取两处：① `known_textual = {...}`  ② `known_textual.update({...})`
+    """
+    import ast
+    src = ES.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    found = []
+
+    def _strings_from(node):
+        out = []
+        if isinstance(node, ast.Set):
+            for e in node.elts:
+                if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                    out.append(e.value)
+        elif isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    out.append(k.value)
+        return out
+
+    for node in ast.walk(tree):
+        # ① 赋值形态：known_textual = {...}
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "known_textual":
+                    found.extend(_strings_from(node.value))
+        # ② 更新形态：known_textual.update({...})
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if (isinstance(f, ast.Attribute) and f.attr == "update"
+                    and isinstance(f.value, ast.Name)
+                    and f.value.id == "known_textual" and node.args):
+                found.extend(_strings_from(node.args[0]))
+    return found
+
+
+class TestKnownTextualRegistrationCase(unittest.TestCase):
+    """T44：`known_textual` 登记**必须写小写** —— 否则登记静默失效。
+
+    病灶（本轮实测踩到，可证伪）：
+      `_is_textual()` 规则① 的判定是 `segs[-1].lower() in known_textual`
+      —— 左边 `.lower()` 了，右边集合里存的却是**原样**字符串
+      ⇒ 登记若写大写 `"M8A1"`，则 `'m8a1' in kt` **恒为 False**
+      ⇒ 登记**静默失效**：不报错、不告警，只是「待人工定性候选数」纹丝不动。
+    …… 这类缺陷的可怕之处在**不可见**：跑测试全绿、体检全绿，
+        只有人工去核对「登记了 24 键，候选数怎么没降」才能发现。
+
+    修法（本判据）：把「登记一律小写」从**口头纪律**升级为**可执行判据**
+      ⇒ 谁写大写，这条测试立刻判红，并在报错里直接给出应改成的写法。
+    """
+
+    def test_T44_all_registrations_are_lowercase(self):
+        entries = _known_textual_entries()
+        # ⚠ 先断言**真的提取到了** ⇒ 否则「集合为空」会让下面的断言恒真
+        #   （空集里没有大写项 ⇒ 判据恒绿 ⇒ 是假守卫）。
+        self.assertGreater(
+            len(entries), 20,
+            f"T44：只提取到 {len(entries)} 条登记 ⇒ 提取逻辑失效"
+            f"（ensure_settings.py 里 known_textual 的结构变了？）"
+            f"⇒ 判据会恒真（假守卫），必须先修提取逻辑")
+
+        offenders = [e for e in entries if e != e.lower()]
+        self.assertEqual(
+            [], offenders,
+            f"T44：`known_textual` 里有 {len(offenders)} 条登记**含大写** ⇒ "
+            f"因规则① 比较的是 `segs[-1].lower() in known_textual`（左边小写、"
+            f"右边原样）⇒ 这些登记**永不匹配**，属静默失效。\n"
+            f"    违规项及应改写法：\n      "
+            + "\n      ".join(f"{e!r} → {e.lower()!r}" for e in offenders))
+
+    def test_T44b_reverse_example_uppercase_registration_is_rejected(self):
+        """T44b：反向证明 —— 造一条**大写**登记，T44 的断言**必须判红**。
+
+        ⚠ 全程在**内存/临时副本**上操作，**绝不**改仓库里的 ensure_settings.py
+          ⇒ 反向证明不得污染真源。
+        ⚠ 变异手法：把源码里某条**小写**登记改写成**大写**
+          ⇒ 若 T44 的判定逻辑被写坏（如改成 `e.upper() != e`），本条会失败。
+        """
+        import ast
+        src = ES.read_text(encoding="utf-8")
+        # 挑一条确定存在的登记：`"m8a1"`
+        marker = '"m8a1"'
+        if marker not in src:
+            raise AssertionError("反向证明锚点缺失：`\"m8a1\"` 登记未找到")
+        mutated = src.replace(marker, '"M8A1"', 1)
+        self.assertNotEqual(mutated, src, "变异体构造失败：源码没变 ⇒ 证明恒真")
+
+        # 在变异源码上跑**与 T44 同一套**判定 ⇒ 必须抓到违规
+        tree = ast.parse(mutated)
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "known_textual":
+                        if isinstance(node.value, ast.Set):
+                            found.extend(
+                                e.value for e in node.value.elts
+                                if isinstance(e, ast.Constant)
+                                and isinstance(e.value, str))
+        offenders = [e for e in found if e != e.lower()]
+        self.assertIn(
+            "M8A1", offenders,
+            "T44b：把登记改成大写后，T44 的判定**没抓到** ⇒ "
+            "T44 是恒真判据（假守卫）⇒ 静默失效的登记仍会溜过")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

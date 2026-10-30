@@ -1794,7 +1794,33 @@ def check_dead_config_keys(expert_dir):
         "default_disease_module_prefix", "case_id_prefix",
         # 成员能力声明：供主理人 spawn 前判断，不由脚本消费
         "writes_allowed",
-        # ── v3.28.2：第 18 项 128 键人工定性 · 批 B01–B06（76 键）裁定 ──
+        # ── v3.28.2：第 18 项人工定性 · 批 B07–B08（成员工具白名单 19 键）裁定 ──
+        # harness.yaml#members.*.tools_whitelist[] —— 成员**工具白名单**条目。
+        #   ⚠ 与 writes_allowed **共用同一条既有纪律**（harness.py:564-570 明文）：
+        #     「tools_whitelist / writes_allowed 是职责边界声明，无代码强制力——
+        #      平台不支持 agent frontmatter 的 tools 字段（spawn 出的 teammate
+        #      `agentType` 恒为 general-purpose）⇒ 脚本本就不该消费它。」
+        #   ⇒ 登记人读型，与 writes_allowed 处置一致（同族键处置一致性原则）。
+        "tools_whitelist",
+        # ── v3.28.2：第 18 项人工定性 · 批 B17（疾病模块 ID 4 键）裁定 ──
+        # domain_config.yaml#disease_modules.*.{M8A1..M8A4} —— **模块代码作为键名**。
+        #   消费点：case_extract.py:203-205 遍历 `modules.items()` 后用
+        #   `module in m` + `m[module]` **动态查表** ⇒ 键名是变量下标，
+        #   属 AST 静态判据的**理论盲区**（静态分析边界，非缺陷）。
+        #   ⇒ 登记人读型，理由写明「动态键查表消费」。
+        #   ⚠ **登记必须写小写**：规则① 的判定是 `segs[-1].lower() in known_textual`，
+        #     与**原样**字符串集合比较 ⇒ 写 `"M8A1"`（大写）时 `'m8a1' in kt` 恒为 False，
+        #     登记静默失效（本仓纪律：登记的写法必须让判据能命中，否则等于没登记）。
+        "m8a1", "m8a2", "m8a3", "m8a4",
+        # ── v3.28.2：第 18 项人工定性 · 批 B17（域档案孤儿键 1 键）裁定 ──
+        # domain-profiles.yaml#domains[].knowledge_bases_scope —— 历史残留。
+        #   ⚠ v3.19.1 起知识库路由唯一源 = config/external-tools.yaml
+        #     `#knowledge_bases[].owner_scope`（harness.py:849 按 owner_scope 过滤），
+        #     域档案内这份 scope 是迁移后**未清理的副本**（全仓 grep 生产读取点 = 0）。
+        #   ⇒ 登记人读型，理由写明「历史键·由 external-tools.yaml#owner_scope 取代」，
+        #     并在 CHANGELOG 登记清理待办（删键属 config 真源变更 ⇒ 须管家节点确认）。
+        "knowledge_bases_scope",
+        # ── v3.28.2：第 18 项人工定性 · 批 B01–B06（76 键）裁定 ──
         # domain-profiles.yaml#domains[].expert_panel[].activation_hints[] ——
         #   专家面板**激活关键词表**（域内中文触发词，如「病毒/流感/毒株/变异…」）。
         #   消费方 = **主理人装配**：把专家面板装配进 spawn 提示词时按域匹配触发词，
@@ -2503,13 +2529,22 @@ def check_dead_config_keys(expert_dir):
 def collect_block_segments(expert_dir):
     """返回「免检区（块级消费段）」清单（v3.25.0 · 供登记表守卫与 dump 开关复用）。
 
-    返回 {seg_key: {"file","prefix","key_count","leaf_unused","leaf_weak","keys":[完整路径…],"keys_sha256"}}
+    返回 {seg_key: {"file","prefix","keys","idents","leaf_unused","leaf_weak"}}
       seg_key = f"{config 文件名}#{段前缀}"   （ADR-6：必须带文件名前缀——
         同名段跨文件是不同的段，合并登记会让「新增键处置规则」无法落地）
+      · `keys`   —— 段内**带下标**的完整叶子路径（元素身份可辨）
+      · `idents` —— 段内**带下标 + 带值**的身份串（`路径=值repr`）⇒ 指纹输入
 
     ⚠ **实现方式**：直接复用第 18 项 `check_dead_config_keys` 内部累加的同一份结果
       ⇒ 段归属、键计数与体检输出**逐字一致**，不存在「两套算法两个答案」的空间。
     ⚠ **纯观测**：不参与任何 rc 判定。
+
+    ⚠ **`key_count` 与 `keys_sha256` 不在此返回体里**（v3.28.2 更正）：
+      旧 docstring 声称返回这两个键 ⇒ 与实现**不符**（walk() 的段 dict 从不写它们）
+      ⇒ 已按此错误文档编写的调用方会 `KeyError: 'key_count'`（本轮实测踩到）。
+      正解：用 `segment_digest_inputs(seg)` 取指纹输入，再分别调
+            `segment_key_count(inp)` / `segments_digest(inp)` 计算 ⇒ 口径与体检逐字同源。
+      ⇒ **纪律：改结构必须同步改 docstring；文档与实现不符即缺陷。**
     """
     import io as _io
     import contextlib as _ctx

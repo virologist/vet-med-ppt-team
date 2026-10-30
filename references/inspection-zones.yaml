@@ -114,7 +114,7 @@ segments:
   prefix: domains
   key_count: 794
   keys_sha256: 4f57817fcd8f266e44057c6633db0e5350f4a590
-  leaf_unused: 19
+  leaf_unused: 18
   leaf_weak: 610
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
@@ -164,7 +164,7 @@ segments:
   prefix: members
   key_count: 39
   keys_sha256: 0cb4d1fd977b4891613224850477364c28fa5e72
-  leaf_unused: 19
+  leaf_unused: 0
   leaf_weak: 10
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
@@ -194,7 +194,7 @@ segments:
   prefix: disease_modules
   key_count: 37
   keys_sha256: ec926f2532ed0cf498037bed2c93ca8843c462d6
-  leaf_unused: 4
+  leaf_unused: 0
   leaf_weak: 33
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
