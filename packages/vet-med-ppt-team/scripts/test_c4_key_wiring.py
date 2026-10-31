@@ -173,18 +173,37 @@ class TestKeyAProfileMissingPolicy(unittest.TestCase):
                       "键缺失未告警 ⇒ 与「键被读到」无从区分（静默降级）")
         self.assertEqual(rc, 3, f"键缺失仍应退出 3，实得 {rc}\n{err}")
 
-    # ── T4 反例（显式停用）──────────────────────────────────────────
-    def test_T4_explicitly_disabled_still_refuses_silently_dropping_domain(self):
-        """T4：`active: false` ⇒ 告警 + 仍按最保守策略处置。
+    # ── T4 反例（fallback 段的 active 不得被消费）───────────────────
+    def test_T4_fallback_active_is_not_consumed_no_false_green(self):
+        """T4：`fallback` 段写 `active: false` ⇒ **不得**被消费，仍按 `on_profile_missing` 处置。
 
-        语义来源：「缺不得静默丢域」——闸门可以由配置**显式**喊停，
-        但**不得**让「域档案读不到」这件事悄悄变成放行。
+        ⚠ 本条是**由一次真实假绿事故反向钉住**的（不是凭空设计）：
+          初版实现在 `_on_profile_missing_policy()` 里写了
+          `fb_node.get("active", True)` 并对 `active: false` 告警停用。
+          但 `domain-profiles.yaml#fallback` 段**根本没有 `active` 键**
+          （仅含 on_profile_missing / generic_persona / generic_evidence_hierarchy /
+          generic_safety_redlines）⇒ 那是**臆造读取（死代码）**。
+
+          更严重的第二重危害：它让**另一个文件**的
+          `domain_config.yaml#domains[].active`（第 18 项 C3 的 4 个待办键）
+          因**末段键名撞车**从 `leaf_unused` 掉进 `leaf_weak`
+          ⇒ 看起来「已接线」，实际接的是另一个文件的另一个键
+          ⇒ 正是 v3.23.0 F1 明令消灭的「末段同名即算接线」**假绿**。
+
+        ⇒ 本条判据钉住：**fallback 段的 `active` 不得产生任何专属告警**，
+          策略一律由 `on_profile_missing` 决定。
         """
         self._write_profiles('  on_profile_missing: "abort_with_error"',
                              extra_node="  active: false")
         rc, _, err = self._route()
-        self.assertIn("被显式停用", err, "active: false 未告警 ⇒ 停用路径无痕")
-        self.assertEqual(rc, 3, f"active: false 仍应退出 3（不得静默放行），实得 {rc}\n{err}")
+        # ① 不得出现「被显式停用」这类 active 专属告警（该键不属于本段）
+        self.assertNotIn("被显式停用", err,
+                         "fallback 段的 active 被消费了 ⇒ 臆造读取复辟，"
+                         "且会制造跨文件同名假绿")
+        # ② 策略仍由 on_profile_missing 决定，退出码仍为 3（不得静默放行）
+        self.assertIn("abort_with_error", err,
+                      "策略未被 on_profile_missing 驱动 ⇒ 接线失效")
+        self.assertEqual(rc, 3, f"仍应退出 3（不得静默放行），实得 {rc}\n{err}")
 
     # ── T5 崩溃回归（原 f-string 占位符事故）────────────────────────
     def test_T5_no_nameerror_when_profiles_file_is_unreadable(self):
