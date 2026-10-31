@@ -53,16 +53,43 @@
 配套红证明 `scripts/test_yaml_bool_key_guard.py`（**4 用例**，三层：正向检出 → 端到端 rc=1 → 变异反证）。
 ★ 正向对照实测：把 10 处陷阱还原回去 ⇒ 第 27 项立即报 **10 处**且行列精确；还原后 md5 一致 ✓。
 
-### 待办（下一批）
+### 批 C 类 — 4 处代码接线（18 键）· 已完成 3 处（16 键）
 
-- **C 类（18 键 · 4 处接线）** —— 进行中：
-  - **C1** `assemble_domain_prompt.py` 8 键漏渲染：`inaccessible_rule`×3（二之五段）、
-    `interaction_forms`×2（二之三段）、`sibling_architecture`+`trim_priority`（二之四段）、
-    `image_science_ownership`（四段）
-  - **C2** 第 22 项守卫 4 键：`md_area_terms` 把 `test_arch_drift` T8 断言下沉为生产校验
-  - **C3** `case_extract.py` 4 键：`active` 开关（加载时跳过 `active=false` 的域）
-  - **C4** `harness.py` + 装配器 2 键：`on_profile_missing`、`is_user_default`
-  - 每处独立 commit 可回滚，每处配能红判据。
+| 处 | 键 | 键数 | 接线点 | 结果 |
+|---|---|---|---|---|
+| **C1** | `inaccessible_rule`×3 / `interaction_forms`×2 / `sibling_architecture` / `trim_priority` / `image_science_ownership` | 8 | `assemble_domain_prompt.py` 二之三/二之四/二之五/四段补渲染 | ✅ 已落地 |
+| **C2** | `md_area_terms`×4 | 4 | `ensure_settings.py` 第 22 项新增**第 ④ 道判据** | ✅ 已落地 |
+| **C4-A** | `fallback.on_profile_missing` | 1 | `harness.py` 新增 `_on_profile_missing_policy()`，替换 4 处硬编码 | ✅ 已落地（拿到**路径级**证据） |
+| **C4-B** | `knowledge_bases[0].is_user_default` | 1 | `harness.py` 默认库优先排序 + 装配器标注「★用户默认启用的库」 | ✅ 已落地 |
+| **C3** | `domain_config.yaml#domains[0..3].active` | 4 | — | ⏸ **见下：需拍板** |
+
+**累计**：`leaf_unused` 211 → 145 → 128 → 52 → 28 → 18 → 10 → **4**（仅剩 C3 的 4 键）。
+
+**C2 的真缺口**（不是为消警告硬凑）：第 22 项只比「yaml ↔ SOP 文档」⇒ 若把 `reviewer`
+改错**并同步改 SOP 文档**，①②③ 判据**全绿**；新增的 ④（读 `md_area_terms` 做
+「MD 取反 + 归属证明」）实测**唯一**能拦下该形态 ⇒ 消除了「测试强制、生产不强制」的倒挂。
+
+**C4 顺带修掉的真崩溃**：`harness.py:718` 的 f-string 里 `{config/domain-profiles.yaml}`
+是**表达式占位符**（求值成 `config / domain - profiles.yaml`），而全文无 `config` 绑定
+⇒ `cmd_route` 走进「域档案不可用」分支时抛 `NameError`（友好报错变崩溃，且该分支零测试覆盖）。
+
+⚠ **本轮自己制造、又自己抓到并修掉的一处假绿（值得记一笔）**：
+C4 初版在 fallback 段读了 `fb_node.get("active", True)` —— 而该段**根本没有 `active` 键**
+⇒ ① 臆造读取（死代码）② 更严重：它让**另一个文件**的 `domain_config.yaml#domains[].active`
+（C3 的 4 键）因**末段同名撞车**从 `leaf_unused` 掉进 `leaf_weak` ⇒ 假性「已接线」。
+⇒ 已删除该分支，并把 C4 的 T4 测试**反转**为钉住「fallback 段的 `active` 不得被消费」。
+⇒ **教训：修「假绿」会让候选数变多（4 → 8），这才是诚实判据该有的方向。**
+
+### 待办：C3（4 键 `active`）需拍板
+
+调研结论（实证）：**`domain_config.yaml#domains` 整段在生产侧 0 消费方**
+（全仓 12 处 `domains` 读取点读的全是 `domain-profiles.yaml#domains` —— 同名不同源，ADR-6）。
+⇒ 这不是「一个键没人读」，而是**整段是已被取代的旧域注册表**。
+  · 真正驱动业务的域注册表 = `config/domain-profiles.yaml#domains`（AST 读取点 12 处）
+  · 两个文件的域 id 集合**只有 `animal-medicine` 一个交集**
+    （另一份是 computing / business-training）
+  · 同文件 `gates.N.active`（:302-309）已按 v3.23.0 口径澄清裁定为「人读型，不假装是开关」
+⇒ 三个候选处置：**① 跟随 gates 判例登记人读型 ② 整段判定为废弃并删除 ③ 接线（需连带引入域选择能力）**
 
 ---
 
