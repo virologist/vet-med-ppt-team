@@ -224,8 +224,8 @@ segments:
   prefix: domains
   key_count: 28
   keys_sha256: a000b50e441e23e21eb7e950958d7ae87d222980
-  leaf_unused: 0
-  leaf_weak: 12
+  leaf_unused: 4
+  leaf_weak: 8
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
   note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。⚠ v3.29.0：本段的 `domains[0..3].active`（C3 待接线键）由「待人工定性候选」转入**弱证据**桶——**纯属键名撞车**：harness.py::_on_profile_missing_policy 读的 `active` 是 `domain-profiles.yaml#fallback.active` 开关，**不是**本段的 active。它**不构成**本段的接线（无路径级证据），C3 仍是待办。

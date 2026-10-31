@@ -998,15 +998,17 @@ def _on_profile_missing_policy(profiles=None, cfg=None):
             f"格式非法）——回落最保守策略 {_CONSERVATIVE_PROFILE_MISSING_POLICY!r}"
             f"（显式报错，不回落任何域）")
 
-    # `active` 缺键 = 启用（向后兼容）；显式关闭也不得静默放行
-    active = fb_node.get("active", True)
-    if active is False or (isinstance(active, str)
-                           and active.strip().lower() in ("false", "no", "off", "0")):
-        return _CONSERVATIVE_PROFILE_MISSING_POLICY, (
-            f"⚠ {_PROFILE_MISSING_POLICY_PATH} 被显式停用（active={active!r}）——"
-            f"该策略**不得**由配置静默关闭，按最保守策略 "
-            f"{_CONSERVATIVE_PROFILE_MISSING_POLICY!r} 处置")
-
+    # ⚠ **v3.28.2 修正**：此处**曾有**一段读 `fb_node.get("active", True)` 的逻辑，
+    #   已删除，原因有二（都是真缺陷，不是风格问题）：
+    #   ① **臆造读取** —— `domain-profiles.yaml#fallback` 段**根本没有** `active` 键
+    #      （该段仅含 on_profile_missing / generic_persona / generic_evidence_hierarchy /
+    #      generic_safety_redlines）⇒ 读一个不存在的键并配「缺键=启用」兼容分支 = 死代码。
+    #   ② **污染第 18 项判据（假绿）** —— 它让**另一个文件**的
+    #      `domain_config.yaml#domains[].active`（第 18 项 C3 的 4 个待办键）因
+    #      **末段键名撞车**从 `leaf_unused` 掉进 `leaf_weak` ⇒ 看起来「已接线」，
+    #      实际接的是另一个文件的另一个键。
+    #      ⇒ 这正是 v3.23.0 F1 明令消灭的「末段同名即算接线」假绿形态。
+    #   ⇒ 处置：删除。`active` 的定性仍属 C3 待办，不得被本处顺带刷绿。
     raw = fb_node.get("on_profile_missing")
     val = raw.strip() if isinstance(raw, str) else ""
     if val in _PROFILE_MISSING_POLICIES:
