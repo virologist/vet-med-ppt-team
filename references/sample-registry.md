@@ -103,9 +103,15 @@ T11 要验证的是「**规则集对非本团队产物同样成立**」，因此
 
 ## 2. 其它外部样本（占位）
 
+<!-- DOMAIN_EXAMPLE_BEGIN -->
 | 样本 | 用途 | 状态 |
 |---|---|---|
 | 动医真实课件 4 份（`M4A1_禽流感/` 等用户工作区目录） | `test_ooxml_lint.py::T1`、`test_extract_assets.py::T6` | 由 `scripts/sample_fixtures.py::resolve_real_samples()` 多候选目录自动发现；不可得时降级为合成 fixture（降级类型显式打印） |
+
+> 上表中的「动医真实课件」「M4A1_禽流感」等为**正当举例**（外部样本的现实出处说明）；
+> 物种/病种词条本身已下沉到 `config/domain-profiles.yaml`（animal-medicine 域），
+> 本文件**不复制**域档案词条。
+<!-- DOMAIN_EXAMPLE_END -->
 
 > **登记纪律**：新增外部样本条目时，**必须**同时写明 URL、sha256、放置路径、
 > 校验命令与「为什么选它」；**只贴链接不写校验和**的条目视为未登记。
