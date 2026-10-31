@@ -130,6 +130,45 @@ C4 初版在 fallback 段读了 `fb_node.get("active", True)` —— 而该段**
     零读取点，连容器 `_fallback_block` 也是零调用 —— 未坍缩时的「通用兜底人设」链路
     整体未接线；本批已按人读型/弱证据有归属，是否接线属新功能决策，未纳入本项。
 
+### ★ 遗留观察项处置结果（2026-10-31 追加：三项全部闭环）★
+
+> 上述三条遗留项已在追加批次全部处置（commit `1d60c54` / `bd36e40`），结论有更新：
+
+**遗留项 3（generic fallback）——先前「未接线」是**误判**，实测链路是通的**。
+  无坍缩装配产物（`--allow-unconfirmed`，rc=0）里三键内容**逐字投递**（端到端终验）。
+  真实链路 = **跨函数局部变量传递**（main:1080 → build_domain_section → _render_generic），
+  AST 静态判据对此天然失明。教训入档：**「0 读取点」≠「没接线」，下结论前先跑端到端。**
+  处置：新增端到端守卫 `test_generic_fallback_wired.py`（4 例：值级断言 +
+  断链/删消费变异 + config 缺键优雅降级）；顺手修掉 `_render_generic` 空壳段缺陷
+  （config 精简掉键时渲染器输出只有标题的空段）。
+
+**遗留项 2（domain_config 文档漂移）—— 实测比预想严重：头注释 4 条消费声明 3 条为假**。
+  ✗「verify_deck 读 domain 列表」（其 `_DOMAIN_CFG_PATH` 是全文件零引用死常量，已删）
+  ✗「agent MD 用 \${domain} 占位符」（grep 零命中）
+  ✗「teams/config.json 同步」（无 teams/ 目录）
+  ✗「.workbuddy/domain.yaml 覆盖机制」（候选列表从未收录该路径，机制从未实现）
+  处置：头注释按段重写真实消费关系 + domains 段废弃横幅 + 死常量删除。
+  ⇒ 纪律：**文档宣称的消费关系必须与实现一致；宣称不存在的消费关系 = 文档缺陷。**
+
+**遗留项 1（1042 弱证据键）—— 根修第一批落地：行为学投递守卫**。
+  新增 `test_weak_evidence_delivery.py`（3 例）：routing 段改值 ⇒ route plan
+  逐字段跟随（值级）；severity 双份真相由第 19 项看守（消费链更正：运行时读者是
+  verify_deck 非 ooxml_lint）；loop_a.enabled 开关行为学验证。
+  覆盖账：本批 + 既有独立守卫合计覆盖弱证据 Top 段 **≈985/1042（94.5%）**；
+  剩余 ~57 键为 30+ 段的个位数尾量，维持「段级指纹 + 抽查行为学证明」口径。
+
+### ★ 专家团内部全量测试（2026-10-31）★
+
+  · **全量测试套件：772 passed / 1 skipped / 0 failed**（5 分 45 秒，73 个 test_*.py）；
+    唯一 skip 为既有环境限制项；唯一 warning 是测试自身构造 zip 的预期告警。
+  · **装配器 smoke：5/5 成员 rc=0**（dvm-content-expert 53.9KB / pedagogy-architect
+    45.0KB / visual-slide-designer 31.8KB / ppt-producer 30.5KB / verifier 28.4KB，
+    域上下文段全部正常注入）。
+  · **harness 子命令 smoke：23 个子命令零崩溃**（doctor/preflight/route/domain/
+    collapse/gate1-check/state/budget/trace/spawn/member-return/spawn-failed/degrade/
+    stage/sweep/eval/gate/verify-artifact/verify-ref/verify-envelope/template-audit/
+    loop/insights；rc≠0 项全部为 argparse 参数防线，无 Traceback）。
+
 ---
 
 ## [v3.28.1] - 2026-10-30（收口第二轮：D9–D13 五缺陷 + 第 13 项 R9 缺口闭合）
