@@ -15,6 +15,25 @@
 version: "3.28.1"
 # ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
 # Q2 默认：animal-medicine / microbiology / pet / tcm-vet
+#
+# ⚠ **v3.28.2 口径澄清（第三轮从零诊断，实测复现）**：
+#   本段的 `active` 是**人读型声明**，**不是**可执行开关
+#   —— scripts/ 全量对该键**无任何生产读取点**
+#   ⇒ **把 `active` 改成 false 不会关闭/屏蔽任何一闸**（**假 affordance**）。
+#   实证（三条）：
+#     ① 语义冗余 —— active=true 的域其 `disease_modules` 非空（33 / 4），
+#        active=false 的域其 `disease_modules` 为空字典
+#        （本文件 `pet: {}` / `tcm-vet: {}`）⇒ 同一个事实两种写法；
+#     ② 整段无生产消费方 —— 全仓 12 处 `domains` 读取点读的**全是**
+#        **config/domain-profiles.yaml#domains**（同名不同源，ADR-6）；
+#        两份域 id 集合**只有 animal-medicine 一个交集**
+#        （另一份是 computing / business-training）
+#        ⇒ 本段是**已被取代的旧域注册表**，真正驱动业务的是 domain-profiles.yaml；
+#     ③ 同文件同键名已有判例 —— `gates.N.active`（本文件下方 :302-309 口径澄清）
+#        已裁定「人读型，不假装是开关」⇒ 按同族键处置一致性跟随。
+#   ⇒ 处置口径与 `legacy_compat` 一致：**登记人读型，不假装是开关**。
+#   ⇒ 若日后要把「域启停」做成真能力，正确做法是**先给本段接上消费方**，
+#      而不是只把 `active` 读一下了事（那样只会制造「末段同名即算接线」的假绿）。
 domains:
   - id: animal-medicine
     label_zh: "动物医学"

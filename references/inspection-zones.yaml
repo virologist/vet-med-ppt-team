@@ -224,7 +224,7 @@ segments:
   prefix: domains
   key_count: 28
   keys_sha256: a000b50e441e23e21eb7e950958d7ae87d222980
-  leaf_unused: 4
+  leaf_unused: 0
   leaf_weak: 8
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记

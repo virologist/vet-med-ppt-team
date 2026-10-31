@@ -1989,6 +1989,26 @@ def check_dead_config_keys(expert_dir):
         "harness.stages",
         "harness.collapse",
         "harness.observability",
+        # ── v3.28.2：第 18 项人工定性 · C3（domain_config.yaml#domains[].active）──
+        # 用户裁定：**跟随同文件判例登记人读型**（不接线、不删除）。
+        #   ① **语义冗余**：实测 active=true 的域模块数 33/4，active=false 的域
+        #      模块数 0/0（`domain_config.yaml:97-98` 明写 `pet: {}` / `tcm-vet: {}`）
+        #      ⇒ 同一个事实两种写法，接线不带来新信息；
+        #   ② **整段无生产消费方**：`domain_config.yaml#domains` 全仓生产读取点 **0**
+        #      （全仓 12 处 `domains` 读取点读的全是 **domain-profiles.yaml#domains**
+        #      —— 同名不同源，ADR-6）。两份域 id 集合**只有 animal-medicine 一个交集**
+        #      ⇒ 本段是**已被取代的旧域注册表**，给它装开关等于给废注册表接电；
+        #   ③ **同文件同键名已有判例**：`gates.N.active`（domain_config.yaml:302-309
+        #      口径澄清）已裁定「人读型声明，**不是**可执行开关——改成 false
+        #      不会关闭任何一闸（假 affordance）」⇒ 按「同族键处置一致性」跟随。
+        #
+        # ⚠ **必须写限定路径（带文件名），不得写裸名 `active`**：
+        #   `path_prefixes` 由**裸段名**派生 `.active` **段级**白名单
+        #   （本文件 :2025-2027 的推导）⇒ 裸登记会让**任意** config 里挂在任何
+        #   `active` 段下的键**自动绿灯** ⇒ 正是 v3.28.2「通用词降级」要防的假绿。
+        #   带点的条目被该推导**显式排除**，走 `_is_textual` 规则③精确匹配
+        #   `stem=="domain_config" and segs[:2]==["domains","active"]`。
+        "domain_config.domains.active",
     })
 
     # ── 人读型路径段白名单（按前缀豁免，比逐个键名更抗漂移）────────
