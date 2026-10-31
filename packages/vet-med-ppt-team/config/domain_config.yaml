@@ -1,20 +1,47 @@
 # domain_config.yaml — 学科域配置（v3.2.0-batch5 抽离）
 # ══════════════════════════════════════════════════════════
-# v3.3.0 立项依据：v4 通用化战略要求 domain 集中可配。
-# 原 DISEASE_MAP（case_extract.py）/ domain=animal-medicine/家禽（4 agent MD 描述）
-# 散落 5+ 文件，新增/修改 domain 需改多处。本文件为唯一源。
 #
-# 消费方：
-#   - scripts/case_extract.py（DISEASE_MAP 读本文件，标 deprecated 兜底）
-#   - scripts/verify_deck.py（--three-source-check 模式读 domain 列表）
-#   - 4 个 agent MD 描述（用 ${domain} 占位符，v3.3.0+ 装配时替换）
-#   - teams/vet-med-ppt-team/config.json（domain 字段同步）
+# ── ⚠ v3.28.2 实证订正（第三轮从零诊断）：头注释曾宣称 4 条消费关系，实测 **3 条为假** ──
+#   本文件按段拆开看，真实消费关系如下（逐条实测，含反证）：
 #
-# 覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件（团队级定制）
+#   ✅ `disease_modules` 段 —— **唯一有生产消费方的段**
+#      消费方：scripts/case_extract.py:202 `_DOMAIN_CFG.get("disease_modules", {})`
+#      （resolve_disease_name 动态查表：病种模块代码 → 中文病种名）
+#
+#   ✅ `three_source_check` 段 —— 有生产消费方
+#      消费方：scripts/harness.py `load_three_source_config()`
+#      （verify_deck 经 `_load_three_source_kernel()` → harness 间接消费，依赖单向）
+#
+#   ❌ `domains` 段 —— **全段 0 生产消费方**（详见下方段头口径澄清）
+#      真正驱动业务的域注册表是 **config/domain-profiles.yaml#domains**
+#      （AST 读取点 12 处；两份域 id 集合只有 animal-medicine 一个交集）
+#      ⇒ 本段是**已被取代的旧域注册表**，仅存留作历史档案。
+#
+#   以下为原头注释的**假声明**逐条订正（实测依据附后）：
+#   ✗「scripts/verify_deck.py（--three-source-check 模式读 domain 列表）」
+#     —— 假。verify_deck.py 原有的 `_DOMAIN_CFG_PATH` 常量**全文件零引用**
+#        （死常量，已删除）；verify_deck 经 harness 消费的是 **three_source_check 段**，
+#        **从不读 domains 段**。
+#   ✗「4 个 agent MD 描述（用 ${domain} 占位符，v3.3.0+ 装配时替换）」
+#     —— 假。agents/*.md 中 `${domain}` 占位符 grep **零命中**。
+#   ✗「teams/vet-med-ppt-team/config.json（domain 字段同步）」
+#     —— 假。包内**不存在 teams/ 目录**。
+#   ✗「覆盖机制：<workspace>/.workbuddy/domain.yaml 可覆盖本文件」
+#     —— 假。case_extract.py:184-188 的 `candidates` 列表**只含包内 config 路径**，
+#        该覆盖路径只出现在注释里、从未进过候选列表 ⇒ 覆盖机制从未实现。
+#
+#   ⇒ 纪律：**文档宣称的消费关系必须与实现一致；宣称不存在的消费关系 = 文档缺陷。**
 
 version: "3.28.1"
 # ── 学科域清单（v3.3.0 默认 4 个） ───────────────────────────
-# Q2 默认：animal-medicine / microbiology / pet / tcm-vet
+# ⚠⚠ **废弃横幅（v3.28.2，实测）**：本段已**废弃**——全段 0 生产消费方。
+#   ⚠ **不要在本段新增/修改域**：改动不会生效（无人读取）。
+#   ✔ 真正的域注册表 = **config/domain-profiles.yaml#domains**
+#     （消费方 12 处：harness / 装配器 / fetch_oa_image / ensure_settings 等；
+#       现行三域：animal-medicine / computing / business-training）
+#   ✔ 本段保留仅为历史档案（v3.3.0 四域架构的存证）；
+#     其 `active` 字段已裁定人读型（见下方口径澄清），其余键同理无人读。
+# Q2 默认（历史）：animal-medicine / microbiology / pet / tcm-vet
 #
 # ⚠ **v3.28.2 口径澄清（第三轮从零诊断，实测复现）**：
 #   本段的 `active` 是**人读型声明**，**不是**可执行开关

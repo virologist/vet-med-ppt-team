@@ -215,8 +215,13 @@ THRESHOLD = _load_threshold()
 # 依赖方向：verify_deck → harness（单向）。harness 从不 import verify_deck，
 #   两者**无循环依赖**；且方向不可反——verify_deck 依赖 python-pptx，
 #   让编排内核反向依赖裁判会把重依赖倒灌进 harness。
-_DOMAIN_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "config", "domain_config.yaml")
+# ⚠ **v3.28.2 删除死常量 `_DOMAIN_CFG_PATH`**（原在此处）：
+#   它指向 config/domain_config.yaml，但全文件**零引用**（定义后从未被使用）
+#   ⇒ 属死代码；且 `domain_config.yaml:9` 的头注释曾基于它宣称
+#   「verify_deck.py（--three-source-check 模式读 domain 列表）」——**假声明**
+#   （真正的三源阈值走 `_load_three_source_kernel()` → `harness.load_three_source_config()`，
+#   读的是 domain_config.yaml 的 **three_source_check 段**，与 domains 段无关）。
+#   删除常量 + 订正假声明 ⇒ 消除「文档宣称的消费关系不存在」的漂移源。
 
 
 def _load_three_source_kernel():

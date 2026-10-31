@@ -282,18 +282,26 @@ def _bullets(items, indent: str = "- ") -> list:
 
 
 def _render_generic(fb: dict) -> list:
-    """渲染通用兜底段（不含任何域专有信息）。"""
+    """渲染通用兜底段（不含任何域专有信息）。
+
+    ⚠ **v3.28.2 修正**：`generic_persona` 缺失时**不得输出空壳标题**——
+      首版实现在读取 `gp` 之前就无条件 append 标题行 ⇒ config 精简掉该键时
+      产物出现只有标题没有内容的空壳段（「看起来有、实际没有」的半截渲染，
+      与本包「不得出现与『无库』并列的半句话」同一病灶族）。
+      现改为：**任一子键有内容才渲染对应段**；全空 ⇒ 整段省略。
+    """
     lines = []
     gp = fb.get("generic_persona") or {}
-    lines.append("【通用人设】（不含任何域专有信息）")
-    if gp.get("title"):
-        lines.append(f"- 称号：{gp['title']}")
-    if gp.get("background"):
-        lines.append(f"- 背景：{gp['background']}")
-    if gp.get("stance"):
-        lines.append(f"- 立场：{gp['stance']}")
-    if gp.get("duty_boundary"):
-        lines.append(f"- 职责边界：{gp['duty_boundary']}")
+    if any(gp.get(k) for k in ("title", "background", "stance", "duty_boundary")):
+        lines.append("【通用人设】（不含任何域专有信息）")
+        if gp.get("title"):
+            lines.append(f"- 称号：{gp['title']}")
+        if gp.get("background"):
+            lines.append(f"- 背景：{gp['background']}")
+        if gp.get("stance"):
+            lines.append(f"- 立场：{gp['stance']}")
+        if gp.get("duty_boundary"):
+            lines.append(f"- 职责边界：{gp['duty_boundary']}")
     gh = fb.get("generic_evidence_hierarchy") or {}
     if gh.get("institutional") or gh.get("literature"):
         lines.append("【通用证据轴】（两条独立轴）")
