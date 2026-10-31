@@ -334,8 +334,8 @@ segments:
   prefix: cross_review_mapping
   key_count: 7
   keys_sha256: 8d62a83e0f0c6de1d3bce5088ae3241660f01403
-  leaf_unused: 4
-  leaf_weak: 3
+  leaf_unused: 0
+  leaf_weak: 7
   consumer: 脚本+会话层+主理人
   disposition: 新增键须接线
   note: 闸3 交叉复检映射（改动类型 → 复检人）。第 22 项守卫比对。

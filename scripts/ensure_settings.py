@@ -3420,6 +3420,74 @@ def _agent_display_names(agents_dir):
     return names
 
 
+# ── agent MD 的「你不做…」边界声明抽取（生产侧复刻，口径见函数 docstring）──
+_EXCL_VERBS = ("不做", "不回答", "不管")
+_CLAUSE_SPLIT = re.compile(r"[、，,；;]")
+_SENT_SPLIT = re.compile(r"[。\n；;]")
+
+
+def _md_exclusion_clauses(text, names):
+    """从 agent MD 里抽出 (领域词, 归属人) 记录。归属人可为 None（配不出人）。
+
+    ⚠ 本函数是 `scripts/test_arch_drift.py:307` 里 `_exclusion_clauses`（v3.17.0）
+      的**生产侧复刻**。为什么复制而不 import（与 `ANTIEXAMPLE_SKIP_MARKER` 同一纪律，
+      见本文件 :350 的注释）：
+      ① 生产文件 import 测试模块会把整个测试模块拉进体检进程（重 + 有副作用）；
+      ② 更硬的一条：第 18 项死配置巡检**自 v3.25.0 起排除测试文件**
+         （本文件 :1600-1611 注释：「第 18 项问的是**生产代码**是否消费这个键，
+         测试代码的读取**不构成消费**」）⇒ 靠 import 拿到读取点**不算接线**，
+         `guard.yaml#cross_review_mapping.*.md_area_terms` 仍会被判成死键。
+      ⇒ 口径来源：`scripts/test_arch_drift.py` 的 `_exclusion_clauses`。
+      ⚠ 两处必须保持同口径：改任一一处，另一处需同步改（漂移由
+        `scripts/test_guard_md_area_terms_wired.py` 的变异用例盯住）。
+
+    `names` = {agent_id: 显示名} 映射（归属人按**显示名**在句中的出现顺序配对）。
+
+    抽取规则（结构化，**不猜语义**——语义由 `config/guard.yaml` 声明）：
+      ① 按句号/分号/换行切句；句内出现 不做 / 不回答 / 不管 → 该句是「边界声明句」；
+      ② 句内按 、，,；; 切子句，每个含上述动词的子句取动词之后的词作为**领域词**
+         （遇到「（」或「——」即截断，避免把"那是…的事"吞进领域词）；
+      ③ 该句里出现的成员显示名按出现顺序作为**归属人**；领域词与归属人按出现顺序
+         一一对应（例：「你不做教学设计、不做版式设计——那是苏学法和屠明熙的事」
+         → 2 个领域 + 2 个人 → 顺序配对）。
+
+    ④ **数量对不上时的取舍（沿用测试侧 v3.17.0 的明示标注，勿当缺陷）**
+      典型触发：一名多归属的句子，如 ppt-producer.md 的
+      「你不做内容决策（严真奥/苏学法）、不做版式设计（屠明熙）」——1 个领域挂了 2 个人，
+      配不出唯一归属人。此时：
+        · **归属人不产出**（owner=None）——宁可不判，避免把"其实可能指别人"判成矛盾
+          （假阳性比漏判更坏：假阳性会让体检被绕过）；
+        · **领域词照常产出**——因为"该成员声明自己不做某领域"这件事本身不需要配对归属人，
+          第 ④ 道判据的「取反」分支（复检人自己的 MD 不得声明不做该领域）靠它成立。
+    """
+    display = sorted({v for v in names.values() if v})
+    out = []
+    for sent in _SENT_SPLIT.split(text):
+        if not any(v in sent for v in _EXCL_VERBS):
+            continue
+        areas = []
+        for cl in _CLAUSE_SPLIT.split(sent):
+            for v in _EXCL_VERBS:
+                idx = cl.find(v)
+                if idx >= 0:
+                    area = re.split(r"[（(——*]", cl[idx + len(v):])[0]
+                    area = area.strip(" 　·—、,，.。;；：*")
+                    if area:
+                        areas.append(area)
+                    break
+        owners = [n for n in sorted(display,
+                                    key=lambda x: sent.find(x) if x in sent else 10 ** 6)
+                  if n in sent]
+        if not areas:
+            continue
+        if len(areas) == len(owners):
+            out.extend(zip(areas, owners))
+        else:
+            # 数量对不上 → 不产出归属人（宁可不判），领域词照常产出（供「取反」判据用）
+            out.extend((a, None) for a in areas)
+    return out
+
+
 def check_cross_review_mapping(expert_dir):
     """v3.17.0：第 22 项 —— 闸3「非作者交叉复检」领域↔复检人映射守卫（**阻断**）。
 
@@ -3430,12 +3498,22 @@ def check_cross_review_mapping(expert_dir):
     等于**把把关人派给了被明文禁止接活的人**，把关被整体绕开，且无人察觉
     （散文里的映射此前没有任何机器拦截）。
 
-    本项三道判据（任一不过 → 阻断，不放行）：
+    本项四道判据（任一不过 → 阻断，不放行）：
       ① **映射唯一源** = `config/guard.yaml#cross_review_mapping`
          （键 = 改动类型，值 = 期望成员 id）；yaml 里没登记 → 阻断（禁硬编码）。
       ② **SOP 文档的实际写法 == yaml 登记值**：同一条目内出现的成员名必须唯一且正确；
          写成别人 / 漏写 / 同条目多名字 → 阻断。
       ③ 复检人 id 必须登记在 `config/harness.yaml#members`（防派给不存在的成员）。
+      ④ **`md_area_terms` 的「取反 + 归属证明」双向校验**（v3.29.0 下沉）：
+         复检人自己的 agent MD 不得明文声明「不做」该领域（取反），
+         且必须有人声明该领域归复检人所有（归属证明）；`md_area_terms` 缺键即红。
+
+    ④ 为何必须下沉到生产（不是为消第 18 项警告硬凑）：
+      ①②③ 比的都是「yaml ↔ SOP 文档写法是否一致」。若有人把 yaml 的 `reviewer`
+      改错**并同步改了 SOP 文档**，①②③ 仍然绿（两边一致）⇒ **没有任何生产判据
+      校验「这个复检人是否被自己的 MD 明文禁止接该领域的活」**——这正是上面那个
+      真实缺陷的病灶，此前只由 `scripts/test_arch_drift.py` 的 T8 覆盖
+      ⇒ 形成「测试强制、生产不强制」的倒挂。
 
     为何阻断而不是提示：映射写反会把把关**整体**绕开，属"护栏看起来在、实际没设防"
     ——与第 21 项同级的确定性缺陷（判据确定、假阳性为零）。
@@ -3491,6 +3569,9 @@ def check_cross_review_mapping(expert_dir):
 
     names = _agent_display_names(os.path.join(expert_dir, "agents"))
     all_names = {n for n in names.values() if n}
+    # ④ 归属证明的扫描范围 = yaml 登记的全部复检人（与 T8 同口径：只在这些人的 MD 里找归属声明）
+    reviewers = {spec.get("reviewer") for spec in mapping.values()
+                 if isinstance(spec, dict)}
     try:
         lines = open(doc_path, encoding="utf-8", errors="replace").read().split("\n")
     except OSError as e:
@@ -3512,6 +3593,48 @@ def check_cross_review_mapping(expert_dir):
         if not expected_name:
             problems.append(f"{kind} → {reviewer}：取不到该成员显示名（agents/{reviewer}.md）")
             continue
+        # ── ④ md_area_terms 的「取反 + 归属证明」双向校验 ──────────────
+        #   消费方：`config/guard.yaml#cross_review_mapping.<kind>.md_area_terms`
+        #   （该键此前**唯一**读取点是测试 scripts/test_arch_drift.py:624 的 T8，
+        #     第 18 项自 v3.25.0 起排除测试文件 ⇒ 生产侧无人读 ⇒ 判为死键）。
+        #   语义见 guard.yaml:58-59 注释：领域在各 agent MD 里的用词。
+        terms = list(spec.get("md_area_terms") or [])
+        if not terms:
+            # 缺键即红，**不回退到代码内置词表**（与 cross_review_doc_pattern 同纪律）：
+            #   回退会让 yaml 那份变成装饰品——检查照跑、但没消费配置。
+            problems.append(
+                f"cross_review_mapping.{kind} 缺 md_area_terms"
+                f"（= 该领域在各 agent MD 里的用词，供「取反 + 归属证明」校验；"
+                f"禁回退到代码内置词表）")
+        else:
+            _agents_dir = os.path.join(expert_dir, "agents")
+            # ① 取反：复检人自己的 MD 不得声明「不做」该领域
+            own_path = os.path.join(_agents_dir, f"{reviewer}.md")
+            if not os.path.isfile(own_path):
+                problems.append(
+                    f"{kind} → {reviewer}：缺 agents/{reviewer}.md，无法做「取反」校验")
+            else:
+                with open(own_path, encoding="utf-8", errors="replace") as _f:
+                    own = _md_exclusion_clauses(_f.read(), names)
+                for area, _owner in own:
+                    if any(t in area for t in terms):
+                        problems.append(
+                            f"{kind} 派给 {expected_name}，但其 agent MD 明文声明「不做{area}」")
+            # ② 归属证明：必须有人声明该领域归复检人所有
+            owners = set()
+            for mid in sorted(m for m in reviewers if m):
+                p = os.path.join(_agents_dir, f"{mid}.md")
+                if not os.path.isfile(p):
+                    continue
+                with open(p, encoding="utf-8", errors="replace") as _f:
+                    pairs = _md_exclusion_clauses(_f.read(), names)
+                for area, owner in pairs:
+                    if owner and any(t in area for t in terms):
+                        owners.add(owner)
+            if expected_name not in owners:
+                problems.append(
+                    f"{kind} 派给 {expected_name}，但没有任何 agent MD 声明该领域归其所有"
+                    f"（当前声明归属：{sorted(owners) or '无'}）")
         expected = pattern.format(kind=kind, name=expected_name)
         seen = 0
         ok_form = 0
