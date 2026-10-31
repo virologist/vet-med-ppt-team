@@ -174,11 +174,11 @@ segments:
   prefix: knowledge_bases
   key_count: 38
   keys_sha256: 0aa80a29212af6f71d31e6251aa988ffe0ec7efc
-  leaf_unused: 1
-  leaf_weak: 30
+  leaf_unused: 0
+  leaf_weak: 31
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。
+  note: Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。⚠ v3.29.0 C4·键B 接线：`is_user_default` 从「待人工定性候选」转为「弱证据」——它现由 harness.py::_is_user_default_kb 读取（快照层稳定排序）与 assemble_domain_prompt.py::_kb_is_user_default（渲染层标注），两条消费路径均为**真读**（能红的红证明见 scripts/test_c4_key_wiring.py T7/T9）。
 - id: harness.yaml#loop_b
   file: harness.yaml
   prefix: loop_b
@@ -224,11 +224,11 @@ segments:
   prefix: domains
   key_count: 28
   keys_sha256: a000b50e441e23e21eb7e950958d7ae87d222980
-  leaf_unused: 4
-  leaf_weak: 8
+  leaf_unused: 0
+  leaf_weak: 12
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。
+  note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。⚠ v3.29.0：本段的 `domains[0..3].active`（C3 待接线键）由「待人工定性候选」转入**弱证据**桶——**纯属键名撞车**：harness.py::_on_profile_missing_policy 读的 `active` 是 `domain-profiles.yaml#fallback.active` 开关，**不是**本段的 active。它**不构成**本段的接线（无路径级证据），C3 仍是待办。
 - id: harness.yaml#stages
   file: harness.yaml
   prefix: stages
@@ -292,13 +292,13 @@ segments:
 - id: domain-profiles.yaml#fallback
   file: domain-profiles.yaml
   prefix: fallback
-  key_count: 9
-  keys_sha256: 70ed15aa7e2dcb800590027d94dd9439c874f1eb
-  leaf_unused: 1
+  key_count: 8
+  keys_sha256: e125ccdff23c2b7e92124cb6673df308c4608b29
+  leaf_unused: 0
   leaf_weak: 8
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: 域档案缺失时的通用兜底渲染块。装配器回落读取。
+  note: 域档案缺失时的通用兜底渲染块。装配器回落读取。⚠ v3.29.0 C4·键A 接线：`on_profile_missing` 已取得**路径级证据**——现由 harness.py::_on_profile_missing_policy 读取并决定「处置文案 + 退出码」（四个调用点：cmd_route / cmd_domain / cmd_collapse show|confirm；能红的红证明见 scripts/test_c4_key_wiring.py T2/T3/T4/T6），不再是 `harness.py` print 里的第二份硬编码副本。
 - id: harness.yaml#collapse
   file: harness.yaml
   prefix: collapse

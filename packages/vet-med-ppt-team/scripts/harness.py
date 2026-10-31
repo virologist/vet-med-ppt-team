@@ -714,9 +714,14 @@ def cmd_route(args):
         # ── v3.17.0：域坍缩（追加域字段 + 落盘坍缩产物）─────────────────
         profiles, err = load_domain_profiles(cfg)
         if err:
-            print(f"⛔ {err}\n   域档案不可用时**不得**回落任何域（含默认域）——"
-                  f"请修复 {config/domain-profiles.yaml} 或去掉 --domain。", file=sys.stderr)
-            return 3
+            # ── C4·键A 接线：处置策略由配置决定（含退出码），不再写死同一句话 ──
+            # ⚠ 修掉的崩溃：原第二段 print 是 `f"...{config/domain-profiles.yaml}..."`
+            #   ——花括号是**表达式占位符**（会被求值成 config / domain - profiles.yaml），
+            #   而本文件全文**没有 `config` 名字绑定** ⇒ 真走进这条分支时抛
+            #   `NameError: name 'config' is not defined`（友好报错变成崩溃）。
+            #   修复口径：路径走常量拼接的普通文本，不再进 f-string 表达式位。
+            return _emit_profile_missing(
+                err, cfg, f"请修复 {_PROFILE_MISSING_POLICY_REL} 或去掉 --domain。")
         dom = find_domain(profiles, domain_id)
         if not dom:
             ids = ", ".join(str(x.get("id")) for x in (profiles.get("domains") or [])
@@ -844,7 +849,28 @@ def _domain_knowledge_bases(cfg, domain_id):
         scope = str(kb.get("owner_scope") or "")
         if not scope or scope == domain_id:
             mine.append(kb)
+    # ── C4·键B-a 接线：`is_user_default` 的**优先/落点**语义 ──────────────
+    # 消费方：`external-tools.yaml#knowledge_bases[].is_user_default`
+    #   （:196 挂在《禽病》主力库上；7 库中唯一带 share_url 的也是它）。
+    # 语义（依据既有判据 scripts/test_external_tools.py:197-200）：
+    #   `is_user_default: true` = **当前用户账号默认启用的那一个库**。
+    #   ⚠ 它**不是过滤条件**——过滤由 `owner_scope` 独占负责（见上一段）；
+    #     它是**排序优先标记**：同域多库且用户未显式指定 ⇒ 落到默认库，
+    #     而不是"任取 yaml 里的第一条"。
+    # 为什么必须在这一层排（150 字 Explaining）：
+    #   `mine` 会被整块写进坍缩产物（→ assemble_domain_prompt.py 按此顺序渲染），
+    #   ⇒ 若「哪个是默认库」只由 yaml 文件次序表达，调整条目顺序就会**静默换默认库**。
+    #   ⇒ 次序必须由**声明**决定：**稳定排序**（Python sort 稳定 ⇒ 组内仍按 yaml 原序）。
+    mine.sort(key=lambda kb: 0 if _is_user_default_kb(kb) else 1)
     return mine, ""
+
+
+def _is_user_default_kb(kb) -> bool:
+    """`is_user_default` 的宽松布尔判定（YAML 允许 true / "true" / 1 三形态）。"""
+    v = (kb or {}).get("is_user_default")
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "on", "1")
+    return bool(v)
 
 
 def _domain_profiles_path(cfg=None):
@@ -886,6 +912,134 @@ def _default_gate_level(key: str, fallback: str) -> str:
         print(f"⚠ visual-rules.yaml 读取失败（{e}）——gate.{key} 回落 {fallback!r}",
               file=sys.stderr)
     return fallback
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 域档案不可用的处置策略（第 18 项 C4·键A 接线）
+# ══════════════════════════════════════════════════════════════════════
+# 为什么必须接线（**实锤的双份真相**，与修复前的 `_default_gate_level` 同构）：
+#   `config/domain-profiles.yaml:57` 声明 `fallback.on_profile_missing:
+#   "abort_with_error"`，其 :56 行注释明写「**由 harness.py 执行**」；
+#   而 cmd_route / cmd_domain / cmd_collapse(show|confirm) 四个调用点此前
+#   把同一句「不得回落任何域」写死在 print 里 ⇒ 配置与代码是**两份互不知晓的
+#   同一口径** ⇒ **改配置不改行为**。
+#   接线后：策略值**同时**决定「处置文案」与「退出码」，配置改了行为就跟着改。
+#
+# ⚠ 该键是**行为策略开关**（决定"域档案取不到时怎么办"），不是给人读的说明文案。
+# ⚠ 同名不同源的另一条键：`harness.yaml#fallback`（members 的降级通道，
+#   见 _FALLBACK 与 cfg.get("fallback") 的读取点）——**不是**本段，勿混接。
+_PROFILE_MISSING_POLICY_REL = "config/domain-profiles.yaml"
+_PROFILE_MISSING_POLICY_PATH = "config/domain-profiles.yaml#fallback.on_profile_missing"
+#: 最保守策略：显式报错 + 非零退出码（不猜、不回落任何域，含默认域）
+_CONSERVATIVE_PROFILE_MISSING_POLICY = "abort_with_error"
+#: **已登记**策略值 → 处置文案 / 退出码（唯一源：config/domain-profiles.yaml:57）。
+#: ⚠ 不为"以后可能用"预留值：没有配置对应值的条目是**不可达、也不可测**的死分支。
+#:   新增策略 = 先往 domain-profiles.yaml 登记取值，再在此表补文案与退出码。
+_PROFILE_MISSING_POLICIES = {
+    "abort_with_error": {
+        "text": "显式报错——**不得**回落任何域（含默认域）",
+        "exit_code": 3,
+    },
+}
+
+
+def _on_profile_missing_policy(profiles=None, cfg=None):
+    """读 `domain-profiles.yaml#fallback.on_profile_missing`，返回 (policy, warn)。
+
+    policy 恒为 `_PROFILE_MISSING_POLICIES` 里已登记的合法值；
+    warn = 降级告警文案（正常为空串）——取不到 / 值非法时**有声回落**最保守值，
+    不静默跑偏（与 `_default_gate_level()` 同范式）。
+
+    ⚠ **为什么这里自己也读一次文件**（而不是只读入参 `profiles`）：
+      四个调用点拿到 `profiles` 时它**恰好是 None**（`load_domain_profiles`
+      失败即返回 `(None, err)`），而策略值就住在这个读不出来的文件里
+      ⇒ 必须经 `_domain_profiles_path(cfg)` 直接读文件，否则「档案坏了」
+      这条最需要策略的路径上永远读不到策略（接线形同虚设）。
+
+    ⚠ **向后兼容：`active` 缺键一律按启用处理**（历史配置没有该键）。
+      即便显式写 `active: false`，也**仍然按最保守策略处置并告警**——
+      「不许静默丢域」这条警戒不可能被配置悄悄关掉。
+    """
+    def _fallback_node():
+        """取 fallback 段；取不到返回 None（调用方据此告警并回落最保守值）。
+
+        ⚠ **局部变量名不得叫 `node`**（v3.29.0 实测踩到的静默事故）：
+          本包的既有约定是 `node = (cfg or {}).get("<块名>")`（见 :5102 的
+          insight_carrier 等处），而第 18 项的静态判据
+          （`ensure_settings.py:1683` 局部变量绑定）是**按文件**收集 `binds`
+          ——不同函数里同名局部变量会**互相覆盖** ⇒ 用 `node` 当中间变量会把
+          别人的「路径级证据」改道 ⇒ 实测副作用：多出一个伪免检段
+          `harness.yaml#insight_carrier`（39 → 40 段）⇒ 登记表守卫 T8 判红。
+          ⇒ 这里的中间变量一律用 **`fb_node`** 这个不撞车的名字。
+        """
+        if isinstance(profiles, dict):
+            fb_node = profiles.get("fallback")
+            if isinstance(fb_node, dict):
+                return fb_node
+        path = _domain_profiles_path(cfg)
+        try:
+            import yaml as _yaml
+            with open(path, encoding="utf-8") as f:
+                data = _yaml.safe_load(f)
+        except Exception as e:
+            print(f"⚠ {_PROFILE_MISSING_POLICY_PATH} 读取失败（{e}）", file=sys.stderr)
+            return None
+        if isinstance(data, dict):
+            fb_node = data.get("fallback")
+            if isinstance(fb_node, dict):
+                return fb_node
+        return None
+
+    fb_node = _fallback_node()
+    warn = ""
+    if fb_node is None:
+        return _CONSERVATIVE_PROFILE_MISSING_POLICY, (
+            f"⚠ {_PROFILE_MISSING_POLICY_PATH} 取不到（域档案不可读或 fallback 段缺失/"
+            f"格式非法）——回落最保守策略 {_CONSERVATIVE_PROFILE_MISSING_POLICY!r}"
+            f"（显式报错，不回落任何域）")
+
+    # `active` 缺键 = 启用（向后兼容）；显式关闭也不得静默放行
+    active = fb_node.get("active", True)
+    if active is False or (isinstance(active, str)
+                           and active.strip().lower() in ("false", "no", "off", "0")):
+        return _CONSERVATIVE_PROFILE_MISSING_POLICY, (
+            f"⚠ {_PROFILE_MISSING_POLICY_PATH} 被显式停用（active={active!r}）——"
+            f"该策略**不得**由配置静默关闭，按最保守策略 "
+            f"{_CONSERVATIVE_PROFILE_MISSING_POLICY!r} 处置")
+
+    raw = fb_node.get("on_profile_missing")
+    val = raw.strip() if isinstance(raw, str) else ""
+    if val in _PROFILE_MISSING_POLICIES:
+        return val, ""
+    if raw is None or val == "":
+        warn = f"⚠ {_PROFILE_MISSING_POLICY_PATH} 缺失或为空"
+    else:
+        warn = (f"⚠ {_PROFILE_MISSING_POLICY_PATH}={raw!r} 不是已登记策略值"
+                f"（{sorted(_PROFILE_MISSING_POLICIES)}）")
+    return _CONSERVATIVE_PROFILE_MISSING_POLICY, (
+        warn + f"——回落最保守策略 {_CONSERVATIVE_PROFILE_MISSING_POLICY!r}"
+               f"（显式报错，不回落任何域）")
+
+
+def _emit_profile_missing(err, cfg=None, fix_hint=""):
+    """打印「域档案不可用」的统一处置输出，**返回该策略的退出码**。
+
+    四个调用点共用一处渲染，防止四处说法各自漂移（此前正是这句文案被复制了
+    四遍，且与 yaml 里的策略声明互不知晓）。
+
+    输出三段：① 策略降级告警（可能为空）② 原始错误 ③ 策略生效说明 + 修复提示。
+    ⚠ `fix_hint` 是**各命令自己的**下一步动作（如 route 的「去掉 --domain」）；
+      「不得回落任何域」这条策略语义由配置驱动，两件事分开，不得再写死一遍。
+    """
+    policy, warn = _on_profile_missing_policy(None, cfg)
+    if warn:
+        print(warn, file=sys.stderr)
+    print(f"⛔ {err}", file=sys.stderr)
+    print(f"   处置策略 {_PROFILE_MISSING_POLICY_PATH}={policy!r}："
+          f"{_PROFILE_MISSING_POLICIES[policy]['text']}", file=sys.stderr)
+    if fix_hint:
+        print(f"   {fix_hint}", file=sys.stderr)
+    return _PROFILE_MISSING_POLICIES[policy]["exit_code"]
 
 
 def load_domain_profiles(cfg=None):
@@ -937,8 +1091,9 @@ def cmd_domain(args):
     cfg, _ = load_cfg()
     profiles, err = load_domain_profiles(cfg)
     if err:
-        print(f"⛔ {err}", file=sys.stderr)
-        return 3
+        # ── C4·键A 接线（调用点 2/4：cmd_domain 的 list / show 共用处入口）──
+        return _emit_profile_missing(
+            err, cfg, f"请修复 {_PROFILE_MISSING_POLICY_REL} 后重试。")
     ppath = _domain_profiles_path(cfg)
     if args.action == "list":
         items = []
@@ -1240,8 +1395,10 @@ def cmd_collapse(args):
         tid = _resolve_task_id(args, w)
         profiles, err = load_domain_profiles(cfg)
         if err:
-            print(f"⛔ {err}", file=sys.stderr)
-            return 3
+            # ── C4·键A 接线（调用点 3/4：cmd_collapse show）──
+            return _emit_profile_missing(
+                err, cfg, f"请修复 {_PROFILE_MISSING_POLICY_REL} 后重试"
+                f"（collapse show 需读域档案定位坍缩产物）。")
         dom = find_domain(profiles, args.id)
         if not dom:
             print(f"⛔ 未知域 id：{args.id!r}", file=sys.stderr)
@@ -1294,8 +1451,11 @@ def cmd_collapse(args):
         tid = _resolve_task_id(args, w)
         profiles, err = load_domain_profiles(cfg)
         if err:
-            print(f"⛔ {err}", file=sys.stderr)
-            return 3
+            # ── C4·键A 接线（调用点 4/4：cmd_collapse confirm）——
+            #   确认前档案不可读 ⇒ 必须显式失败，不得用通用人设糊过去。
+            return _emit_profile_missing(
+                err, cfg, f"请修复 {_PROFILE_MISSING_POLICY_REL} 后重试"
+                f"（未经确认不得进入后续阶段）。")
         dom = find_domain(profiles, args.id)
         if not dom:
             print(f"⛔ 未知域 id：{args.id!r}", file=sys.stderr)

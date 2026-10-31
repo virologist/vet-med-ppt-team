@@ -253,6 +253,22 @@ def pick_collapse_artifact(candidates: list):
 
 
 # ───────────────────────────────────────────────── 域上下文渲染
+def _kb_is_user_default(k) -> bool:
+    """`is_user_default` 的宽松布尔判定（YAML 三形态：true / "true" / 1）。
+
+    ⚠ **双胞注意**：`harness.py::_is_user_default_kb` 是**同口径**的另一份实现
+      （快照层排序用）。为什么复制而不 import：装配器与编排内核是两个 CLI 入口，
+      相互 import 会把 7000 行的 CLI 模块拖进装配进程；
+      本包的既有先例是「复制 + 用守卫盯漂移」（见 ensure_settings.py 的
+      `_md_exclusion_clauses`，它与 test_arch_drift 的同名函数一样是复制件）。
+      ⇒ 漂移由 `scripts/test_c4_key_wiring.py` 的一致性用例盯住。
+    """
+    v = (k or {}).get("is_user_default")
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "on", "1")
+    return bool(v)
+
+
 def _bullets(items, indent: str = "- ") -> list:
     out = []
     for it in items or []:
@@ -491,7 +507,19 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                 when = k.get("when") or ""
                 share = k.get("share_url") or ""
                 scope = k.get("owner_scope") or ""
-                line = f"- {nm}" + (f"（id: {kid}）" if kid else "")
+                line = f"- {nm}"
+                # ── C4·键B-b 接线：标注「用户默认启用的库」─────────────────
+                # 消费方：`external-tools.yaml#knowledge_bases[].is_user_default`
+                #   （判定 helper 在 harness.py::_is_user_default_kb，快照层已按它
+                #     稳定排序 = harness.py::_domain_knowledge_bases）。
+                # 为什么渲染层还要再标一次（两个不同的可见性）：
+                #   排序只决定"列在最前"，成员扫读时**看不出**那是默认库
+                #   ⇒ 排序 ≠ 可见。标注紧跟库名，才让"默认"这件事**看得见**。
+                # ⚠ 不做过滤：`owner_scope` 已独占过滤职责（harness.py 快照层），
+                #   此处只做**标注**，不增删条目。
+                if _kb_is_user_default(k):
+                    line += " ★**用户默认启用的库**"
+                line += (f"（id: {kid}）" if kid else "")
                 line += (f" —— 何时用：{when}" if when else "")
                 if scope:
                     line += f"；适用专业：{scope}"
