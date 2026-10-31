@@ -453,6 +453,11 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                     lines.append(f"    - 端点：{c['endpoint']}")
                 if c.get("license_rule"):
                     lines.append(f"    - 许可规则：{c['license_rule']}")
+        # ── v3.28.2·C1：补渲染「图片科学性归属」（此前配了未渲染）────────
+        #   用途：划清「图片**内容**科学性由谁负责」与「标注/版式由谁负责」
+        #   ⇒ 缺它 ⇒ 内容专家与视觉设计成员互相等对方兜底（责任真空）。
+        if ic.get("image_science_ownership"):
+            lines.append(f"- 科学性归属：{ic['image_science_ownership']}")
         if ic.get("query_elements"):
             lines.append("- 检索式要素：")
             lines += _bullets(ic.get("query_elements"), "  - ")
@@ -597,7 +602,9 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
     _ap = pick("audience_profile") or {}
     if isinstance(_ap, dict) and _ap:
         lines.append("【二之三、受众分层（本域差异）】")
-        for k in ("layer_notes", "data_requirements", "case_forms"):
+        for k in ("layer_notes", "data_requirements", "case_forms",
+                  # ── v3.28.2·C1：补 interaction_forms（此前配了未渲染）──
+                  "interaction_forms"):
             v = _ap.get(k)
             if isinstance(v, list) and v:
                 lines.append(f"- {k}：")
@@ -621,6 +628,13 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
                                      + (f" —— {m.get('focus')}" if m.get("focus") else ""))
             if tpl.get("note"):
                 lines.append(f"  ⚠ {tpl['note']}")
+            # ── v3.28.2·C1：补渲染 sibling_architecture / trim_priority ──
+            #   二者此前配了未渲染 ⇒ 成员拿不到「另一条课型架构」与「课时不足时
+            #   先砍哪块」这两条裁剪判据 ⇒ 只能凭感觉砍，砍掉关键诊断链。
+            if tpl.get("sibling_architecture"):
+                lines.append(f"  · 并行课型架构：{tpl['sibling_architecture']}")
+            if tpl.get("trim_priority"):
+                lines.append(f"  · 裁剪优先级：{tpl['trim_priority']}")
 
     _uss = pick("user_supplied_sources") or {}
     if isinstance(_uss, dict) and _uss:
@@ -629,7 +643,11 @@ def _render_domain_context(artifact: dict, domain: dict, artifact_path: str) -> 
             lines.append(f"- 指定源登记处：{_uss['intake_field']}")
         for k, label in (("default_strategy", "优先级"),
                          ("conflict_rule", "冲突处置"),
-                         ("traceability_rule", "可追溯要求")):
+                         ("traceability_rule", "可追溯要求"),
+                         # ── v3.28.2·C1：补 inaccessible_rule（此前配了未渲染）──
+                         #   它是**取不到源时怎么办**的唯一判据；缺它 ⇒ 成员可能
+                         #   把取不到的内容**当成事实写进正式内容**（无据断言）。
+                         ("inaccessible_rule", "取不到时")):
             if _uss.get(k):
                 lines.append(f"- {label}：{_uss[k]}")
 
