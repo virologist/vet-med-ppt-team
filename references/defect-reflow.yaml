@@ -34,9 +34,33 @@ schema: "defect-reflow/1"
 established: "2026-11-01"
 established_by: "Loop A 十三维度诊断 B1（D6/P0-1）"
 
-# ⚠ entries 为空是**合法初始态**（尚无规则类改动需要登记）；
-#   空台账不判红，但一旦有 entry 就必须齐字段（判据见 harness.yaml#defect_reflow）。
-entries: []
+# ⚠ 本台账的**第一条真实记录**即本轮 Loop A 十三维度诊断的四处规则改动（B1–B4），
+#   每条都附「能红」测试作产出证据，证明「改规则 → 产出侧有可观测变化」。
+entries:
+  - id: "RF-20261101-001"
+    rule_ref: "config/harness.yaml#defect_reflow"
+    change: "新增缺陷回流台账判据段（ledger / required_fields / waiver_fields / block_on_missing_fields）——「改规则不改输出」的强制留痕面（Loop A B1 / D6 P0-1）"
+    rule_hash_before: "61dd355690a5"
+    rule_hash_after: "b26ff13c00eb"
+    output_evidence: "scripts/test_defect_reflow.py（7 例：T1 合规绿 / T2 缺字段红 / T3 哈希过期红 / T4 缺证据须豁免 / T5 重复 id 红 / T6 台账缺失 rc=3 / T7 掏空字段判据变异）"
+  - id: "RF-20261101-002"
+    rule_ref: "config/harness.yaml#collapse.rationale_quality"
+    change: "坍缩选型理由新增格式下限判据段（min_chars / placeholder_values / block_on_fail）——只判格式不判语义（Loop A B2 / D1 P1-1）"
+    rule_hash_before: "3014cd4aeef5"
+    rule_hash_after: "b26ff13c00eb"
+    output_evidence: "scripts/test_rationale_quality.py（6 例：T1 合规绿 / T2 过短红 / T3 纯占位符红 / T4 伪装红 / T5 缺段回落 / T6 掏空长度判据变异）"
+  - id: "RF-20261101-003"
+    rule_ref: "config/harness.yaml#collapse.quality_eval"
+    change: "坍缩产物新增结构完整性评估器判据段（panel_subset / persona_fields / evidence_axes / content_axes / kb_routing / panel_hints）——只判结构不判语义（Loop A B3 / D1 P1-2）"
+    rule_hash_before: "d873a9c8d094"
+    rule_hash_after: "b26ff13c00eb"
+    output_evidence: "scripts/test_collapse_quality_eval.py（8 例：T1 结构齐绿 / T2 凭空造人红 / T3 人格缺字段红 / T4 单轴红 / T5 无库无指针红 / T6 无激活提示红 / T7 enabled=false 空判 / T8 掏空面板子集变异）"
+  - id: "RF-20261101-004"
+    rule_ref: "references/dependency-manifest.yaml#skill_contract"
+    change: "新增外部 skill 接入契约段（required_fields 五要素 / beautify_boundary / standard_authority）——美化边界与标准归口成文（Loop A B4 / D13③④）"
+    rule_hash_before: "eabbb9c568a3"
+    rule_hash_after: "7781dad43fcb"
+    output_evidence: "scripts/test_external_dependency_contract.py（8 例：T1 合规绿 / T2 缺五要素红 / T3 缺美化边界红 / T4 判据源漂移红 / T5 缺标准归口红 / T6 登记面指错红 / T7 无依赖缺契约不红 / T8 掏空五要素循环变异）"
 
 # ── 登记样例（照此格式追加，勿把样例当真实条目）──────────────────────────────
 # entries:

@@ -6,6 +6,82 @@
 
 ---
 
+## [v3.28.3] - 2026-11-01（Loop A 从零诊断十三维度：七批加固）
+
+> ⚠ **版本号纠正**：上一轮（2026-10-30）的 v3.28.2 条目已发布，但当时**漏改**
+> `.codebuddy-plugin/plugin.json`（一直停在 3.28.1）⇒ 版本序列在 3.28.2 处断裂。
+> 本轮按语义化版本顺延为 **3.28.3**，并把 13 处声明一并纠正到位（体检 [14] 实测）。
+
+> 依据：`Loop A 进化总控指令（从零诊断十三维度版）`。诊断报告（GATE 1 前置交付物）
+> 落盘于会话工作区 `outputs/LoopA_诊断报告_十三维度_20261101.md`。
+> 基线：5 套件全绿（test_harness 21 / test_five_gates 6 / test_arch_drift 40 /
+> test_loop_state 4 / test_versionctl 147+1skip），体检 27/27 ✅。
+> 全程走 `loop batch-open → 改 → batch-close --confirmed --regression`，共 9 个批次。
+
+### 一、诊断结论（十三维度）
+
+**✅ 已实现且有效（9）**：D2 协作 / D3 决策 / D4 资源 / D5 沟通 / D7 颗粒度 /
+D8 配图 / D9 检查优化 / D10 Agent 设计 / D11 跨工具耦合。
+**⚠ 已实现存缺口（4）**：D1 专家坍缩（理由质量与结果评估）、D6 整体工作流（缺陷回流无台账）、
+D12 中断恢复（质量连续性未实测）、D13 外部 Skill 耦合（美化边界与标准归口未立规）。
+**❌ 未实现**：无。**❓ 信息不足（2）**：single-ppt 1.5 档页数区间（需教务课时表依据）、
+IMA 7 库恢复后的实际可用性（需凭据）。
+
+### 二、七批加固（对应 P0/P1/P2）
+
+| 批 | 内容 | 解决 | 判据 |
+|---|---|---|---|
+| B1 | **缺陷回流台账**：`loop reflow` + `config/harness.yaml#defect_reflow` + `references/defect-reflow.yaml` | P0-1（D6） | test_defect_reflow 7 例 |
+| B2 | 坍缩**选型理由格式下限**（长度/占位符；语义质量机器不判） | P1-1（D1） | test_rationale_quality 6 例 |
+| B3 | 坍缩产物**结构完整性评估器**（六项；语义质量不判） | P1-2（D1） | test_collapse_quality_eval 8 例 |
+| B3b | 修 B2 连带红（fixture 理由过短 → 换真实理由，**不降判据**） | 回归 | test_collapse_domain_render 9 passed |
+| B4 | **外部 skill 接入契约**：五要素 + 美化边界 + 标准归口 | P1-3（D13③④） | test_external_dependency_contract 8 例 |
+| B5 | **中断恢复质量连续性**端到端实测（六条判据） | P1-4（D12） | test_interrupt_resume_continuity 1 例 |
+| B6/B6a/B6b | README v1.4.1→v3.28.3、agents 补 verifier、模板路径改引用、lead_tools 欠账结案；README/CHANGELOG 入白名单 | P2-1/2/5（L1/L2/L6） | 体检 [12][14][15] 绿 |
+| B7 | 本科版教学标准**收录**（待人工核验直链）+ 单页表 1.5 档诊断更正 | P2-4/P2-7（L5） | 体检 [19] 绿 |
+| W3 | `inspection-zones.yaml` **重复声明修复**（digest_scheme/version 各写两遍）+ 登记表刷新 + marketplace.json 入白名单 | 数据正确性 | 两套登记表守卫 36/21 passed |
+
+### 三、新机制三条（都配「能红」证明）
+
+1. **缺陷回流台账**（`loop reflow`）：规则类改动必须登记 `rule_ref` + 改前改后哈希 +
+   **产出证据**（空证据须豁免三要素）；`rule_hash_after` 与当前文件不符即判红（防事后改账）。
+   ⇒ 把「改规则」升级为「须附产出证据」，这是 R4「已实现不等于有效」的落地面。
+2. **坍缩双判据**：理由**格式下限**（长度/占位符）+ 产物**结构完整性**（面板子集/人格四要素/
+   证据两轴/覆盖轴/库路由/激活提示）。⚠ **语义质量机器不判**（三件事分工），
+   两条判据都把边界写进返回值，不装成"已评估质量"。
+3. **外部 skill 接入契约**：五要素必填 + 美化类边界（判据源必须 = visual-rules.yaml、
+   执行者 = visual-slide-designer、三条 forbidden、去重规则）+ 标准归口
+   （registry 必须 = external-tools.yaml#standards、外部文本只作线索、冲突以官方源为准）。
+
+### 四、L1–L7 线索复核结果
+
+- **证实 5 条**：L1（README v1.4.1 + 漏 verifier，已修）/ L3（IMA 凭据缺失，降级生效，属环境）
+  / L5（本科版未收录，已补但**不假装已核实**）/ L6（lead_tools 欠账，已结案为"主动撤销"）
+  / L7（dependency-manifest 仅 1 条，已补契约段）
+- **结案 1 条**：L4（`insert_font_at_creation` 早在 dual-loop-governance#8-12 定性
+  「结构性不可判定」并移出机器验收项，**无需再动**）。
+- **部分成立 1 条**：L2（模板路径在哨兵块内且有指纹引用，非双源漂移；仍改为一处引用）。
+
+### 五、本轮自己踩到并修掉的坑（如实记录）
+
+1. **B2 回归清单漏项**：新增 `rationale_quality` 判据后没跑 `test_collapse_domain_render`
+   ⇒ 8 例红（fixture 用 `--rationale "测试"`）。修 fixture 而非降判据（B3b）。
+2. **登记表未随 config 刷新**：B2/B3/W1/W2/W3 改过 config 键却未更 `inspection-zones.yaml`
+   ⇒ R3/R4 在收尾批判红（loop_a 10→16 键、collapse 9→22 键）。已刷新；
+   **教训：凡改 config/*.yaml 键，两套登记表守卫必须进回归**。
+3. **粗糙字符串回退误伤历史注释**：版本回退用了全局 `v3.28.2→v3.28.1` 替换，
+   把本轮新增的 `v3.28.2` 注释也改回 ⇒ 用 `git checkout` 还原后改为**逐行精确**替换。
+4. **B3b 收批判 false 却先提交**：漏传 `test_five_gates` 导致 `regression_incomplete`，
+   补齐后重跑 batch-close 才 ok（已如实登记，非静默放过）。
+5. **resume 断言的恒真陷阱**：首版只断言 stdout 里的 `awaiting_user_confirm`（是打印体字面量）
+   ⇒ 改为断言**落盘状态**；变异验证证明改前恒真、改后能红。
+
+### 六、版本治理
+
+版本号 13 处（含两个 `marketplace.json` 的 `plugins[0].version`）同步至 **3.28.3**；
+体检 [14] 实测「13 处一致：3.28.3」。`loop_a.scope` 新增 README.md / CHANGELOG.md /
+两个 plugin.json / 两个 marketplace.json（均为**单文件**，包根仍未放开）。
+
 ## [未发布] — 第 18 项：211 键人工定性（分批裁定，**已收口**）
 
 > 免检区 **39 段 / 1503 键**。候选数演进（每轮均经**变异测试**证明判据能红）：

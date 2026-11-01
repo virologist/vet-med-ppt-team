@@ -4144,7 +4144,7 @@ def main():
         # ⚠ **v3.28.2**：登记表顶层声明**指纹口径**（`digest_scheme`）。
         #   守卫据此分派算法 ⇒ 旧口径登记表（无此字段）**仍能过**（向后兼容）。
         print(f"digest_scheme: \"{DIGEST_SCHEME_INDEXED}\"")
-        print("version: \"3.28.1\"")
+        print("version: \"3.28.3\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")

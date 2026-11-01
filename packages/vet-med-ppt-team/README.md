@@ -95,10 +95,10 @@ vet-med-ppt-team/
 
 ## 版本与维护
 
-- **当前版本**：v3.28.2（2026-11-01）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
+- **当前版本**：v3.28.3（2026-11-01）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
   本节仅作门面展示，若与 plugin.json 不一致**以 plugin.json 为准**（体检 [14] 会判红）。
   （历史勘误：本行曾长期停留 `v1.4.1（2026-09-11）`，与当时实际的 3.28.1 相差两个大版本，
-   属「门面文档口径漂移」——v3.28.2 起订正，并由体检 [14] 四处一致性兜住。）
+   属「门面文档口径漂移」——v3.28.3 起订正，并由体检 [14] 四处一致性兜住。）
 - **变更历史**：见 [CHANGELOG.md](CHANGELOG.md)
 - **更新流程**：见 [UPGRADE.md](UPGRADE.md)
 - **架构设计**：见 [docs/architecture.md](docs/architecture.md)
