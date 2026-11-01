@@ -170,7 +170,7 @@ segments:
   file: external-tools.yaml
   prefix: knowledge_bases
   key_count: 38
-  keys_sha256: 0aa80a29212af6f71d31e6251aa988ffe0ec7efc
+  keys_sha256: 677e4aae6d2174520a38239ff5881c3e22e76c83
   leaf_unused: 0
   leaf_weak: 31
   consumer: 脚本+会话层+主理人
