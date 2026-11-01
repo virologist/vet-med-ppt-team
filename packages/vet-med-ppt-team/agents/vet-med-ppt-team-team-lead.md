@@ -9,8 +9,15 @@ profession:
   zh: "课件总导演"
 maxTurns: 200
 # v2.2.0：工具白名单不在 frontmatter 声明（专家包铁律：平台禁 frontmatter tools 字段），唯一源 = config/harness.yaml#members
-# v3.16.0：删除对 #lead_tools 的引用——该键在 config/harness.yaml 中不存在（悬空引用）；
-#          主理人工具集暂由本文件「编排内核」章节人读声明，补齐 yaml 声明的需求已上报 yaml 维护方
+# v3.16.0：删除对 #lead_tools 的引用——该键在 config/harness.yaml 中不存在（悬空引用）。
+#          ⚠ v3.28.2 结案（原写「补齐 yaml 声明的需求已上报 yaml 维护方」，**从未闭环**）：
+#          经复核，**不补 lead_tools 键**是正确的终态，理由三条：
+#            ① 平台禁 agent frontmatter `tools` 字段 ⇒ 主理人工具集无强制力载体；
+#            ② `members.*.tools_whitelist` 已由 preflight 显式打印「职责边界声明，
+#               无代码强制力」⇒ 再加一个 lead_tools 只是**第二份无效声明**；
+#            ③ 主理人工具集由本文件「编排内核」章节人读声明 + 体检第 17 项
+#               （悬空脚本引用）兜底，**不留悬空键**。
+#          ⇒ 本注记即结案记录：需求**主动撤销**（不是欠账），后续不要重复上报。
 # v3.4.0：description 字段去版本化（v3.0.0/v3.2.0-batch4 升级历史归 CHANGELOG.md，本字段只放"何时用我+工具前提+边界"）
 ---
 

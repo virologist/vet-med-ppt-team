@@ -111,7 +111,10 @@ maxTurns: 50
 ## 默认模板的三条硬约束（v3.10.0 · 制作前必读）
 
 <!-- DOMAIN_EXAMPLE_BEGIN -->
-默认模板：`/Users/biodog/Library/CloudStorage/OneDrive-Personal/养禽与禽病防治/教材编写-刘/禽病防治技术PPT模板.pptx`
+默认模板：路径见 `references/default-template-profile.md`（**唯一源**，`config/harness.yaml#collapse.template_ref` 指向它）。
+⚠ 此处**不再复制**绝对路径——v3.28.2 前本行写死了某台机器上的 OneDrive 全路径，
+模板迁移即两处需改（L2 实测：同一路径在 profile 与本文各存一份 ⇒ 漂移风险）。
+需要实际路径 / 指纹 / 三条硬约束的实测值时，**读 profile**，不要读本行。
 <!-- DOMAIN_EXAMPLE_END -->
 （指纹 `5fa78154`，实测见 `references/default-template-profile.md`）。**违反任一条即返工**：
 
