@@ -2550,7 +2550,8 @@ def _trace(w, cfg, event, actor, detail):
 # trace 事件名 → yaml 声明的全集（用于自检：声明了却没产出点 = 仍是纯声明）
 TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
                          "member_return", "gate", "stage_enter", "stage_exit",
-                         "budget_exceeded", "error", "no_progress")
+                         "budget_exceeded", "error", "no_progress",
+                         "batch_open", "batch_close", "reflow")
 
 
 def _trace_error(w, cfg, event, actor, detail):
@@ -2603,18 +2604,41 @@ def cmd_spawn_failed(args):
 
     v3.17.0 B3-2 新增。spawn 失败此前只有主理人一句口头说明，trace 里查不到
     "试了几次、为什么不行、最后走了哪条降级通道"。
+
+    v3.28.4 B13：reason 结构化——空 reason 的 spawn_failed 无法归因（本轮诊断
+    P-断1 实测：trace 里的 spawn_failed reason=""）。改为**枚举必填**：
+    timeout / tool_error / content_reject / platform_sandbox / quota / unknown，
+    附加自由文本 --detail 补充上下文。旧用法（自由文本 reason）向后兼容：
+    非空但不在枚举内 → 归类 unknown 并把原文挪进 detail.legacy_reason。
     """
     cfg, _ = load_cfg()
     w = wkspace(args)
     fb = cfg.get("fallback") or {}
     max_attempts = int(fb.get("max_spawn_attempts", 2))
     attempt = int(getattr(args, "attempt", 1) or 1)
+    # ── B13：reason 枚举必填 ──────────────────────────────────────────
+    allowed = {"timeout", "tool_error", "content_reject",
+               "platform_sandbox", "quota", "unknown"}
+    raw_reason = (getattr(args, "reason", "") or "").strip()
+    detail_extra = getattr(args, "detail", "") or ""
+    if not raw_reason:
+        print("⛔ --reason 必填且须为枚举值之一：timeout / tool_error / "
+              "content_reject / platform_sandbox / quota / unknown\n"
+              "   空 reason 的失败记录无法归因（诊断 P-断1）；"
+              "补充上下文用 --detail '自由文本'。", file=sys.stderr)
+        return 2
+    if raw_reason in allowed:
+        reason = raw_reason
+    else:
+        reason = "unknown"
+        detail_extra = (f"legacy_reason={raw_reason}；" + detail_extra).strip("；; ")
     detail = {
         "task_id": args.task_id,
         "stage": getattr(args, "stage", None),
         "attempt": attempt,
         "max_attempts": max_attempts,
-        "reason": args.reason or "",
+        "reason": reason,
+        "detail": detail_extra,
         "exhausted": attempt >= max_attempts,
     }
     rec = _trace(w, cfg, "spawn_failed", args.agent, detail)
@@ -5158,6 +5182,12 @@ def _loop_batch(args, cfg, w, actor=""):
         _loop_mark_writer(st, actor)
         _loop_hist(st, "batch_open", {"batch": bid, "files": declared,
                                       "theme": getattr(args, "note", "") or ""})
+        # ── B13：批次动作入 trace（P-断3——batch 动作此前只在 state.history，
+        #    不在统一 trace 账本 ⇒ 产出链路端到端不可回放）────────────────
+        _trace(w, cfg, "batch_open", actor,
+               {"batch": bid, "loop": getattr(args, "loop", "a"),
+                "theme": getattr(args, "note", "") or "",
+                "files": [str(f) for f in declared]})
         _atomic_write_json(path, st)
         print(json.dumps({"ok": True, "batch": batches[bid], "state_file": path,
                           "notes": notes}, ensure_ascii=False, indent=2))
@@ -5242,6 +5272,12 @@ def _loop_batch(args, cfg, w, actor=""):
     _loop_mark_writer(st, actor)
     _loop_hist(st, "batch_close", {"batch": bid, "regression": ran,
                                    "actual": actual, "declared": declared})
+    # ── B13：batch_close 入 trace（同 batch_open，统一账本可回放）────────
+    _trace(w, cfg, "batch_close", actor,
+           {"batch": bid, "loop": getattr(args, "loop", "a"),
+            "confirmed": bool(getattr(args, "confirmed", False)),
+            "regression": ran,
+            "actual_files": [str(f) for f in (actual or [])]})
     _atomic_write_json(path, st)
     print(json.dumps({"ok": True, "batch": b, "state_file": path,
                       "notes": notes_all}, ensure_ascii=False, indent=2))
@@ -5832,7 +5868,12 @@ def cmd_loop(args):
             print("⛔ loop_contract 不可用 → 缺陷回流台账无判据执行器，拒绝给出结论",
                   file=sys.stderr)
             return 3
-        return _loop_reflow(args, cfg)
+        rc_reflow = _loop_reflow(args, cfg)
+        # ── B13：reflow 结果入 trace（统一账本可回放）────────────────────
+        _trace(w, cfg, "reflow", getattr(args, "actor", "") or "team-lead",
+               {"loop": "a", "file": getattr(args, "file", "") or "",
+                "ok": rc_reflow == 0})
+        return rc_reflow
 
     # ── check-path：写前越界校验（Loop A 禁区 = 用户课件目录；Loop B 禁区 = 包目录与原件）
     if args.action == "check-path":
@@ -7554,7 +7595,8 @@ def main():
     p.add_argument("--task-id", dest="task_id", default="", help="任务 id")
     p.add_argument("--stage", type=int, default=None, help="阶段号（0-4）")
     p.add_argument("--attempt", type=int, default=1, help="第几次尝试（对照 fallback.max_spawn_attempts）")
-    p.add_argument("--reason", default="", help="失败原因（必填语义：不可用/平台回落/超时…）")
+    p.add_argument("--reason", default="", help="失败原因枚举（B13 必填）：timeout/tool_error/content_reject/platform_sandbox/quota/unknown")
+    p.add_argument("--detail", default="", help="自由文本补充上下文（归入 trace detail.detail）")
     _ws(p)
     p.set_defaults(func=cmd_spawn_failed)
 
@@ -7790,10 +7832,28 @@ def run_command(a):
             cfg, _ = load_cfg()
             w = wkspace(a)
             fn = getattr(a, "func", None)
+            exc_name = type(e).__name__
             _trace_error(w, cfg, "error", "harness",
                          {"command": getattr(fn, "__name__", "?") if fn else "?",
-                          "argv": sys.argv[1:], "exception": type(e).__name__,
+                          "argv": sys.argv[1:], "exception": exc_name,
                           "message": str(e)[:500]})
+            # ── B13：沙箱类错误的降级提示（诊断 P-断2）──────────────────
+            # Brokered host 沙箱限制（mkdir/写盘被拒）此前只留裸 traceback，
+            # 用户不知道"换个环境就能跑"。识别为平台沙箱类 ⇒ 输出操作指引，
+            # 并把归类提示写进 stderr（trace 的 argv/exception 已够归因）。
+            sandbox_markers = ("Brokered host", "sandbox",
+                               "Operation not permitted")
+            is_sandbox = (exc_name == "PermissionError"
+                          or any(m in str(e) for m in sandbox_markers))
+            if is_sandbox:
+                print("ℹ 该错误疑似 **平台沙箱限制**（命令需要写工作区外的路径或"
+                      "执行受控操作）。处置建议：\n"
+                      "  ① 在系统终端直接运行同一命令（沙箱外）：\n"
+                      f"     cd {Path.cwd()} && python3 scripts/{Path(sys.argv[0]).name} "
+                      + " ".join(sys.argv[1:]) + "\n"
+                      "  ② 或授权本会话的沙箱豁免后重试。\n"
+                      "  （trace 已记录该次失败：exception=" + exc_name + "）",
+                      file=sys.stderr)
         except Exception:
             pass    # trace 写失败不得掩盖原始异常
         import traceback as _tb

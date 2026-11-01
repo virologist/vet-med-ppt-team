@@ -294,7 +294,8 @@ observability:
   #   那句报错没有下文；现在它对应一条真命令，压缩动作也必须留痕（压前/压后字节 + 丢了什么）。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
-                 "error", "no_progress", "compaction"]
+                 "error", "no_progress", "compaction",
+                 "batch_open", "batch_close", "reflow"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
