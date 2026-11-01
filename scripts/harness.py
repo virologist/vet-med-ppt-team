@@ -782,14 +782,49 @@ def cmd_route(args):
     #   路由判出"本任务要建队"是建队的**决策时点**——机器唯一知道
     #   "这次任务是否真的建队、派了哪些人"的地方。L0 不建队 → 不写事件
     #   （写了就是假事件：声明了却没建队，正是本任务要治的病）。
+    # v3.28.4 B15：编排幂等（诊断 P-协3：trace 实测 684 次 team_create 对
+    #   5 次 preflight——同任务反复重建团队记录、状态未复用）。同一
+    #   (task_id, level, domain, spawn 签名) 已有 team_create 记录 ⇒ 不重复
+    #   写事件，plan 里标 team_reused + 复用时间戳（消除重复创建成本）。
     if r.get("team_create"):
-        _trace(wkspace(args), cfg, "team_create", "team-lead",
-               {"level": args.level, "spawn": spawn,
-                "spawn_policy": r.get("spawn_policy"),
-                "confirm_gates": r.get("confirm_gates"),
-                "red_team": bool(r.get("red_team", False)),
-                "task_id": getattr(args, "task_id", "") or "",
-                "domain": plan.get("domain")})
+        sig = json.dumps({"level": args.level,
+                          "spawn": sorted(spawn or []),
+                          "task_id": getattr(args, "task_id", "") or "",
+                          "domain": plan.get("domain")}, sort_keys=True)
+        reused_ts = None
+        try:
+            _tp = trace_path(wkspace(args), cfg)
+            if os.path.isfile(_tp):
+                with open(_tp, encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("event") != "team_create":
+                            continue
+                        d = rec.get("detail") or {}
+                        _sig2 = json.dumps(
+                            {"level": d.get("level"),
+                             "spawn": sorted(d.get("spawn") or []),
+                             "task_id": d.get("task_id") or "",
+                             "domain": d.get("domain")}, sort_keys=True)
+                        if _sig2 == sig:
+                            reused_ts = rec.get("ts")
+                            break
+        except Exception:
+            reused_ts = None   # 读失败不得阻断路由（幂等是优化，不是门禁）
+        if reused_ts:
+            plan["team_reused"] = True
+            plan["team_reused_ts"] = reused_ts
+        else:
+            _trace(wkspace(args), cfg, "team_create", "team-lead",
+                   {"level": args.level, "spawn": spawn,
+                    "spawn_policy": r.get("spawn_policy"),
+                    "confirm_gates": r.get("confirm_gates"),
+                    "red_team": bool(r.get("red_team", False)),
+                    "task_id": getattr(args, "task_id", "") or "",
+                    "domain": plan.get("domain")})
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
 
@@ -7254,6 +7289,16 @@ def cmd_spawn(args):
     }
     if detail["input_chars"] or detail["output_chars"]:
         detail["approx_tokens"] = round((detail["input_chars"] + detail["output_chars"]) / 4)
+    # ── B15：上下文预算（升级方案 R3）——注入量超限告警入 trace ──────────
+    # 执行点=cmd_spawn 的 input_chars（spawn 注入的上下文体量）；
+    # 预算源=harness.yaml#context.per_stage_inject_cap（字符数，0=不限）。
+    cap = int((cfg.get("context") or {}).get("per_stage_inject_cap", 0) or 0)
+    if cap and detail["input_chars"] and detail["input_chars"] > cap:
+        detail["context_over_budget"] = True
+        detail["context_budget_cap"] = cap
+        print(f"⚠ 上下文预算超限：注入 {detail['input_chars']} 字 > 上限 {cap} 字"
+              f"（harness.yaml#context.per_stage_inject_cap）——"
+              f"按闸序优先裁剪：先裁拓展阅读类素材，保判据类内容。", file=sys.stderr)
     rec = _trace(w, cfg, "spawn", args.agent, detail)
     _trace(w, cfg, "agent_spawn", args.agent, detail)      # 兼容既有文档/既有 trace
     print(json.dumps(rec, ensure_ascii=False, indent=2))

@@ -22,7 +22,7 @@ stages:
   #   蓝图（pedagogy-architect）的「二八难点清单」依赖证据包（dvm-content-expert）的
   #   「易误解」标注，两侧**存在真实数据依赖**、边界并不互斥。原声明"并行、任务边界互斥"
   #   与事实相反：并行后蓝图方必然回问，每次多一轮往返。改串行：证据先行 → 蓝图。
-  1: {name: "闸2 设计（证据先行→蓝图·串行）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", parallel: no, next: 2}
+  1: {name: "闸2 设计（证据先行→蓝图·并行+仲裁）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", parallel: yes, next: 2}
   2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", parallel: yes, next: 3}
   3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", parallel: no, next: 4}
   4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", parallel: yes, next: null}
@@ -147,6 +147,9 @@ snapshot:
 context:
   handoff_mode: "path_only"        # path_only | summary | full
   summary_max_chars: 800           # 成员回传摘要上限；全文只落盘、不进对话
+  per_stage_inject_cap: 24000      # B15 上下文预算：spawn 注入字符上限（0=不限）。
+                                   # 执行器=harness.py cmd_spawn（超限告警入 trace，
+                                   # 裁剪序：先裁拓展阅读类，保判据类）。
   state_max_bytes: 32768           # task_state.json 体积上限，超限触发 compaction
   # v3.18.0 G6：stage_history 的保留条数（`state compact` 裁剪时只留最近 N 条）。
   #   依据：stage_history 是状态文件**唯一无上限增长**的键（每次 `state set --stage`

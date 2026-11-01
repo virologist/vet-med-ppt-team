@@ -270,7 +270,7 @@ segments:
   file: harness.yaml
   prefix: stages
   key_count: 27
-  keys_sha256: e40d2441e66c5a8913bfeafa02f6b7354054006c
+  keys_sha256: eac2fa5e5a6b1069c3490a0efa5e10a208a08543
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本
@@ -489,10 +489,10 @@ segments:
 - id: harness.yaml#context
   file: harness.yaml
   prefix: context
-  key_count: 2
-  keys_sha256: a3d40be22cf997a1daac02b25e33bb2abae6b8bf
+  key_count: 3
+  keys_sha256: 4926dabdab60e6220efd2a62a1929eb1481c1a5e
   leaf_unused: 0
-  leaf_weak: 2
+  leaf_weak: 3
   consumer: 脚本
   disposition: 新增键须登记
   note: 上下文装配参数。
