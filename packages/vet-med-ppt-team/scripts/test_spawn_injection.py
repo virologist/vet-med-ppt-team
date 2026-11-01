@@ -483,7 +483,7 @@ class TestEndToEnd(unittest.TestCase):
         # v3.18.0：computing 域已有 expert_panel → 路由须**显式选人**，
         #   否则坍缩产物处于 pending_selection，不得进入确认流程。
         rc, so, se = _run([PY, str(HARNESS), "route", "--level", "L2",
-                            "--domain", "computing", "--rationale", "回归测试",
+                            "--domain", "computing", "--rationale", "选 computing 域：本用例验证真实 harness 链路下域人格经 route 到 collapse confirm 再到装配的完整落地；选该面板专家：需验证多专家选中与激活提示注入",
                             "--panel", "language_runtime_architect,algorithms_data_structures",
                             "--workspace", str(ws)])
         self.assertEqual(rc, 0, f"route 失败: {se}")
@@ -526,7 +526,7 @@ class TestEndToEnd(unittest.TestCase):
         """
         ws = Path(tempfile.mkdtemp())
         rc, _, se = _run([PY, str(HARNESS), "route", "--level", "L2",
-                          "--domain", "computing", "--rationale", "回归测试",
+                          "--domain", "computing", "--rationale", "选 computing 域：本用例验证真实 harness 链路下域人格经 route 到 collapse confirm 再到装配的完整落地；选该面板专家：需验证多专家选中与激活提示注入",
                           "--panel", "language_runtime_architect",
                           "--workspace", str(ws)])
         self.assertEqual(rc, 0, se)
