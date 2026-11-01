@@ -81,6 +81,91 @@ def probe(dep: dict, skills_root: str | None) -> tuple[bool, str]:
     return False, ""
 
 
+def validate_contract(manifest: dict) -> tuple[bool, list, dict]:
+    """校验「外部 skill 接入契约」（v3.28.2 B4 · D13③④ 立规）。
+
+    缺口（本轮十三维度诊断实测）：D13①② 已落地（登记面结构支持五要素 /
+    「以包内为准」成文），但 ③「PPT 美化类 skill 与 visual-slide-designer /
+    visual-rules.yaml 的职责边界」与 ④「外部标准类 skill 与包内 standards 的归口」
+    **均无成文规则** ⇒ 未来接入时无裁决依据，必然双源漂移。
+
+    判据（全部可判定，语义内容不判）：
+      ① `skill_contract.required_fields` 列出的九项，每条 dependencies[] 都非空；
+      ② 解耦判据：required=false 且 blocking=false ⇒ 移除后不降级（记录，不判红）；
+      ③ `beautify_boundary` 必含 decision_authority / executor / allowed / forbidden / dedupe_rule，
+         且 decision_authority **必须**指向 config/visual-rules.yaml（判据唯一源不得旁落）；
+      ④ `standard_authority` 必含 registry / rule / on_conflict / anti_dual_source，
+         且 registry **必须**指向 config/external-tools.yaml#standards（不得双源）。
+
+    返回 (ok, problems, summary)。
+    """
+    problems = []
+    manifest = manifest if isinstance(manifest, dict) else {}
+    deps = manifest.get("dependencies") or []
+    sc = manifest.get("skill_contract")
+    if not isinstance(sc, dict) or not sc:
+        if deps:
+            problems.append({"code": "E_NO_CONTRACT",
+                             "detail": "有外部依赖登记但缺 skill_contract 段"
+                                       "（五要素/美化边界/标准归口无判据源）"})
+        return (not problems), problems, {"deps": len(deps), "contract": False}
+
+    req = [str(x) for x in (sc.get("required_fields") or [])]
+    if not req:
+        problems.append({"code": "E_NO_REQUIRED_FIELDS",
+                         "detail": "skill_contract.required_fields 为空——五要素无判据"})
+    decoupled = []
+    for i, dep in enumerate(deps):
+        if not isinstance(dep, dict):
+            problems.append({"code": "E_DEP_NOT_MAPPING", "detail": f"dependencies[{i}] 不是映射"})
+            continue
+        tag = f"dependencies[{i}]({dep.get('id') or '?'})"
+        for f in req:
+            v = dep.get(f)
+            if v is None or (isinstance(v, (str, list, dict)) and len(v) == 0):
+                problems.append({"code": "E_DEP_MISSING_FIELD",
+                                 "detail": f"{tag} 缺五要素字段 {f!r}"
+                                           f"（判据源 dependency-manifest.yaml#skill_contract）"})
+        if dep.get("required") is False and dep.get("blocking") is False:
+            decoupled.append(dep.get("id"))
+
+    bb = sc.get("beautify_boundary")
+    if not isinstance(bb, dict):
+        problems.append({"code": "E_NO_BEAUTIFY_BOUNDARY",
+                         "detail": "缺 beautify_boundary（③ 美化类 skill 职责边界未立规）"})
+    else:
+        for f in ("decision_authority", "executor", "allowed", "forbidden", "dedupe_rule"):
+            if not bb.get(f):
+                problems.append({"code": "E_BEAUTIFY_FIELD_MISSING",
+                                 "detail": f"beautify_boundary 缺 {f!r}"})
+        da = str(bb.get("decision_authority") or "")
+        if da and "visual-rules.yaml" not in da:
+            problems.append({"code": "E_BEAUTIFY_AUTHORITY_DRIFT",
+                             "detail": f"beautify_boundary.decision_authority={da!r} "
+                                       f"必须指向 config/visual-rules.yaml（判据唯一源）"})
+
+    sa = sc.get("standard_authority")
+    if not isinstance(sa, dict):
+        problems.append({"code": "E_NO_STANDARD_AUTHORITY",
+                         "detail": "缺 standard_authority（④ 外部标准归口未立规）"})
+    else:
+        for f in ("registry", "rule", "on_conflict", "anti_dual_source"):
+            if not sa.get(f):
+                problems.append({"code": "E_STANDARD_FIELD_MISSING",
+                                 "detail": f"standard_authority 缺 {f!r}"})
+        reg = str(sa.get("registry") or "")
+        if reg and "external-tools.yaml#standards" not in reg:
+            problems.append({"code": "E_STANDARD_REGISTRY_DRIFT",
+                             "detail": f"standard_authority.registry={reg!r} "
+                                       f"必须指向 config/external-tools.yaml#standards"})
+    return (not problems), problems, {
+        "deps": len(deps),
+        "contract": True,
+        "required_field_count": len(req),
+        "decoupled_deps": decoupled,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="外部依赖缺失检查（不阻断，仅显式化）")
     ap.add_argument("--strict", action="store_true",
@@ -122,12 +207,18 @@ def main(argv: list[str] | None = None) -> int:
             "message": text,
         })
 
+    # ── v3.28.2 B4：接入契约校验（D13③④；与"装没装"是两件事）──────────
+    #   ⚠ 本段判的是**登记是否合规**（五要素齐 / 美化边界成文 / 标准归口唯一），
+    #     不判"外部 skill 好不好用"。
+    c_ok, c_problems, c_summary = validate_contract(manifest)
+
     if args.json:
         print(json.dumps({
             "checker": "scripts/check_external_deps.py",
             "dependencies": results,
             "missing_count": missing,
             "blocking": False,
+            "contract": {"ok": c_ok, "problems": c_problems, "summary": c_summary},
         }, ensure_ascii=False, indent=2))
     else:
         for r in results:
@@ -138,8 +229,17 @@ def main(argv: list[str] | None = None) -> int:
                   f"（量规等能力已内化进本包，缺失只影响「与上游比对更新」）。")
         else:
             print("→ 全部外部依赖均已安装；量规执行源仍以包内版本为准。")
+        # 契约结果单列（与上面"装没装"分开说，避免混为一谈）
+        if c_ok:
+            print(f"✓ 接入契约合规（{c_summary.get('deps', 0)} 条依赖 / "
+                  f"五要素 {c_summary.get('required_field_count', 0)} 项；"
+                  f"可解耦：{c_summary.get('decoupled_deps') or '无'}）")
+        else:
+            print(f"⚠ 接入契约 {len(c_problems)} 处不合规：")
+            for p in c_problems:
+                print(f"    · [{p.get('code')}] {p.get('detail')}")
 
-    if missing and args.strict:
+    if args.strict and (missing or not c_ok):
         return 1
     return 0
 

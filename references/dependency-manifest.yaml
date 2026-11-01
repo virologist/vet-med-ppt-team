@@ -69,3 +69,58 @@ checker:
   #   域绑定残留巡检（非依赖检查）。写失效承诺比不写更糟（它会让人以为已有门禁）。
   #   如实登记当前实况：**未并入体检**，依赖检查是**独立可执行脚本**，需手动或由 CI 调用。
   integration_status: "**未并入体检**（v3.17.0 如实登记）。本检查为独立可执行脚本：python3 scripts/check_external_deps.py（默认不阻断，--strict 才 exit 1）。体检第 23 项现为「域绑定残留巡检」，与此无关——勿再写「待并入第 23 项」。若将来要并入体检，须新开一项并同步改本行。"
+
+# ══════════════════════════════════════════════════════════════════════════
+# 外部 skill 接入契约（v3.28.2 B4 · 本轮十三维度诊断 D13③④ 立规）
+# ══════════════════════════════════════════════════════════════════════════
+# 缺口（实测）：D13 四问里 ①② 已有落地（①登记面结构支持五要素 ②「以包内为准」成文），
+#   但 ③「PPT 美化类 skill 与 visual-slide-designer / visual-rules.yaml 的职责边界」
+#   与 ④「外部标准类 skill 与包内 standards 收录的归口」**均无成文规则**
+#   （rg「美化」在 visual-rules.yaml 与 visual-slide-designer.md 0 命中）。
+#   ⇒ 未来接入美化类/标准类 skill 时**无裁决依据**，必然双源漂移。
+# 本段即契约：新增任何技能类条目，check_external_deps.py 按本段逐条校验。
+skill_contract:
+  # ── 五要素（每条 dependencies[] 必须齐备，缺一即判红）──────────────────
+  required_fields:
+    - id                 # 唯一标识（kebab-case）
+    - kind               # external_skill / mcp / cli …
+    - required           # 是否运行期必需（false = 可缺失）
+    - blocking           # 缺失是否阻断（默认 false：本包自包含）
+    - purpose            # ① 能力声明：它提供什么、本包为何需要
+    - probe_roots        # ② 探针：可能的安装根目录
+    - probe_files        # ② 探针：至少命中其一才算"装好"（空目录不算）
+    - internal_fallback  # ④ 降级路径：缺失时用包内哪一份顶上
+    - messages           # ④ 降级提示：found / missing 两句话术（不得静默）
+  # ⑤ 解耦判据（可判定）：required=false 且 blocking=false ⇒ 移除后本包不降级；
+  #    由 check_external_deps.py 断言，不需要另写一份。
+
+  # ── ③ PPT 美化类 skill 的职责边界（与 visual-slide-designer / visual-rules.yaml）──
+  beautify_boundary:
+    decision_authority: "config/visual-rules.yaml"   # 判据唯一源，外部 skill **不得**覆盖阈值
+    executor: "visual-slide-designer"                # 版式执行者，外部 skill 只能提供建议
+    allowed:                                          # 外部美化 skill **可以**做的
+      - "提供版式/配色/字体的候选建议（advisory only）"
+      - "生成参考稿或样式片段，供 visual-slide-designer 取舍"
+    forbidden:                                        # **不得**做的（违反即判红）
+      - "改写 config/visual-rules.yaml 的任何阈值或判级（判据唯一源不得旁落）"
+      - "在成品上直接落样式而不经 visual-slide-designer 与闸4 门禁"
+      - "自带一套与 visual-rules.yaml 冲突的红线并声称优先"
+    dedupe_rule: |
+      外部 skill 的某条规则若在 config/visual-rules.yaml 已存在同类判据，
+      **以包内为准、外部条目忽略**（并在报告 rubric_ref 里登记"已去重 N 条"）；
+      若外部规则**包内没有**，先走 `harness.py loop batch-open`（Loop A）评估是否入库，
+      **不得**由执行方直接采纳（单任务不得改全局规则）。
+
+  # ── ④ 外部标准类 skill 的归口（不得双源）────────────────────────────
+  standard_authority:
+    registry: "config/external-tools.yaml#standards"  # 标准条目唯一登记面
+    rule: |
+      外部 skill 携带的标准原文/摘要**不得**替代本登记面：
+        · 需要引用标准 ⇒ 从 `#standards` 取 source_url + sha256 校验，或现查官方站点；
+        · 外部 skill 里若有标准文本，只能作为**线索**（指向官方源），不得作为引用依据；
+        · 新增标准 ⇒ 走 standards-collection-sop 登记（source_org / published /
+          professional_code / verify.method=sha256），**不得**只在外部 skill 里留一份。
+    on_conflict: |
+      外部 skill 的标准版本与 `#standards` 登记不一致 ⇒ **以官方源现查为准**，
+      并更新 `#standards` 的 verify 字段；**不得**两边各留一份。
+    anti_dual_source: "同一标准不得同时存在于 #standards 与外部 skill 的正文里作为可引用来源"
