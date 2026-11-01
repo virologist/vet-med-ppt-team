@@ -68,7 +68,7 @@ def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologi
     ws = Path(tempfile.mkdtemp(prefix="v3191-"))
     task_id = "T-T"
     rc, _, err = _run([harness, "route", "--level", "L2", "--domain", domain_id,
-                       "--task-id", task_id, "--panel", panel, "--rationale", "测试",
+                       "--task-id", task_id, "--panel", panel, "--rationale", "选 animal-medicine 域：本用例验证域上下文的坍缩渲染链路；选该面板专家：需其激活提示参与渲染验证",
                        "--workspace", ws])
     if rc != 0:
         raise AssertionError(f"route 失败 rc={rc}: {err[:300]}")
@@ -76,7 +76,7 @@ def _end_to_end(domain_id: str, panel: str = "avian_virologist,poultry_pathologi
     if not art.is_file():
         raise AssertionError(f"坍缩产物未生成：{art}")
     rc, _, err = _run([harness, "collapse", "confirm", "--id", domain_id, "--task-id", task_id,
-                       "--actor", "user", "--decision", "测试确认", "--rationale", "测试",
+                       "--actor", "user", "--decision", "测试确认", "--rationale", "选 animal-medicine 域：本用例验证域上下文的坍缩渲染链路；选该面板专家：需其激活提示参与渲染验证",
                        "--workspace", ws])
     if rc != 0:
         raise AssertionError(f"collapse confirm 失败 rc={rc}: {err[:300]}")
