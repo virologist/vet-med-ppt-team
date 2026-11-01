@@ -188,7 +188,10 @@ ima:
 # owner_scope：仅该域专业可用（管家节点裁决 #4：教学标准与知识库均仅动物医学专业）
 # replaceable：用户可灵活更换 → 探针据此产出「主动提醒更换」
 knowledge_bases:
-  - id: "7372985916737739"
+  # ⚠ id 必须是 OpenAPI 的 ima_kb_XXXXXXXX 格式（2026-11-01 B9 实测：
+  #   旧数字 ID 为 MCP 侧格式，OpenAPI 检索报 220004 invalid；
+  #   真值来自 get_addable_knowledge_base_list，逐库检索验证 code:0）
+  - id: "ima_kb_KulSqcqD"
     name: "《禽病》Avian Disease（主力库）"
     share_url: "https://ima.qq.com/wiki/?shareId=7ccf467e59453f5e7a7a2179219edc742a1bf253e1599bbacc5fd897d1fbe5d6"
     when: "所有禽类疾病主题"
@@ -196,32 +199,32 @@ knowledge_bases:
     is_user_default: true
     replaceable: true
     update_policy: "持续更新"
-  - id: "7372995890793583"
+  - id: "ima_kb_r8Phd7W3"
     name: "《猪病》"
     when: "猪病主题"
     owner_scope: "animal-medicine"
     replaceable: true
-  - id: "7408748326814899"
+  - id: "ima_kb_e3TUqbxr"
     name: "《牛羊病》"
     when: "反刍动物疾病主题"
     owner_scope: "animal-medicine"
     replaceable: true
-  - id: "7408031432200206"
+  - id: "ima_kb_FReOUX2i"
     name: "《伴侣动物疾病》"
     when: "犬猫等宠物疾病主题"
     owner_scope: "animal-medicine"
     replaceable: true
-  - id: "7372987669968501"
+  - id: "ima_kb_Y0XyG9El"
     name: "病毒学-免疫学-细胞学"
     when: "机制类、免疫类、疫苗类内容"
     owner_scope: "animal-medicine"
     replaceable: true
-  - id: "7372987141486120"
+  - id: "ima_kb_rxU8IsHJ"
     name: "流感"
     when: "流感病毒深入专题"
     owner_scope: "animal-medicine"
     replaceable: true
-  - id: "7408735592931220"
+  - id: "ima_kb_sMvYcfkL"
     name: "动物疫病诊断技术（WOAH/FAO/WHO）"
     when: "诊断标准、采样送检、国际规范"
     owner_scope: "animal-medicine"
