@@ -347,6 +347,13 @@ loop_a:
     #   只放开这两个清单文件，其它包根内容仍不放开。
     - "<包>/.codebuddy-plugin/plugin.json"
     - "<包>/.claude-plugin/plugin.json"
+    # ── v3.28.2 W3：两个 marketplace.json 纳入白名单 ─────────────────────
+    # 缘由（体检第 14 项实测）：版本号 13 处里有 2 处是
+    #   `.codebuddy-plugin/marketplace.json` 与 `.claude-plugin/marketplace.json`
+    #   的 `plugins[0].version` —— 它们是**安装入口**，漏改会让用户侧版本与包内不符。
+    #   升级时必须能改到，否则第 14 项必然 2/13 偏离。
+    - "<包>/.codebuddy-plugin/marketplace.json"
+    - "<包>/.claude-plugin/marketplace.json"
   forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
     - "<工作区>/**/*.pptx"
     - "<工作区>/**/*.ppt"
