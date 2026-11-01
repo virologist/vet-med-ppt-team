@@ -340,6 +340,13 @@ loop_a:
     # 缘由：版本治理要求「每次改动记 CHANGELOG 之因」，而它位于包根、原本在 scope 外
     #   ⇒ 记因这一步只能手工做（绕过批次门）。只放开这一个文件，包根仍不放开。
     - "<包>/CHANGELOG.md"
+    # ── v3.28.2 W2：两个 plugin.json 纳入白名单（**版本升级必经**）──────────
+    # 缘由：`config/version-policy.yaml` 与 Loop A「行为变更须同步版本号」都要求
+    #   改 `.codebuddy-plugin/plugin.json`（**版本唯一权威**）与 `.claude-plugin/plugin.json`，
+    #   而它们在包根子目录、原本在 scope 外 ⇒ 版本升级只能手工做（绕过批次门）。
+    #   只放开这两个清单文件，其它包根内容仍不放开。
+    - "<包>/.codebuddy-plugin/plugin.json"
+    - "<包>/.claude-plugin/plugin.json"
   forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
     - "<工作区>/**/*.pptx"
     - "<工作区>/**/*.ppt"
