@@ -247,9 +247,19 @@ class TestExternalTools(unittest.TestCase):
             os.environ.pop(v, None)
         rep = pc.probe_channels(ext, "animal-medicine")
         kb = rep.get("knowledge_bases") or {}
-        self.assertFalse(kb.get("credentials"), "凭据不该被判为已设置")
-        self.assertEqual(kb.get("status"), pc.STATUS_DEGRADED,
-                         f"缺凭据应判 degraded（可降级），实得 {kb.get('status')}")
+        # B12 双通道后旧语义（无环境变量 ⇒ False）作废：配置文件 ~/.config/ima/
+        # 齐备是合法凭据通道（与 ima_api.cjs 同口径）⇒ 断言升级为「回落通道生效」。
+        # 本测试进程不注入环境变量 ⇒ 应走 config_file 通道（若本机两通道都缺，
+        # 该断言会失败——那属于环境问题，先跑 test_probe_channels 定位）。
+        self.assertTrue(kb.get("credentials"),
+                        "无环境变量但 ~/.config/ima/ 齐备 ⇒ 应回落判 True")
+        self.assertEqual(kb.get("credentials_source"), "config_file",
+                         "无环境变量时 source 应标 config_file")
+        # B12：本机配置文件通道齐备 ⇒ status 应为 available（不再 degraded）；
+        # "缺凭据 ⇒ degraded" 的负路径已由 test_probe_channels.py::T2 用隔离
+        # HOME 覆盖（两通道全缺场景），此处只锁真实环境的正路径。
+        self.assertEqual(kb.get("status"), pc.STATUS_AVAILABLE,
+                         f"配置文件齐备应判 available，实得 {kb.get('status')}")
 
     # ── T12 闸1 清单含新增两项 ─────────────────────────────────
     def test_T12_gate1_freeze_has_new_items(self):

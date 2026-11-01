@@ -317,13 +317,30 @@ def probe_ima(ima_cfg: dict, domain_id: str) -> dict:
     out = {"status": STATUS_AVAILABLE, "detail": "", "credentials": False,
            "skill_found": None, "libraries": {}, "scope_mismatches": []}
 
-    # ① 凭据（真值只从环境变量读）
+    # ① 凭据（双通道：环境变量优先，回落 ~/.config/ima/ 配置文件——2026-11-01 B12）
+    #    背景：WorkBuddy Bash 进程不加载 ~/.zshrc ⇒ 环境变量通道在探针进程里常缺失；
+    #    ima_api.cjs（外部 skill 侧）早已支持 ~/.config/ima/{client_id,api_key} 回落，
+    #    探针此前只认环境变量 ⇒ 明明凭证已配置却报 degraded（假阴性）。
+    #    对齐口径：环境变量 > 配置文件，两通道任一齐备即算 credentials=True。
+    #    ⚠ 安全边界不变：只读本地文件与进程环境，凭证值不打印、不落 report。
     envs = ima_cfg.get("credentials_env") or []
     missing = [e for e in envs if not os.environ.get(e)]
-    out["credentials"] = not missing
+    cred_source = "env" if not missing else None
     if missing:
-        out["detail"] = (f"凭据缺失（{', '.join(missing)}）——降级走联网现查机构权威源"
-                         f"，**降级须向用户声明**")
+        # 回落：~/.config/ima/client_id + api_key（与 ima_api.cjs 同款路径，非空即算齐备）
+        cfg_dir = Path.home() / ".config" / "ima"
+        file_ok = all(
+            (cfg_dir / name).is_file() and (cfg_dir / name).read_text(
+                encoding="utf-8", errors="replace").strip()
+            for name in ("client_id", "api_key"))
+        if file_ok:
+            cred_source = "config_file"
+            missing = []
+    out["credentials"] = not missing
+    out["credentials_source"] = cred_source
+    if missing:
+        out["detail"] = (f"凭据缺失（{', '.join(missing)}，且 ~/.config/ima/ 无配置文件）"
+                         f"——降级走联网现查机构权威源，**降级须向用户声明**")
         out["status"] = STATUS_DEGRADED
 
     # ② skill 目录（Ima 是 skill 形态，不是 MCP）
