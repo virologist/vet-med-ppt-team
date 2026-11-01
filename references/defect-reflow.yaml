@@ -61,6 +61,12 @@ entries:
     rule_hash_before: "eabbb9c568a3"
     rule_hash_after: "7781dad43fcb"
     output_evidence: "scripts/test_external_dependency_contract.py（8 例：T1 合规绿 / T2 缺五要素红 / T3 缺美化边界红 / T4 判据源漂移红 / T5 缺标准归口红 / T6 登记面指错红 / T7 无依赖缺契约不红 / T8 掏空五要素循环变异）"
+  - id: "RF-20261101-005"
+    rule_ref: "config/external-tools.yaml#standards"
+    change: "本科版标准收录条款变更：source_url 从已失效 PDF 直链改为官方发布页 + source_url_alt 第三方全文页（原 B8 批次，代号已更名为 B11 以避免与 v3.25.0 旧 B8 撞名；补登记于 B10）"
+    rule_hash_before: "3c297e38624a"
+    rule_hash_after: "80592a6ca231"
+    output_evidence: "外部可达性实测：旧 PDF 直链 404（含 https 302→404）/ 官方发布页 302 / 全文页 200；两替代源已导入 IMA《禽病》库（weburl ×2）并逐库检索 code:0 验证"
 
 # ── 登记样例（照此格式追加，勿把样例当真实条目）──────────────────────────────
 # entries:

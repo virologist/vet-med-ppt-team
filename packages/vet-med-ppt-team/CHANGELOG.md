@@ -62,6 +62,27 @@ IMA 7 库恢复后的实际可用性（需凭据）。
   「结构性不可判定」并移出机器验收项，**无需再动**）。
 - **部分成立 1 条**：L2（模板路径在哨兵块内且有指纹引用，非双源漂移；仍改为一处引用）。
 
+### 四.5、3.28.3 发布后的后续批次（同版本内，B9/B10，2026-11-01 午后）
+
+> 批次代号说明：本包历史上有两个「B8」——v3.25.0 时期的「B8·F1/F3」（独立验证后修复
+> 3 项）与本轮的「本科标准直链处置」。为消除跨轮次歧义，**本轮代号统一更名**：
+> 原「B8」（直链处置）→ **B11**；后续批次顺延为 B9（库 ID 真值）、B10（治理收口）。
+
+- **B9 · knowledge_bases 库 ID 真值替换（P1 闭合）**：7 个库 ID 从 19 位数字
+  （MCP 侧 media_id 片段格式）替换为 OpenAPI `ima_kb_XXXXXXXX` 真值。决定性证据：
+  数字 ID 走 OpenAPI 检索报 `code:220004 invalid`；真值来自
+  `get_addable_knowledge_base_list`，逐库 `search_knowledge` 实测 **7/7 code:0**。
+  防双源：旧 ID 全包唯一存在，domain-profiles 无副本。
+- **B10 · 治理收口**：① 缺陷回流台账补登记 RF-20261101-005（本科标准收录条款变更，
+  B8 当批漏登记——机制健在、纪律缺口）；② external-tools.yaml 内 3 处「v3.28.4」
+  注释纠偏（该版本号从未发布，B8 未走版本升级，实际时点=3.28.3）；③ 本节代号说明。
+- **IMA 凭据通道确认**：`probe_channels.py` 判据只读环境变量
+  （`IMA_OPENAPI_CLIENTID/APIKEY`），带环境变量重跑探针 `credentials=True`、
+  knowledge_bases 翻 `available`。`~/.config/ima/*` 配置文件通道为 ima_api.cjs
+  （外部 skill 侧）的 fallback，包内探针未接（如需可另行立项）。
+  ⚠ 环境注意事项：`source ~/.zshrc` 后 PATH 切至 miniconda python 3.14，其 argparse
+  对全角字符崩（0xff09）——带环境变量跑包脚本须显式用 WorkBuddy 自带 python 3.13。
+
 ### 五、本轮自己踩到并修掉的坑（如实记录）
 
 1. **B2 回归清单漏项**：新增 `rationale_quality` 判据后没跑 `test_collapse_domain_render`
