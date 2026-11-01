@@ -1400,6 +1400,91 @@ def _rationale_quality(cfg, rationale):
     }, block_on_fail
 
 
+def _collapse_quality_eval(cfg, obj, dom=None):
+    """坍缩产物的**结构完整性**评估器（v3.28.2 B3 · 本轮诊断 P1-2 最小版）。
+
+    缺口（实测）：坍缩是全域流程源头，但「坍缩结果的知识覆盖深度 / 领域匹配度 /
+    输出准确性」**没有任何评估器与判据**（rg 评估器关键词 0 命中）。
+
+    ⚠ **诚实边界**：本函数**不判**"覆盖够不够深 / 领域真的匹配 / 输出准确"——
+    那是语义判断（三件事分工：归 LLM 与人）。它判的是**可判定的结构完整性**：
+      ① `panel_subset`   —— selected_experts ⊆ expert_panel（选的人必须来自该域面板，
+                            不许凭空造人）；
+      ② `persona_fields` —— role_persona 四要素齐（title/background/stance/duty_boundary）；
+      ③ `evidence_axes`  —— evidence_hierarchy 两条独立轴（institutional + literature）都非空；
+      ④ `content_axes`   —— 知识覆盖方向非空（空 = 该域没声明教什么）；
+      ⑤ `kb_routing`     —— knowledge_bases 非空，或域档案显式走"本域无库"指针；
+      ⑥ `panel_hints`    —— 每个**被选中的**专家都有激活提示（activation_hints 非空）。
+    ⇒ 通过 ≠ 覆盖足够；只是"结构上不是空架子"。语义评审仍归管家节点。
+
+    返回 {"ok": bool, "score": "n/m", "checks": [{id, ok, detail}], "boundary": ...}
+    """
+    node = (cfg or {}).get("collapse") or {}
+    qe = node.get("quality_eval") or {}
+    enabled = qe.get("enabled")
+    enabled = True if enabled is None else bool(enabled)
+    require_hints = qe.get("require_panel_hints")
+    require_hints = True if require_hints is None else bool(require_hints)
+    checks = []
+
+    def _c(cid, ok, detail=""):
+        checks.append({"id": cid, "ok": bool(ok), "detail": detail})
+
+    obj = obj or {}
+    panel = obj.get("expert_panel") or (dom or {}).get("expert_panel") or []
+    sel = obj.get("selected_experts") or []
+    panel_ids = {str(e.get("id")) for e in panel if isinstance(e, dict) and e.get("id")}
+    sel_ids = {str(e.get("id")) for e in sel if isinstance(e, dict) and e.get("id")}
+    if not panel_ids:
+        _c("panel_subset", True, "该域无专家面板（单人格模式）→ 不适用")
+    elif not sel_ids:
+        _c("panel_subset", False, "有面板但未选人（selected_experts 为空）")
+    else:
+        bad = sorted(sel_ids - panel_ids)
+        _c("panel_subset", not bad,
+           f"选中 {sorted(sel_ids)}；不在面板内的：{bad}" if bad else f"选中 {sorted(sel_ids)} ⊂ 面板")
+
+    persona = obj.get("role_persona") or (dom or {}).get("role_persona") or {}
+    need = ("title", "background", "stance", "duty_boundary")
+    miss = [k for k in need if not (isinstance(persona, dict) and persona.get(k))]
+    _c("persona_fields", not miss,
+       f"role_persona 缺 {miss}" if miss else "四要素齐")
+
+    eh = obj.get("evidence_hierarchy") or (dom or {}).get("evidence_hierarchy") or {}
+    ins = eh.get("institutional") if isinstance(eh, dict) else None
+    lit = eh.get("literature") if isinstance(eh, dict) else None
+    _c("evidence_axes", bool(ins) and bool(lit),
+       f"institutional={len(ins or [])} / literature={len(lit or [])}")
+
+    axes = obj.get("content_axes") or (dom or {}).get("content_axes") or []
+    _c("content_axes", bool(axes), f"{len(axes)} 条")
+
+    kbs = obj.get("knowledge_bases")
+    ref = str(obj.get("knowledge_bases_ref") or "")
+    _c("kb_routing", bool(kbs) or "domains_without_knowledge_bases" in ref,
+       f"库 {len(kbs or [])} 个；ref={ref or '（空）'}")
+
+    if require_hints and sel_ids:
+        no_hint = []
+        for e in panel:
+            if not isinstance(e, dict):
+                continue
+            if str(e.get("id")) in sel_ids and not (e.get("activation_hints") or []):
+                no_hint.append(str(e.get("id")))
+        _c("panel_hints", not no_hint,
+           f"以下选中专家无激活提示：{no_hint}" if no_hint else "选中专家均有激活提示")
+
+    n_ok = sum(1 for c in checks if c["ok"])
+    return {
+        "enabled": enabled,
+        "ok": (n_ok == len(checks)) if enabled else True,
+        "score": f"{n_ok}/{len(checks)}",
+        "checks": checks if enabled else [],
+        "boundary": "仅结构完整性（面板子集/人格字段/证据两轴/覆盖轴/库路由/激活提示）；"
+                    "语义质量（覆盖深浅、领域是否真匹配、输出是否准确）机器不判",
+    }
+
+
 def cmd_collapse(args):
     """v3.17.0：坍缩产物的落盘查询与**用户确认**（确认前域人格不生效）。
 
@@ -1504,6 +1589,11 @@ def cmd_collapse(args):
                   "未选人不得进入确认流程。")
         print("\n── 坍缩产物全文 ──")
         print(json.dumps(obj, ensure_ascii=False, indent=2))
+        # v3.28.2 B3：结构完整性评估（只判可判定项；语义质量机器不判）
+        _qe = _collapse_quality_eval(cfg, obj, dom)
+        if _qe["enabled"]:
+            print("\n── 结构完整性评估（不判语义质量）──")
+            print(json.dumps(_qe, ensure_ascii=False, indent=2))
         return 0
 
     if args.action == "confirm":
@@ -1603,6 +1693,22 @@ def cmd_collapse(args):
         obj["role_persona_status"] = "effective"
         obj.setdefault("notes", []).append(
             f"已由 {obj['confirmed_by']} 于 {obj['confirmed_at']} 确认：域人格生效。")
+        # ── v3.28.2 B3：结构完整性评估落盘（通过 ≠ 覆盖够深；语义质量机器不判）──
+        _qe = _collapse_quality_eval(cfg, obj, dom)
+        obj["quality_eval"] = _qe
+        _qe_block = ((cfg.get("collapse") or {}).get("quality_eval") or {}).get(
+            "block_on_structural_gap")
+        if _qe["enabled"] and not _qe["ok"]:
+            _bad = [c["id"] for c in _qe["checks"] if not c["ok"]]
+            if bool(_qe_block):
+                print(f"⛔ 拒绝确认：坍缩产物结构不完整（{_qe['score']}）：{_bad}\n"
+                      f"   判据源 config/harness.yaml#collapse.quality_eval"
+                      f"（block_on_structural_gap=true）\n"
+                      f"   ⚠ 本判据只判结构完整性，不判语义质量。", file=sys.stderr)
+                return 1
+            print(f"⚠ 坍缩产物结构不完整（{_qe['score']}）：{_bad}——"
+                  f"已落盘并**不阻断**（block_on_structural_gap=false）；"
+                  f"请人工确认这些缺口是否可接受。", file=sys.stderr)
         _atomic_write_json(path, obj)
         # 镜像进 task_state.json（白名单键 collapse；不在白名单会被静默拒绝）
         # ⚠ 仅当状态文件**已存在**时才镜像：状态文件不存在说明本任务还没 `state init`，

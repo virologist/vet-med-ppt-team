@@ -253,6 +253,21 @@ collapse:
     min_chars: 30
     placeholder_values: ["待补", "TODO", "TBD", "略", "无", "同上", "见上", "N/A"]
     block_on_fail: true           # 格式下限不达标 ⇒ 拒绝确认（不降级为提示）
+  # ── 坍缩产物的**结构完整性**评估（v3.28.2 B3 · 本轮诊断 P1-2 最小版）────────
+  # 缺口（实测）：坍缩是全域流程源头，但「知识覆盖深度 / 领域匹配度 / 输出准确性」
+  #   **没有任何评估器与判据**（rg 评估器关键词 0 命中）。
+  # ⚠ 诚实边界：语义质量（覆盖够不够深、领域是否真匹配、输出是否准确）**机器不判**
+  #   —— 归 LLM 与管家节点。本段只判**可判定的结构完整性**：
+  #     ① selected_experts ⊆ expert_panel（不许凭空造人）
+  #     ② role_persona 四要素齐（title/background/stance/duty_boundary）
+  #     ③ evidence_hierarchy 两轴都非空（institutional + literature）
+  #     ④ content_axes 非空  ⑤ knowledge_bases 非空或显式"本域无库"
+  #     ⑥ 每个选中专家都有激活提示（activation_hints）
+  quality_eval:
+    enabled: true
+    require_panel_hints: true     # 选中专家无激活提示 ⇒ 该检查项判不通过
+    block_on_structural_gap: false  # 结构不全 ⇒ **警告并落盘**，不阻断确认
+                                    # （阻断需全部域配置齐备；是否升级为阻断由人裁决）
 
 # ── 可观测性 ────────────────────────────────────────────────
 observability:
