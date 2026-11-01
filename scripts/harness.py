@@ -4839,6 +4839,66 @@ def _loop_a_state(cfg, w):
         return {}, p
 
 
+def _loop_reflow(args, cfg):
+    """缺陷回流台账校验（v3.28.2 B1 · Loop A D6/P0-1 缺口的执行器）。
+
+    背景（本轮十三维度诊断实测）：Loop A 长期存在「**改规则不改输出**」——
+    config/references 的判据条款改了、判据代码也改了，同一任务重跑的产出却
+    **毫无变化**，而全包没有任何触发记录与台账（rg「回流/改规则不改输出」0 命中）。
+    ⇒ 规则改动与产出效果之间无可回证的链路。
+
+    本动作把「改规则」升级为「须附产出证据」：读台账 → 逐条校验字段齐备、
+    产出证据或豁免齐备、`rule_hash_after` 与**当前文件** sha256 一致（防事后改账）。
+
+    ⚠ 只读动作：不改任何状态文件。台账路径优先级 = --file > yaml#defect_reflow.ledger。
+    """
+    lc = _lc()
+    notes = []
+    rc = lc.defect_reflow_cfg(cfg, notes)
+    rel = (getattr(args, "file", "") or "").strip() or rc["ledger"]
+    path = rel if os.path.isabs(rel) else os.path.join(PKG, rel)
+    if not os.path.isfile(path):
+        print(f"⛔ 缺陷回流台账不存在：{path}\n"
+              f"   → 台账唯一源 = config/harness.yaml#defect_reflow.ledger"
+              f"（{rc['ledger']}）；禁另建平行台账。", file=sys.stderr)
+        return 3
+    try:
+        import yaml  # noqa
+        with open(path, encoding="utf-8") as f:
+            ledger = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"⛔ 台账解析失败（{type(e).__name__}: {e}）：{path}", file=sys.stderr)
+        return 4
+    # ── 计算 rule_ref 涉及文件的 sha256（每文件一次）─────────────────────
+    file_hashes = {}
+    for e in (ledger.get("entries") or []) if isinstance(ledger, dict) else []:
+        if not isinstance(e, dict):
+            continue
+        ref = str(e.get("rule_ref") or "").split("#", 1)[0].strip()
+        if not ref or ref in file_hashes:
+            continue
+        fp = ref if os.path.isabs(ref) else os.path.join(PKG, ref)
+        if os.path.isfile(fp):
+            try:
+                with open(fp, "rb") as f:
+                    file_hashes[ref] = hashlib.sha256(f.read()).hexdigest()
+            except Exception:
+                pass
+    ok, problems, summary = lc.defect_reflow_check(cfg, ledger, file_hashes, notes)
+    _lc_note(notes)
+    print(json.dumps({"ok": ok, "ledger": path, "entries": summary["entries"],
+                      "hashed_files": sorted(file_hashes),
+                      "problems": problems, "notes": notes},
+                     ensure_ascii=False, indent=2))
+    if not ok:
+        print(f"⛔ 缺陷回流台账不通过：{len(problems)} 处"
+              f"（判据源 config/harness.yaml#defect_reflow）", file=sys.stderr)
+        return 1
+    print(f"[reflow] ✓ 台账合规（{summary['entries']} 条：字段齐备、"
+          f"产出证据/豁免齐备、rule_hash_after 与当前文件一致）")
+    return 0
+
+
 def _loop_batch(args, cfg, w, actor=""):
     """Loop A 批次门：batch-open / batch-close / batch-status。
 
@@ -5583,6 +5643,18 @@ def cmd_loop(args):
     # ── v3.20.0 C：默认档展示（纯配置视图，不依赖 Loop B 状态是否存在）──────
     if args.action == "defaults":
         return _loop_defaults(args, cfg, w)
+
+    # ── v3.28.2 B1：缺陷回流台账（Loop A 专属：「改规则不改输出」留痕面）────
+    if args.action == "reflow":
+        if loop != "a":
+            print(f"用法错误：`reflow` 属 Loop A（改专家团工程），须带 --loop a；"
+                  f"处理用户课件用 Loop B。", file=sys.stderr)
+            return 2
+        if lc is None:
+            print("⛔ loop_contract 不可用 → 缺陷回流台账无判据执行器，拒绝给出结论",
+                  file=sys.stderr)
+            return 3
+        return _loop_reflow(args, cfg)
 
     # ── check-path：写前越界校验（Loop A 禁区 = 用户课件目录；Loop B 禁区 = 包目录与原件）
     if args.action == "check-path":
@@ -7418,7 +7490,9 @@ def main():
                                       "batch-open", "batch-close", "batch-status",
                                       # v3.20.0 C：Loop B 判据动作
                                       "review", "retrieval", "baseline", "delta",
-                                      "geo-baseline", "defaults"])
+                                      "geo-baseline", "defaults",
+                                      # v3.28.2 B1：Loop A 缺陷回流台账（只读校验）
+                                      "reflow"])
     p.add_argument("--loop", choices=["a", "b"], default="b", help="A=专家团工程进化 / B=旧课件逐轮优化")
     # v3.20.0 A5：写者身份（loop_b.single_writer 的留痕面）
     p.add_argument("--actor", default=os.environ.get("VET_LOOP_ACTOR", ""),

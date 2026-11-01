@@ -1,0 +1,48 @@
+# defect-reflow.yaml — 缺陷回流台账（「改规则不改输出」的强制留痕面）
+#
+# ⚠ **本文件是台账，不是规则源**。规则唯一源仍在 `config/harness.yaml` 与
+#   `references/dual-loop-governance.md`；本文件只记录「某条规则改动 → 产出侧有何变化」。
+#
+# ── 为什么需要（本轮十三维度诊断 D6 / P0-1 实测缺口）──────────────────────────
+# Loop A 反复出现「**改规则不改输出**」：config/references 的纪律条款改了、判据也改了，
+# 但**同一任务重跑的产出没有任何变化**，且全包**无任何触发记录与台账**。
+# ⇒ 规则改动与产出效果之间无可回证的链路，改完只能靠人记。
+#
+# ── 登记纪律（机器判据：`harness.py loop reflow --file references/defect-reflow.yaml`）──
+# 每条 entry 必填（缺一即判红，判据源 config/harness.yaml#defect_reflow）：
+#   id                 唯一编号，形如 RF-YYYYMMDD-NNN
+#   rule_ref           规则位置：`<文件>#<键级/章节>`（如 config/harness.yaml#loop_a）
+#   change             改了什么（一句话，须可复核到具体条款）
+#   rule_hash_before   改前该文件 sha256 的**前 12 位**
+#   rule_hash_after    改后该文件 sha256 的**前 12 位**（须与当前文件一致，防事后改账）
+#   output_evidence    产出侧证据：重跑产出的 diff 路径 / 测试断言名（**不得为空**）
+#
+# output_evidence 确实无法给出时，必须走**豁免三要素**（口头豁免不算）：
+#   waiver_reason / waiver_by / waiver_at
+#
+# ── 什么算「规则类改动」（必须登记）────────────────────────────────────────
+#   · config/*.yaml 里**被判据消费**的键（阈值、字段表、映射、开关语义）
+#   · references/*.md 里带「必须/不得/判据/红线」的纪律条款
+# 什么**不必**登记：纯错别字、格式重排、注释补全（不改变任何判定语义）
+#
+# ── 与既有机制的关系 ─────────────────────────────────────────────────────
+#   · 本台账管「规则改动有没有产出效果」；`loop batch-*` 管「每批改了哪些文件」；
+#     两者互补：批次门只保证改动集合 ⊆ 声明集合，**不判断改动是否生效**。
+#   · R4（已实现不等于有效）的落地面：本条即把「改规则」升级为「须附产出证据」。
+
+schema: "defect-reflow/1"
+established: "2026-11-01"
+established_by: "Loop A 十三维度诊断 B1（D6/P0-1）"
+
+# ⚠ entries 为空是**合法初始态**（尚无规则类改动需要登记）；
+#   空台账不判红，但一旦有 entry 就必须齐字段（判据见 harness.yaml#defect_reflow）。
+entries: []
+
+# ── 登记样例（照此格式追加，勿把样例当真实条目）──────────────────────────────
+# entries:
+#   - id: "RF-20261101-001"
+#     rule_ref: "config/harness.yaml#loop_a.regression_required"
+#     change: "回归必跑项由 3 项扩到 5 项（新增 test_loop_state / test_arch_drift）"
+#     rule_hash_before: "ec174206e7bf"
+#     rule_hash_after: "a1b2c3d4e5f6"
+#     output_evidence: "same-task rerun: outputs/rerun-20261101/diff-loop-batch.txt（batch-close 从放行 2 项改为拒收 3 项）"

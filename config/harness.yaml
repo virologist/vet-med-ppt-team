@@ -309,6 +309,32 @@ loop_a:
   confirm_before_each_batch: true # 每批修改前必须向管家节点确认
   regression_required: ["ensure_settings", "test_harness", "test_five_gates"]
 
+# ── 缺陷回流台账（v3.28.2 · Loop A 十三维度诊断 D6/P0-1 缺口）────────────
+# 病灶（本轮实测）：Loop A 反复出现「**改规则不改输出**」——config/references 里的
+#   纪律条款改了、机器判据也改了，但**同一任务重跑的产出没有任何变化**，
+#   而全包**没有任何触发记录与台账**（rg「回流/改规则不改输出」0 命中）。
+#   ⇒ 规则改动与产出效果之间**无可回证的链路**；改完只能靠人记。
+# 机制：每次规则类改动（config/*.yaml 的判据键 / references/*.md 的纪律条款）必须
+#   在台账登记一条：改了什么规则（rule_ref）+ 改前改后哈希 + **产出侧证据**
+#   （output_evidence：同一任务重跑的产出 diff 路径 / 或测试断言名）。
+#   ⇒ 空证据必须走**豁免**三要素（理由+批准人+时间），口头豁免不算。
+# ⚠ 本段的执行器 = `harness.py loop reflow --file <台账>`（判据层在 loop_contract.py）；
+#   登记面唯一 = references/defect-reflow.yaml（禁另建平行台账，R7 禁重复造轮）。
+defect_reflow:
+  ledger: "references/defect-reflow.yaml"
+  required_fields:                # 每条登记必填（缺一即判红）
+    - "id"
+    - "rule_ref"                  # 形如 config/harness.yaml#loop_a（文件+键级/章节）
+    - "change"                    # 改了什么（一句话，须可复核）
+    - "rule_hash_before"          # 改前该文件 sha256（前 12 位即可）
+    - "rule_hash_after"           # 改后该文件 sha256（须与当前文件一致）
+    - "output_evidence"           # 产出侧证据：diff 路径 / 测试断言名（空则须豁免）
+  waiver_fields:                  # output_evidence 为空时的豁免三要素
+    - "waiver_reason"
+    - "waiver_by"
+    - "waiver_at"
+  block_on_missing_fields: true   # 缺字段即判红（不降级为提示）
+
 loop_b:
   enabled: true
   trigger: "管家节点点名某份已有 PPT 要求优化/深化"

@@ -86,6 +86,14 @@ _FALLBACK = [
     ("silent_is_not_approval", True),
     ("partial_accept_freezes_only_named", True),
     ("rework_stays_in_round", True),
+    # v3.28.2 B1：缺陷回流台账（config/harness.yaml#defect_reflow）
+    # ⚠ 同样用元组列表（非字典）——理由见文件头：字典字面量键会被第 18 项 AST
+    #   当成"真实读取点"，等于给死配置刷绿。
+    ("defect_reflow_ledger", "references/defect-reflow.yaml"),
+    ("defect_reflow_required_fields",
+     ["id", "rule_ref", "change", "rule_hash_before", "rule_hash_after", "output_evidence"]),
+    ("defect_reflow_waiver_fields", ["waiver_reason", "waiver_by", "waiver_at"]),
+    ("block_on_missing_fields", True),
 ]
 _FB = dict(_FALLBACK)
 
@@ -323,6 +331,115 @@ def patch_discipline_check(cfg, declared, actual, notes=None):
 
 
 # ─────────────────────────── Loop B 轮审判据 ───────────────────────────
+def defect_reflow_cfg(cfg, notes=None):
+    """缺陷回流台账判据参数（config/harness.yaml#defect_reflow）。
+
+    病灶（本轮十三维度 D6/P0-1 实测）：Loop A 的「改规则不改输出」**无台账**——
+    规则改了、判据改了，同一任务重跑的产出却毫无变化，而全包没有任何留痕面。
+    本函数只取参数；校验在 `defect_reflow_check`。
+    """
+    notes = notes if notes is not None else []
+    node = _section(cfg, "defect_reflow")
+    out = {}
+    out["ledger"], _ = _val(node.get("ledger"), "ledger", "defect_reflow_ledger",
+                            notes, "defect_reflow")
+    out["ledger"] = str(out["ledger"])
+    rf, _ = _val(node.get("required_fields"), "required_fields",
+                 "defect_reflow_required_fields", notes, "defect_reflow")
+    out["required_fields"] = [str(x) for x in rf] if isinstance(rf, list) else [str(rf)]
+    wf, _ = _val(node.get("waiver_fields"), "waiver_fields",
+                 "defect_reflow_waiver_fields", notes, "defect_reflow")
+    out["waiver_fields"] = [str(x) for x in wf] if isinstance(wf, list) else [str(wf)]
+    out["block_on_missing_fields"], _ = _bool(
+        node.get("block_on_missing_fields"), "block_on_missing_fields",
+        "block_on_missing_fields", notes, "defect_reflow")
+    return out
+
+
+def defect_reflow_check(cfg, ledger, file_hashes, notes=None):
+    """缺陷回流台账校验（`harness.py loop reflow` 的**唯一**判据实现）。
+
+    判的是什么（可判定）：
+      ① 台账结构 —— 顶层须是映射且 `entries` 是列表；
+      ② 每条登记的必填字段**非空**（字段表取自 defect_reflow.required_fields）；
+      ③ `output_evidence` 为空时必须齐**豁免三要素**（waiver_fields），
+         口头豁免不算；
+      ④ `rule_hash_after` 必须与**当前文件** sha256 前 12 位一致——
+         防「事后改账」：规则又改了却没更新台账，哈希立刻不匹配；
+      ⑤ id 唯一（重复即判红，避免同一改动重复登记冲抵）。
+    不判什么：产出证据**是否真的支持结论**（语义判断，归人）——
+    本函数只保证「有一条可复核的证据指向」，不宣称读懂了它。
+
+    ledger / file_hashes 由调用方读盘并计算后传入 ⇒ 本函数保持**纯判定**
+    （无 IO），与模块内其他判据同款。
+    """
+    notes = notes if notes is not None else []
+    rc = defect_reflow_cfg(cfg, notes)
+    problems = []
+    if not isinstance(ledger, dict):
+        problems.append({"code": "E_LEDGER_NOT_MAPPING",
+                         "detail": f"台账顶层须是映射，收到 {type(ledger).__name__}"})
+        return False, problems, {"entries": 0, "ledger": rc["ledger"]}
+    entries = ledger.get("entries")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        problems.append({"code": "E_ENTRIES_NOT_LIST",
+                         "detail": f"entries 须是列表，收到 {type(entries).__name__}"})
+        return False, problems, {"entries": 0, "ledger": rc["ledger"]}
+
+    seen = set()
+    for i, e in enumerate(entries):
+        tag = f"entries[{i}]"
+        if not isinstance(e, dict):
+            problems.append({"code": "E_ENTRY_NOT_MAPPING",
+                             "detail": f"{tag} 须是映射，收到 {type(e).__name__}"})
+            continue
+        eid = str(e.get("id") or "").strip()
+        if eid:
+            tag = f"{tag}({eid})"
+            if eid in seen:
+                problems.append({"code": "E_DUPLICATE_ID",
+                                 "detail": f"{tag} id 重复——同一改动不得重复登记"})
+            seen.add(eid)
+        # ① 必填字段非空
+        for f in rc["required_fields"]:
+            if f == "output_evidence":
+                continue          # 空值走豁免判定（②）
+            v = e.get(f)
+            if v is None or (isinstance(v, (str, list, dict)) and len(v) == 0):
+                problems.append({"code": "E_MISSING_FIELD",
+                                 "detail": f"{tag} 缺必填字段 {f!r}（判据源 "
+                                           f"config/harness.yaml#defect_reflow.required_fields）"})
+        # ② 产出证据 / 豁免三要素
+        ev = e.get("output_evidence")
+        ev_empty = ev is None or (isinstance(ev, (str, list, dict)) and len(ev) == 0)
+        if ev_empty:
+            miss = [w for w in rc["waiver_fields"]
+                    if e.get(w) is None
+                    or (isinstance(e.get(w), str) and not str(e.get(w)).strip())]
+            if miss:
+                problems.append({"code": "E_NO_OUTPUT_EVIDENCE",
+                                 "detail": f"{tag} output_evidence 为空且缺豁免要素 {miss}"
+                                           f"——「改规则不改输出」必须有产出证据或显式豁免"})
+        # ③ 哈希与当前文件一致（防事后改账）
+        ref = str(e.get("rule_ref") or "").strip()
+        after = str(e.get("rule_hash_after") or "").strip()
+        if ref and after and isinstance(file_hashes, dict):
+            fpath = ref.split("#", 1)[0].strip()
+            cur = file_hashes.get(fpath)
+            if cur is None:
+                problems.append({"code": "E_RULE_FILE_UNKNOWN",
+                                 "detail": f"{tag} rule_ref 指向的文件 {fpath!r} "
+                                           f"不在可校验集合内（登记面须指向包内真实文件）"})
+            elif not str(cur).startswith(after[:12]) and not after.startswith(str(cur)[:12]):
+                problems.append({"code": "E_HASH_STALE",
+                                 "detail": f"{tag} rule_hash_after={after!r} 与当前 "
+                                           f"{fpath} sha256 前 12 位 {str(cur)[:12]!r} 不一致"
+                                           f"——规则又改了却没更新台账（防事后改账）"})
+    return (not problems), problems, {"entries": len(entries), "ledger": rc["ledger"]}
+
+
 def round_review_cfg(cfg, notes=None):
     """轮审五项判据（loop_b.round_review.*）。"""
     notes = notes if notes is not None else []
