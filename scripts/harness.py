@@ -1343,6 +1343,63 @@ def _write_collapse_artifact(cfg, dom, args):
     return path, payload, True
 
 
+def _rationale_quality(cfg, rationale):
+    """选型理由的**格式下限**判据（v3.28.2 B2）。
+
+    缺口（本轮十三维度诊断 P1-1 实测）：`rationale_filled_by=team-lead` 只判
+    「**填没填**」（status=filled / pending_team_lead），**理由质量无任何判据**——
+    随便写个"待补"也能过确认门，而坍缩是全流程源头（选错域/选错人，后面五闸全白做）。
+
+    ⚠ **宪法边界（必须读）**：本包三件事分工写死「识别/分类/权衡 = LLM 与人，
+    机器只做结构与格式校验」。故本函数**不判语义质量**（不判"说得对不对"），
+    只判两条**可判定**的格式下限：
+      ① 长度下限 `min_chars` —— 防一句话敷衍；
+      ② 占位符值 `placeholder_values` —— 防「待补 / TODO / 略」这类未展开写法
+         （这是**值域格式检查**，不是内容含义匹配）。
+    ⇒ 通过 ≠ 理由说得好；语义质量由管家节点在确认门（`--decision`）裁决。
+    本函数把这条边界写进返回值 metrics，不装成"已经评估过质量"。
+
+    返回 (ok, problems, metrics, block_on_fail)。
+    """
+    node = (cfg or {}).get("collapse") or {}
+    q = node.get("rationale_quality") or {}
+    problems = []
+    text = (rationale or "").strip()
+    try:
+        min_chars = int(q.get("min_chars") or 30)
+    except Exception:
+        min_chars = 30
+    raw_ph = q.get("placeholder_values")
+    placeholders = [str(x).strip() for x in raw_ph] if isinstance(raw_ph, list) else []
+    block_on_fail = q.get("block_on_fail")
+    block_on_fail = True if block_on_fail is None else bool(block_on_fail)
+
+    n = len(text)
+    if n < min_chars:
+        problems.append(
+            f"E_RATIONALE_TOO_SHORT：选型理由仅 {n} 字（下限 {min_chars} 字）"
+            f"——请写清「为什么是这个域 / 为什么是这组专家」")
+    # 占位符：整串即占位符，或以占位符开头且总长仍在下限内（"待补：xxx" 且很短）
+    if text and placeholders:
+        low = text.strip().strip("。.，,；;：: ")
+        if low in placeholders:
+            problems.append(
+                f"E_RATIONALE_PLACEHOLDER：选型理由为占位符写法 {low!r}"
+                f"——脚本不猜理由，「待补」不构成理由")
+        else:
+            head = low.split("：")[0].split(":")[0].strip()
+            if head in placeholders and n < min_chars * 2:
+                problems.append(
+                    f"E_RATIONALE_PLACEHOLDER：选型理由以占位符 {head!r} 开头且过短"
+                    f"——请直接写理由正文")
+    return (not problems), problems, {
+        "chars": n,
+        "min_chars": min_chars,
+        "checked_by": "harness.py::_rationale_quality",
+        "boundary": "仅格式下限（长度/占位符）；语义质量归管家节点确认门裁决",
+    }, block_on_fail
+
+
 def cmd_collapse(args):
     """v3.17.0：坍缩产物的落盘查询与**用户确认**（确认前域人格不生效）。
 
@@ -1476,6 +1533,18 @@ def cmd_collapse(args):
                   "   理由由**主理人**提供（脚本不猜）——请用 `--rationale \"<理由>\"` 重新执行。",
                   file=sys.stderr)
             return 1
+        # ── v3.28.2 B2：选型理由**格式下限**判据（缺口见 _rationale_quality docstring）──
+        #   ⚠ 只判长度/占位符这类可判定项；**语义质量机器不判**（归于管家节点）。
+        _rq_ok, _rq_probs, _rq_metrics, _rq_block = _rationale_quality(cfg, rationale)
+        if not _rq_ok and _rq_block:
+            print(f"⛔ 拒绝确认：选型理由未达**格式下限**（{len(_rq_probs)} 处）——\n"
+                  + "\n".join(f"   · {p}" for p in _rq_probs)
+                  + f"\n   判据源：config/harness.yaml#collapse.rationale_quality"
+                    f"（min_chars={_rq_metrics['min_chars']}）\n"
+                    f"   ⚠ 本判据只查格式下限，**不判断理由说得对不对**"
+                    f"（语义质量归管家节点在确认门裁决）。",
+                  file=sys.stderr)
+            return 1
         # ── v3.18.0：确认必须带**用户裁决语义**（--decision）+ 确认人不得是执行方自己 ──
         # 缺陷（2026-10-25 从零诊断 G2 实测）：此前 `--actor` 默认 "team-lead"，
         #   即「主理人自己确认自己」在代码层畅通无阻，且无任何"用户已阅"字段
@@ -1528,6 +1597,9 @@ def cmd_collapse(args):
         obj["confirmed_decision"] = decision
         obj["selection_rationale"] = rationale
         obj["selection_rationale_status"] = "filled"
+        # v3.28.2 B2：把格式下限校验结果**落进产物**（口径可追溯：通过≠质量好）
+        obj["selection_rationale_quality"] = dict(_rq_metrics, ok=bool(_rq_ok),
+                                                  problems=list(_rq_probs))
         obj["role_persona_status"] = "effective"
         obj.setdefault("notes", []).append(
             f"已由 {obj['confirmed_by']} 于 {obj['confirmed_at']} 确认：域人格生效。")

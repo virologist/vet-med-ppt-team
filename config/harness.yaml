@@ -240,6 +240,19 @@ collapse:
   confirm_command: "python3 scripts/harness.py collapse confirm --id <域id> --task-id <task_id> --workspace <工作空间>"
   # 选型理由由**主理人（LLM）**填写，脚本不猜——未填时坍缩产物标记为待补
   rationale_filled_by: "team-lead"
+  # ── 选型理由的**格式下限**判据（v3.28.2 B2 · 本轮诊断 P1-1）──────────────
+  # 缺口（实测）：`rationale_filled_by=team-lead` 只判「**填没填**」
+  #   （selection_rationale_status = filled / pending_team_lead），
+  #   而**理由质量**——有没有说清"为什么是这个域、为什么是这组人"——**无任何判据**。
+  # ⚠ 宪法边界（三件事分工：识别/分类/权衡归 LLM 与人，机器只做结构格式校验）：
+  #   **语义质量机器不判**。本段只判可判定的**格式下限**：
+  #     ① 长度下限（min_chars）——防"一句话敷衍"；
+  #     ② 占位符值（placeholder_values）——防"待补 / TODO / 略"这类未展开写法。
+  #   ⇒ 通过 ≠ 理由说得好，只是"不像空话/占位符"；语义质量由**管家节点在确认门裁决**。
+  rationale_quality:
+    min_chars: 30
+    placeholder_values: ["待补", "TODO", "TBD", "略", "无", "同上", "见上", "N/A"]
+    block_on_fail: true           # 格式下限不达标 ⇒ 拒绝确认（不降级为提示）
 
 # ── 可观测性 ────────────────────────────────────────────────
 observability:
