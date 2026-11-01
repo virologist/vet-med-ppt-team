@@ -106,6 +106,46 @@
 digest_scheme: "indexed-set-v2"
 version: "3.28.3"
 segments:
+- id: responsibility-matrix.yaml#capabilities
+  file: responsibility-matrix.yaml
+  prefix: capabilities
+  key_count: 16
+  keys_sha256: ab4538682a063d743da0fcb2a320a52ca5c30873
+  leaf_unused: 0
+  leaf_weak: 10
+  consumer: "脚本"
+  disposition: "新增键须登记"
+  note: "职责矩阵（own/consult 三值语义）。member-write-check 块级消费：构建 known_agents 一致性闸。"
+- id: responsibility-matrix.yaml#escalation
+  file: responsibility-matrix.yaml
+  prefix: escalation
+  key_count: 3
+  keys_sha256: 0e22a875756f8dc15359247de6883e1ea80a311b
+  leaf_unused: 0
+  leaf_weak: 3
+  consumer: "脚本"
+  disposition: "新增键须登记"
+  note: "越级上报链（conflict/science_safety/platform）。member-write-check 拒绝时输出。"
+- id: responsibility-matrix.yaml#audit
+  file: responsibility-matrix.yaml
+  prefix: audit
+  key_count: 3
+  keys_sha256: 35f8891eab3bdf4d2b46158e124933092db8ae44
+  leaf_unused: 0
+  leaf_weak: 2
+  consumer: "脚本"
+  disposition: "新增键须登记"
+  note: "L3 审计对账声明。member-write-check 自校验 record_on 含本动作事件名。"
+- id: responsibility-matrix.yaml#write_scope
+  file: responsibility-matrix.yaml
+  prefix: write_scope
+  key_count: 18
+  keys_sha256: c27af8f91c0c6d3ef04c61ee02a918934b2097a5
+  leaf_unused: 18
+  leaf_weak: 0
+  consumer: "脚本"
+  disposition: "新增键须登记"
+  note: "分级权限 L2 写权限面（B14 升级方案 R2）：值为路径模式列表（<任务>/<包> 占位）；member-write-check 写前校验整块消费。"
 - id: domain-profiles.yaml#domains
   file: domain-profiles.yaml
   prefix: domains
@@ -249,8 +289,8 @@ segments:
 - id: harness.yaml#observability
   file: harness.yaml
   prefix: observability
-  key_count: 17
-  keys_sha256: 2ee2f2c2c6c59fb3f00301fe8619266c35841677
+  key_count: 18
+  keys_sha256: 8149a70952a07f807e612614c000608e35e7bcc9
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本+会话层+主理人

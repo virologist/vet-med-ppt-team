@@ -2551,7 +2551,7 @@ def _trace(w, cfg, event, actor, detail):
 TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
                          "member_return", "gate", "stage_enter", "stage_exit",
                          "budget_exceeded", "error", "no_progress",
-                         "batch_open", "batch_close", "reflow")
+                         "batch_open", "batch_close", "reflow", "member_write_check")
 
 
 def _trace_error(w, cfg, event, actor, detail):
@@ -2646,6 +2646,88 @@ def cmd_spawn_failed(args):
         print(f"⚠ 该成员已尝试 {attempt}/{max_attempts} 次——按 harness.yaml#fallback."
               f"max_spawn_attempts 处置（降级或上报主理人），不得无限重试。", file=sys.stderr)
     print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_member_write_check(args):
+    """成员写权限校验（v3.28.4 B14 · 升级方案 R2-L2 分级权限的执行器）。
+
+    判据源：config/responsibility-matrix.yaml#write_scope（唯一源）。
+    · rc=0 允许写；rc=2 拒绝（trace 记 member_write_check: allowed=false）。
+    · 路径模式：`<任务>` = --workspace；`<包>` = 插件目录。目录前缀匹配，
+      文件条目（如 CHANGELOG.md）走精确路径匹配。
+    · 未知成员（矩阵未登记）= 无任何写权限（默认拒绝，防未登记角色越权）。
+    立项理由（诊断 P-权1）：writes_allowed 只有 bool 粒度，产出期成员写入面
+    此前无强制约束——verifier 改 deck 在权限面上无拦截（靠事后门禁）。
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    mat_path = os.path.join(PKG, "config", "responsibility-matrix.yaml")
+    if not os.path.isfile(mat_path):
+        print("⛔ config/responsibility-matrix.yaml 缺失 → 写权限无判据源，"
+              "拒绝放行（fail-closed）", file=sys.stderr)
+        return 3
+    import yaml as _yaml
+    with open(mat_path, encoding="utf-8") as f:
+        mat = _yaml.safe_load(f) or {}
+    scope_all = mat.get("write_scope") or {}
+    # ── 矩阵完整性消费（②实现读取：capabilities/escalation/audit 三段进
+    #    代码路径级证据——capabilities 校验登记一致性、escalation 拒绝时给
+    #    上报链、audit.record_on 自校验 trace 事件名在册）────────────────
+    caps = mat.get("capabilities") or {}
+    known_agents = set()
+    for _face in caps.values():
+        if isinstance(_face, dict):
+            known_agents.update(_face.get("own") or [])
+            known_agents.update(_face.get("consult") or [])
+    esc = mat.get("escalation") or {}
+    esc_conflict = esc.get("conflict") or "team-lead"
+    esc_safety = esc.get("science_safety") or ""
+    esc_platform = esc.get("platform") or ""
+    audit = mat.get("audit") or {}
+    record_on = audit.get("record_on") or []
+    agent = (args.agent or "").strip()
+    target = os.path.abspath(os.path.expanduser(args.path))
+    patterns = scope_all.get(agent)
+    if patterns is None or (known_agents and agent and agent not in known_agents
+                            and agent != "team-lead"):
+        # 未登记成员 = 零权限（默认拒绝）；capabilities 矩阵是第二道一致性闸
+        _trace(w, cfg, "member_write_check", agent,
+               {"path": target, "allowed": False,
+                "reason": "unregistered_member",
+                "escalation": esc_conflict})
+        print(f"⛔ 拒绝：成员 {agent or '?'} 未在 responsibility-matrix.yaml"
+              f"#write_scope 登记 ⇒ 零写权限（默认拒绝）。", file=sys.stderr)
+        return 2
+    allowed = False
+    hit = ""
+    for pat in patterns:
+        resolved = pat.replace("<task>", w).replace("<包>", PKG)
+        resolved = os.path.abspath(os.path.expanduser(resolved))
+        if target == resolved or target.startswith(resolved + os.sep):
+            allowed, hit = True, pat
+            break
+    _trace(w, cfg, "member_write_check", agent,
+           {"path": target, "allowed": allowed,
+            "pattern": hit or None,
+            "reason": None if allowed else "out_of_scope",
+            "escalation": esc_conflict})
+    # audit.record_on 自校验：本动作的 trace 事件名必须在册（防声明-执行漂移）
+    if record_on and "member_write_check" not in record_on and \
+            "member_write_denied" not in record_on:
+        print("⚠ audit.record_on 未包含 member_write_check（声明-执行漂移，"
+              "请更新 responsibility-matrix.yaml#audit）", file=sys.stderr)
+    if not allowed:
+        print(f"⛔ 拒绝：{agent} 不得写 {target}\n"
+              f"   允许面（write_scope）：{patterns}\n"
+              f"   判据源：config/responsibility-matrix.yaml#write_scope\n"
+              f"   越级上报：职责冲突→{esc_conflict}"
+              + (f"｜科学安全→{esc_safety}" if esc_safety else "")
+              + (f"｜平台问题→{esc_platform}" if esc_platform else ""),
+              file=sys.stderr)
+        return 2
+    print(json.dumps({"ok": True, "agent": agent, "path": target,
+                      "matched_pattern": hit}, ensure_ascii=False))
     return 0
 
 
@@ -7599,6 +7681,13 @@ def main():
     p.add_argument("--detail", default="", help="自由文本补充上下文（归入 trace detail.detail）")
     _ws(p)
     p.set_defaults(func=cmd_spawn_failed)
+
+    p = sub.add_parser("member-write-check",
+                       help="v3.28.4 B14：成员写权限校验（responsibility-matrix#write_scope）")
+    p.add_argument("--agent", required=True, help="成员 id（矩阵未登记 = 零权限）")
+    p.add_argument("--path", required=True, help="待写入目标路径")
+    _ws(p)
+    p.set_defaults(func=cmd_member_write_check)
 
     p = sub.add_parser("degrade",
                        help="v3.17.0 B3-2：登记成员降级（写 trace 事件 degrade——"

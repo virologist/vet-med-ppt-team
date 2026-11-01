@@ -295,7 +295,8 @@ observability:
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
                  "error", "no_progress", "compaction",
-                 "batch_open", "batch_close", "reflow"]
+                 "batch_open", "batch_close", "reflow",
+                 "member_write_check"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──

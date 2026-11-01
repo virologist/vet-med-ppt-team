@@ -1,0 +1,92 @@
+# responsibility-matrix.yaml — 成员职责矩阵与分级权限（唯一源）
+# ══════════════════════════════════════════════════════════════════════════
+# 立项依据（升级方案 R1/R2，2026-11-01 B14）：诊断 P-权1/P-权3——
+#   · `members.*.writes_allowed` 只有 bool 粒度，产出期成员写入面无强制约束；
+#   · 职责边界散在 SOP 文字里，无结构化「谁对什么做什么、谁批准、越权谁兜底」。
+# 本文件是**职责与写权限的唯一源**；members.tools_whitelist（harness.yaml）
+#   仍是工具声明层（平台无强制力，preflight 显式披露），两者分工：
+#   本文件管「能碰什么」（L2 代码强制：harness.py member-write-check），
+#   tools_whitelist 管「想用什么工具」（L1 声明+审计对账）。
+#
+# ⚠ 本文件不得成为第二规则源：与 references/spawn-protocol.md、
+#   references/dual-loop-governance.md 冲突时以彼为准并上报。
+#
+# 执行器：python3 scripts/harness.py member-write-check --agent <id> --path <p>
+#   rc=0 允许写 ／ rc=2 拒绝（trace 记 member_write_denied）
+
+version: "3.28.4"
+
+# ── 职责矩阵（行=能力面，列=成员）──────────────────────────────────────
+# 三值语义：own=主责（产出由该成员负责）／consult=会签（须征询其意见）
+#          none=禁入（不得参与该能力面的产出决策）
+# 核心不变式：verification 一列——除 verifier 外全员 none（独立性铁律）。
+capabilities:
+  deck_blueprint:
+    description: "教学蓝图（章节结构/学时/八要素取舍）"
+    own: [pedagogy-architect]
+    consult: [dvm-content-expert]
+  science_content:
+    description: "学科内容（病原/诊断/防控的事实与数据）"
+    own: [dvm-content-expert]
+    consult: [pedagogy-architect]
+  visual_system:
+    description: "视觉系统（版式/配色/图表规范）"
+    own: [visual-slide-designer]
+    consult: [ppt-producer]
+  deck_assembly:
+    description: "课件装配（逐页实现与写回）"
+    own: [ppt-producer]
+    consult: []
+  verification:
+    description: "独立验证（闸4 裁判；产出者不得自验）"
+    own: [verifier]
+    consult: []
+  case_sourcing:
+    description: "案例与数据溯源（三源核验）"
+    own: [dvm-content-expert]
+    consult: [verifier]
+
+# ── 越级上报链 ────────────────────────────────────────────────────────
+escalation:
+  conflict: "team-lead"                    # 成员间职责冲突 → 主理人裁决
+  science_safety: "dvm-content-expert → team-lead → user"
+    # 生物安全/科学准确性红线：允许直通用户（不被中途拦截）
+  platform: "team-lead → user"             # 平台沙箱/工具不可用类
+
+# ── 分级权限 L2：目录级写权限（代码强制）────────────────────────────────
+# 路径模式：`<task>` = 任务工作区（--workspace）；`<包>` = 本插件目录。
+# 成员只允许写自己的产出目录；`<task>/wip` 为共享协作区（各成员可写自己
+# 命名前缀的文件——首版按目录粒度，文件级留待遥测数据说话）。
+write_scope:
+  team-lead:
+    - "<task>"
+    - "<包>/scripts"
+    - "<包>/config"
+    - "<包>/references"
+    - "<包>/agents"
+    - "<包>/.codebuddy-plugin"
+    - "<包>/.claude-plugin"
+    - "<包>/CHANGELOG.md"
+    - "<包>/README.md"
+  pedagogy-architect:
+    - "<task>/design"
+    - "<task>/wip"
+  dvm-content-expert:
+    - "<task>/content"
+    - "<task>/wip"
+  visual-slide-designer:
+    - "<task>/visual"
+    - "<task>/wip"
+  ppt-producer:
+    - "<task>/wip"
+    - "<task>/deck"
+  verifier:
+    - "<task>/reports"
+    # 独立性铁律：verifier 永不写 deck/wip/content——报告即全部产出面
+
+# ── 分级权限 L3：审计对账（member-return 记录实际使用）──────────────────
+audit:
+  record_on: ["member-return", "member_write_denied"]
+  note: "member-write-check 拒绝/放行均入 trace；member_return 的 tools 字段
+        与 tools_whitelist 对账——差异在交付报告披露（平台无工具级强制力，
+        对账是唯一能发现'声明 7 工具实际用 3'的手段）"
