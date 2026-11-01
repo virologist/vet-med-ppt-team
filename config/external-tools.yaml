@@ -262,35 +262,37 @@ standards:
         可能是站点对非浏览器 UA 的拦截，也可能链接已变更。
         ⇒ 引用前**必须人工浏览器核验**；未核验前不得声称"已核实可达"。
         远端 sha256 基准值亦未登记（同前）。
-    undergraduate_note: "**本科版直链已定位并收录**（v3.28.2 B7）——见下一条 animal-medicine-teaching-standard-bk；⚠ 直链可达性待人工浏览器核验"
+    undergraduate_note: "**本科版已收录**（v3.28.2 B7 收录 / v3.28.4 B8 直链失效处置）——见下一条 animal-medicine-teaching-standard-bk；原 PDF 直链已 404 移除，改用官方发布页 + 第三方全文页两个替代源（均已核验可达）"
     disclaimer: "本摘要**不替代原文**；需要精确条款时以现查 source_url 为准"
-  # ── 本科版（职业本科）· v3.28.2 B7 收录 ────────────────────────────────
+  # ── 本科版（职业本科）· v3.28.2 B7 收录 / v3.28.4 B8 直链失效处置 ───────
   # 来历（L5 线索闭环）：原 undergraduate_note 长期写「本科版直链未核实」。
-  # v3.28.2 本轮检索确认该标准**存在**：教育部 2025-02 印发的 758 项职业教育专业教学标准
-  # 中职业本科 64 项之一；检索结果给出 moe.gov.cn 上的 PDF 直链，摘要含专业代码 210301、
-  # 基本修业年限四年、"禽病防治技术"课程条目——与专科版（410301）为不同标准。
-  # ⚠ 如实标注**三处未完成**（绝不假装已齐备）：
-  #   ① `verify.reachability_verified: false` —— 本环境 curl/WebFetch 直取该 URL 返回
-  #      404 /「页面不存在!」，**与既有专科版链接同现象**（可能站点拦截非浏览器 UA，
-  #      也可能链接已变更）⇒ 引用前必须**人工浏览器核验**。
-  #   ② `summary_ref: null` —— 摘要文件尚未撰写；引用时以现查原文为准。
-  #   ③ `verify.hash_recorded: false` —— 远端 sha256 基准值尚未登记。
-  #   ④ 发布月份 2025-02 取自教育部新闻稿（758 项新标准，2025-02-11）；具体 PDF 发布日待核。
+  # v3.28.2 检索确认该标准存在，收录了当时的 PDF 直链（三处未核验状态）。
+  # v3.28.4 人工核验结论：**该 PDF 直链已失效**——http 直取 404（「页面不存在」）、
+  #   https 302→http→404，即教育部服务器端明确 404（非 UA/网络拦截）；
+  #   搜索引擎仍缓存其正文（含专业代码 210301、修业四年、「禽病防治技术」等 9 门核心课程），
+  #   证明该标准真实存在、直链确已被移除或改路径。
+  # 处置（用户裁定）：source_url 撤下失效直链，改为**两个已核验可达的替代源**：
+  #   ① 官方发布页（权威出处）：moe.gov.cn 758 项标准新闻，HTTP 302 可达
+  #   ② 第三方全文页（内容副本）：lt.mentorsc.com/article/581，HTTP 200 可达，
+  #      含 210301 完整标准正文（培养目标/课程设置/教学要求）
+  #   两源已导入 IMA《禽病》知识库（weburl 型，2026-11-01，用户执行侧闭环）。
   - id: "animal-medicine-teaching-standard-bk"
     title: "动物医学专业教学标准（高等职业教育本科）"
     owner_scope: "animal-medicine"
     replaceable: true
-    source_url: "https://www.moe.gov.cn/s78/A07/zcs_ztzl/2017_zt06/17zt06_bznr/bznr_zyjyzyjxbz/gdzyjy_bk/bk_nlmydl/nlmydl_xmyl/202502/P020250207563221301602.pdf"
-    source_org: "教育部政府门户网站 moe.gov.cn"
+    source_url: "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/202502/t20250211_1178746.html"
+    source_url_alt: "https://lt.mentorsc.com/article/581"
+    source_url_note: "原 PDF 直链 .../P020250207563221301602.pdf 已失效（2026-11-01 实测 404，含 https 302→404）；source_url=官方发布页（权威出处），source_url_alt=第三方全文页（210301 完整正文副本，非官方）"
+    source_org: "教育部政府门户网站 moe.gov.cn（发布页）/ 众师云 lt.mentorsc.com（全文副本）"
     published: "2025-02"
     professional_code: "210301"
     summary_ref: null
     verify:
       method: "sha256"
       hash_recorded: false
-      reachability_verified: false
-      note: "⚠ 本环境直取 404（与专科版同现象）；须人工浏览器核验链接后再标已核实。sha256 基准值未登记，此前只做可达性核验，不得声称已做哈希比对"
-    disclaimer: "**未撰写摘要**——引用须现查 source_url 原文；本条目只提供权威出处与定位，不承载条款内容"
-    pending_human_verify: "人工浏览器打开 source_url，确认是《动物医学专业教学标准（高等职业教育本科）》正文后，把 verify.reachability_verified 置 true 并补录 sha256"
+      reachability_verified: true
+      note: "⚠ reachability_verified=true 仅指**替代源**（官方发布页 302 / 全文页 200，2026-11-01 实测）；原 PDF 直链已 404 移除。sha256 基准值仍未登记——全文页为网页型副本、无稳定二进制，sha256 口径不适用；引用条款前仍须与官方发布页/官方纸质出版物核对"
+    disclaimer: "**未撰写摘要**——本条目提供权威出处（发布页）与内容副本（全文页）定位；引用精确条款时以官方发布内容为准，全文页仅作线索"
+    knowledge_sink: "已导入 IMA《禽病》Avian Disease 知识库（weburl 型 ×2，2026-11-01）"
   # ⚠ 归口纪律（v3.28.2 B4 立规，见 references/dependency-manifest.yaml#skill_contract.standard_authority）：
   #   外部 skill 携带的标准文本只能作**线索**，不得替代本段登记，也不得与本段并存为可引用来源。
