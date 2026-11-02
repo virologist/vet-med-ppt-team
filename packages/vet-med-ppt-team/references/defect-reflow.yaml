@@ -79,6 +79,12 @@ entries:
     rule_hash_before: "000000000000"
     rule_hash_after: "5f468cfd1369"
     output_evidence: "scripts/sync_zone_registry.py 幂等复跑「已是实时值，无需写入」；两套登记表守卫 36+21 全 passed；人工字段零漂移断言内置（越界自动回滚）"
+  - id: "RF-20261102-008"
+    rule_ref: "config/domain-profiles.yaml#domains"
+    change: "域档案扩展（通用化转型 B17）：① computing / business-training 两域补 depth_scale_source（深度标尺）+ audience_profile（受众画像）——此前只有默认域有，等于「换人格不换资产」；② 顶层新增 domain_pack_exemptions（映射结构：域→资产→{reason}），承载域包五件套的形态差异豁免登记"
+    rule_hash_before: "251501382235"
+    rule_hash_after: "d43c5877c891"
+    output_evidence: "harness domain-pack-check 实测：三域齐备度 animal-medicine 5/5、computing 4/5+豁免1、business-training 4/5+豁免1，verdict=pass，probe_domain.complete=true；缺 required 资产实测 rc=1；无效豁免实测回到 missing 态并进 weak 清单；跨域串味实测 rc=3；域档案段指纹随结构变更同步刷新（登记表 56 段）"
 
 # ── 登记样例（照此格式追加，勿把样例当真实条目）──────────────────────────────
 # entries:

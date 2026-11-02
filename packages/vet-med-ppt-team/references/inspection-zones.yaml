@@ -1,6 +1,67 @@
 digest_scheme: indexed-set-v2
 version: 3.28.3
 segments:
+- id: domain-profiles.yaml#domain_pack_exemptions
+  file: domain-profiles.yaml
+  prefix: domain_pack_exemptions
+  key_count: 2
+  keys_sha256: 67576e259bf3aa389759f26ef5a36e183caff8c4
+  leaf_unused: 0
+  leaf_weak: 2
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 域包豁免登记（映射结构：域→资产→{reason}）。harness domain-pack-check 以**字面量下标链**消费（路径级证据判据要求字面量键
+    + 链根含 config 字样）。
+- id: domain-pack-contract.yaml#assets
+  file: domain-pack-contract.yaml
+  prefix: assets
+  key_count: 38
+  keys_sha256: 7c22575680000b24e01351c783375346f9075b2a
+  leaf_unused: 10
+  leaf_weak: 23
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 域包五件套定义（词条/知识库面/深度标尺/受众画像/模块模板 + 承载字段 + 必备级别）。harness domain-pack-check 块级消费。
+- id: domain-pack-contract.yaml#exemption
+  file: domain-pack-contract.yaml
+  prefix: exemption
+  key_count: 8
+  keys_sha256: 914fc253283a8af575664b5a8ac6bf8cf02def67
+  leaf_unused: 0
+  leaf_weak: 7
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 豁免登记契约（三要素 + 位置 + 上限）。harness domain-pack-check 块级消费。
+- id: domain-pack-contract.yaml#probe_domain
+  file: domain-pack-contract.yaml
+  prefix: probe_domain
+  key_count: 2
+  keys_sha256: 6935240e6e57d2a1ce6979953f84f651bd93ea89
+  leaf_unused: 0
+  leaf_weak: 1
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 通用化试金石域（computing）。harness domain-pack-check 块级消费。
+- id: domain-pack-contract.yaml#cross_domain_guard
+  file: domain-pack-contract.yaml
+  prefix: cross_domain_guard
+  key_count: 12
+  keys_sha256: 89b06d2287c575141fb78836c99affa946063d5b
+  leaf_unused: 0
+  leaf_weak: 11
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 跨域串味哨兵（某域不得引用别域专有资产标识）。harness domain-pack-check 块级消费。
+- id: domain-pack-contract.yaml#report
+  file: domain-pack-contract.yaml
+  prefix: report
+  key_count: 3
+  keys_sha256: db6cafa24b1bbe10e7ab79e24586012c4e73af21
+  leaf_unused: 1
+  leaf_weak: 2
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 齐备度报告落盘与 trace 事件名。harness domain-pack-check 块级消费。
 - id: verification-tiers.yaml#medium_risk_defaults
   file: verification-tiers.yaml
   prefix: medium_risk_defaults
@@ -114,10 +175,10 @@ segments:
 - id: domain-profiles.yaml#domains
   file: domain-profiles.yaml
   prefix: domains
-  key_count: 784
-  keys_sha256: 21099c04a210c21bd5e8d3d6f4ff6f70e3e039cd
+  key_count: 814
+  keys_sha256: ddc0348e7110138bdc0e4b4f1a90360edf7a66d6
   leaf_unused: 0
-  leaf_weak: 618
+  leaf_weak: 646
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
   note: 域档案清单（id/label/glossary/知识库路由等）。域档案本体由主理人装配进提示词；条目内的少数字段由脚本按路径读取。

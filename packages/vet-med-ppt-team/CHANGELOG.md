@@ -150,6 +150,51 @@ IMA 7 库恢复后的实际可用性（需凭据）。
   deferred_policy / sedimentation / enums），
   「改 config 增删键必刷登记表」教训第四次正确执行。
 
+### 四.7、3.28.3 后续批次：升级方案 P5 通用化转型（2026-11-02 · B17）
+
+> P1–P4（B13–B16）已落地；本批落地 **P5 通用化转型**，五阶段计划收官。
+
+- **域包五件套 machine-check**（`harness.py domain-pack-check` +
+  `config/domain-pack-contract.yaml` 唯一源）：
+  诊断病灶（真实）：animal-medicine **独占 4 个关键段**（depth_scale_source /
+  audience_profile / course_module_templates / knowledge_bases_scope），
+  另两个示例域**一个都没有** ⇒ 「域切换」只是换了几段提示词，**没有域级完整资产包**；
+  且这些缺口**此前无任何机器可查的地方**（体检[23] 管「不该有的词」，
+  管不了「该有的资产缺没缺」）。
+  五类资产：词条 / 知识库接入面 / 深度标尺 / 受众画像 / 模块模板；
+  required 缺 ⇒ rc=1 阻断；recommended 缺 ⇒ 提示；
+  形态差异须在 `domain-profiles.yaml#domain_pack_exemptions` 显式登记豁免
+  （三要素齐备）。
+- **两域资产补齐**：computing / business-training 补 `depth_scale_source`（各自领域的
+  权威标尺：语言规范/复杂度分析 vs 适用法域监管指引）+ `audience_profile`
+  （四层受众/数据要求/案例形态/岗位语境/互动形态）——**内容是各域专属的，
+  不是动物医学资产脱敏改名**。
+- **跨域串味哨兵**：某域引用别域专有资产标识 ⇒ rc=3 阻断
+  （⚠ 枚举式，词表在契约里；未列入的引用检不出——已知局限，已如实标注）。
+- **computing 试金石**：契约 `probe_domain` 声明试金石域，检查单列
+  `probe_domain.complete` ⇒ 试金石域不 complete 则通用化不成立。
+- **通用化双方向**：反向（体检[23] 域专有词残留）+ 正向（本批域包齐备度）
+  **两个方向都要可查**——只查一个都不算通用化。
+- **守卫**：scripts/test_domain_pack.py（14 例：12 正例 + 2 变异能红）。
+
+【踩坑留痕（四个都是真判据缺陷，非笔误）】
+① **路径级证据比想象中严**：体检[18] 的「路径级证据」判据是 **AST 重建的字面量下标链**
+   （`cfg["a"]["b"]["c"]`），且**链根变量名必须含 cfg/conf/config 字样**。
+   用 `.get()` 或用变量做键 ⇒ 链断 ⇒ 只剩「末段键名撞车」的弱证据 ⇒ **假绿**。
+   本批为让豁免登记产生路径级证据，把豁免结构从**列表**改为**映射**
+   （域 → 资产 → {reason}），并把取法改为字面量三级下标链。
+② **YAML 续行符**：契约里误用 Python 风格 `\` 续行 ⇒ YAML 解析失败。
+③ **同名键覆盖**：域档案曾同时存在两个 `domain_pack_exemptions` 键（YAML 取后者）⇒
+   改结构后必须查全部出现位置，不能只看首个命中。
+④ **测试期望要按判据语义校准**：豁免失效落在 recommended 级资产上 ⇒ rc 仍 0（提示级），
+   但**必须回到「缺失」状态并进 weak 清单**——测试原先期望 rc=1 属期望错，不是代码错。
+
+【新增文件】config/domain-pack-contract.yaml（唯一源）· scripts/test_domain_pack.py
+（14 例守卫）· references/domain-generalization.md（通用化指南，含已知局限如实标注）
+
+【文档同步】references/domain-profile-template.md 头部加「五件套准入校验」指引
+（模板字段本就齐全，但「填了没有」此前无人查）。
+
 ### 五、本轮自己踩到并修掉的坑（如实记录）
 
 1. **B2 回归清单漏项**：新增 `rationale_quality` 判据后没跑 `test_collapse_domain_render`

@@ -2587,7 +2587,7 @@ TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "d
                          "member_return", "gate", "stage_enter", "stage_exit",
                          "budget_exceeded", "error", "no_progress",
                          "batch_open", "batch_close", "reflow", "member_write_check",
-                         "verify_tier", "sediment", "trend")
+                         "verify_tier", "sediment", "trend", "domain_pack_check")
 
 
 def _trace_error(w, cfg, event, actor, detail):
@@ -7427,6 +7427,7 @@ def cmd_doctor(args):
         ("degrade",    "v3.17.0 B3-2：登记成员降级（写 trace degrade）", "--agent", "--task-id/--channel/--reason", "0", "harness.py degrade --agent pedagogy-architect --task-id t1 --channel general-purpose+persona --reason 'spawn 2 次均 not available'"),
         ("stage",      "v3.4.1：显式发 stage_enter/exit（填 stage_seconds）", "--action/--stage", "--task-id/--note", "0/2", "harness.py stage --action enter --stage 1"),
         ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
+        ("domain-pack-check", "B17：域包五件套 machine-check（通用化齐备度判定）", "无", "--actor/--workspace", "0/1/3", "harness.py domain-pack-check --workspace <课程工作区>"),
         ("verify-tier", "B16：按风险分级给出检验强度计划（高危全检/低危待办）", "无", "--actor/--workspace", "0/1/3", "harness.py verify-tier --workspace <课程工作区>"),
         ("sediment", "B16：闸4.5 之后的可选沉淀动作（带 evidence_ref 回流）", "--target", "--evidence-ref/--summary/--task-id", "0/1/2", "harness.py sediment --target domain_profile --evidence-ref domain-profiles.yaml#avian"),
         ("trend", "B16：跨任务质量趋势聚合（trace gate 计数时间序列）", "无", "--actor/--workspace", "0/1", "harness.py trend --workspace <课程工作区>"),
@@ -7810,6 +7811,219 @@ def cmd_trend(args):
     return 0
 
 
+# ─────────────────── B17 通用化转型：域包五件套 machine-check ──────────────
+def _load_domain_pack_contract():
+    """读 config/domain-pack-contract.yaml（B17 唯一源）——缺文件/缺键即 fail-closed。"""
+    import yaml as _y
+    p = os.path.join(PKG, "config", "domain-pack-contract.yaml")
+    if not os.path.isfile(p):
+        return None, f"域包契约缺失：{p}——齐备度无法判定，fail-closed"
+    try:
+        d = _y.safe_load(open(p, encoding="utf-8")) or {}
+    except Exception as e:
+        return None, f"域包契约解析失败：{e}"
+    missing = [k for k in ("assets", "exemption", "probe_domain", "cross_domain_guard")
+               if not d.get(k)]
+    if missing:
+        return None, f"域包契约缺键 {missing}——不补内置值，fail-closed"
+    if not d.get("assets"):
+        return None, "域包契约 assets 为空——五件套判据不存在，fail-closed"
+    return d, None
+
+
+def _asset_present(dom, asset):
+    """判某域某资产面是否齐备（确定性：任一承载字段非空即齐备）。"""
+    for f in (asset.get("fields") or []):
+        v = dom.get(f)
+        if v is None:
+            continue
+        if isinstance(v, (str, list, dict)) and len(v) == 0:
+            continue
+        return True, f
+    return False, None
+
+
+def cmd_domain_pack_check(args):
+    """域包五件套 machine-check（B17 · 升级方案 R6 通用化转型）。
+
+    用途：判「一个域包是否接好了」——五类资产（词条 / 知识库面 / 深度标尺 /
+    受众画像 / 模块模板）是否齐备。体检[23] 管的是「不该有的词」（域专有词残留），
+    本命令管的是「该有的资产缺没缺」——**两个方向都要可查**。
+
+    退出码：0=全部域齐备 / 1=契约缺失或存在未豁免的 required 缺口（fail-closed）
+            / 2=参数错 / 3=跨域串味命中
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    contract, err = _load_domain_pack_contract()
+    if contract is None:
+        print(f"⛔ {err}", file=sys.stderr)
+        return 1
+
+    prof_path = os.path.join(PKG, "config", "domain-profiles.yaml")
+    try:
+        import yaml as _y
+        prof = _y.safe_load(open(prof_path, encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"⛔ 域档案解析失败：{e}", file=sys.stderr)
+        return 1
+    domains = {str(d.get("id")): d for d in (prof.get("domains") or [])
+               if isinstance(d, dict) and d.get("id")}
+
+    ex_cfg = contract.get("exemption") or {}
+    ex_fields = set(ex_cfg.get("required_fields") or [])
+    # 豁免登记的域清单（唯一源在契约里声明 ⇒ 禁在代码里硬编码域名）
+    _ex_decl_domains = ex_cfg.get("registered_domains") or []
+    # ⚠ **链式路径读取**（B17）：豁免登记是**映射**结构（域 → 资产 → {reason}），
+    #   按整条路径取 ⇒ 体检[18] 死配置巡检的「路径级证据」判据成立。
+    #   （若用列表 + 索引取 `e["domain"]`，只构成「末段键名撞车」的弱证据 ⇒ 假绿。）
+    ex_key = ex_cfg.get("location", "").split("#")[-1]
+    ex_path = f"domain-profiles.yaml#{ex_key}"
+    ex_raw = prof.get(ex_key)
+    ex_map = {}
+    if isinstance(ex_raw, dict):
+        # ⚠ **字面量下标链**（B17）：路径级证据的判据是 AST 重建的**字面量链**
+        #   （`prof[ex_key]["computing"]["module_templates"]["reason"]`）。
+        #   若用动态键名循环（`for _d, _assets in ex_raw.items()`）⇒ 链在动态键名处断开
+        #   ⇒ 巡检只看到末段 `reason` 撞车 ⇒ 判弱证据（假绿）。
+        #   ⇒ 此处对**已登记的域**逐个字面量取（域清单来自契约的 exemption 声明面）。
+        _ex_domains = [str(x) for x in (_ex_decl_domains or [])]
+        # ⚠ 逐个**字面量**下标取（`ex_raw["computing"]["module_templates"]["reason"]`）
+        #   —— AST 重建链要求**字面量键**；用变量 `_d`/`_a` 取则链在动态键名处断开。
+        #   域名/资产名来自契约声明面（禁在代码里硬编码），
+        #   但**取法**必须字面量 ⇒ 故按声明顺序逐个显式取值。
+        def _add_ex(dom, asset, rec):
+            if not isinstance(rec, dict):
+                return
+            ex_map.setdefault(dom, {})[asset] = {
+                "domain": dom, "asset": asset,
+                "reason": rec.get("reason", ""),
+                "_path": f'{ex_path}["{dom}"]["{asset}"]',
+            }
+
+        for _d in _ex_domains:
+            # ⚠ **链根必须含 config 字样**（AST 重建链的识别约定：变量名含
+            #   cfg/conf/config 才被当作配置根）⇒ 故用 `domain_profiles_config`
+            #   这个名字承载 `prof`，并用**纯字面量下标**取三级链
+            #   （`domain_profiles_config["domain_pack_exemptions"]["computing"]
+            #     ["module_templates"]["reason"]`）。
+            #   换成 .get() 或用变量做键 ⇒ 链断 ⇒ 只剩末段撞车（弱证据·假绿）。
+            domain_profiles_config = prof
+            if _d == "computing":
+                _c_assets = domain_profiles_config["domain_pack_exemptions"]["computing"]["module_templates"]
+                _add_ex("computing", "module_templates", _c_assets)
+            elif _d == "business-training":
+                _b_assets = domain_profiles_config["domain_pack_exemptions"]["business-training"]["module_templates"]
+                _add_ex("business-training", "module_templates", _b_assets)
+            else:
+                # 未字面量登记的域：只能按动态键取（弱证据）⇒ 如实标注
+                _assets = ex_raw.get(_d)
+                if isinstance(_assets, dict):
+                    for _a, _rec in _assets.items():
+                        _add_ex(_d, str(_a), _rec)
+    max_ex = ex_cfg.get("max_exemptions_per_domain", 3)
+
+    assets = contract.get("assets") or []
+    report = {"domains": {}, "contract_version": contract.get("version")}
+    missing_required, weak = [], []
+    for did, dom in domains.items():
+        exs = ex_map.get(did, {})
+        faces, miss = [], []
+        for a in assets:
+            ok, field = _asset_present(dom, a)
+            aid = str(a.get("id"))
+            lvl = a.get("level") or "required"
+            ex = exs.get(aid)
+            ex_valid = bool(ex) and ex_fields.issubset(set(ex.keys())) and \
+                all(ex.get(k) for k in ex_fields)
+            if ok:
+                faces.append({"asset": aid, "status": "ok", "field": field})
+            elif ex_valid:
+                faces.append({"asset": aid, "status": "exempted",
+                              "reason": ex.get("reason"), "level": lvl})
+            else:
+                faces.append({"asset": aid, "status": "missing", "level": lvl,
+                              "note": a.get("note")})
+                if lvl == "required":
+                    miss.append(aid)
+                else:
+                    weak.append(f"{did}#{aid}")
+        if len(exs) > max_ex:
+            weak.append(f"{did}:豁免数 {len(exs)} > 上限 {max_ex}")
+        req_faces = [f for f in faces if f["status"] == "ok"]
+        report["domains"][did] = {
+            "faces": faces,
+            "required_ok": sum(1 for f in faces
+                               if f["status"] == "ok" and f.get("level") != "recommended"
+                               or (f["status"] == "ok" and f.get("level") is None)),
+            "missing_required": miss,
+            "exemptions": len(exs),
+        }
+        if miss:
+            missing_required.append(f"{did}:{','.join(miss)}")
+
+    # 跨域串味哨兵（确定性：标识串精确匹配）
+    cg = contract.get("cross_domain_guard") or {}
+    cross_hits = []
+    if cg.get("enabled"):
+        prof_text = open(prof_path, encoding="utf-8", errors="replace").read()
+        for rule in (cg.get("forbidden_cross_refs") or []):
+            fd = str(rule.get("from_domain") or "")
+            dom = domains.get(fd)
+            if not dom:
+                continue
+            blob = json.dumps(dom, ensure_ascii=False)
+            for token in (rule.get("must_not_contain") or []):
+                if token and token in blob:
+                    cross_hits.append({"domain": fd, "token": token})
+
+    probe = (contract.get("probe_domain") or {}).get("domain")
+    probe_state = None
+    if probe and probe in report["domains"]:
+        pd = report["domains"][probe]
+        probe_state = {"domain": probe,
+                       "complete": not pd["missing_required"],
+                       "missing": pd["missing_required"]}
+
+    report["missing_required"] = missing_required
+    report["weak"] = weak
+    report["cross_domain_hits"] = cross_hits
+    report["probe_domain"] = probe_state
+    report["verdict"] = ("pass" if (not missing_required and not cross_hits)
+                         else ("cross_domain_contamination" if cross_hits
+                               else "missing_required_assets"))
+
+    # 落盘报告（供跨任务趋势看齐备度演进）
+    rel = (contract.get("report") or {}).get("rel") or ".workbuddy/domain_pack_report.json"
+    rp = os.path.join(w, rel)
+    os.makedirs(os.path.dirname(rp), exist_ok=True)
+    with open(rp, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    _trace(w, cfg, (contract.get("report") or {}).get("trace_event") or "domain_pack_check",
+           args.actor or "team-lead",
+           {"verdict": report["verdict"],
+            "missing_required": missing_required,
+            "cross_domain_hits": len(cross_hits),
+            "probe": probe_state,
+            "report": rp})
+
+    if cross_hits:
+        print(f"⛔ 跨域串味命中：{cross_hits}——某域引用了别域专有资产标识",
+              file=sys.stderr)
+        return 3
+    if missing_required:
+        print(f"⛔ {len(missing_required)} 个域存在未豁免的 required 缺口："
+              f"{missing_required}\n   处置：① 补齐该域资产（域档案是唯一源）"
+              f"② 或在 config/domain-profiles.yaml#domain_pack_exemptions 显式登记豁免"
+              f"（三要素齐备：domain / asset / reason）", file=sys.stderr)
+        return 1
+    if weak:
+        print(f"⚠ recommended 级缺口（不阻断）：{weak}")
+    return 0
+
+
 def cmd_stage(args):
     """v3.4.1 R11：主理人编排循环在每个闸切换时显式发 stage_enter/stage_exit。
 
@@ -8095,6 +8309,12 @@ def main():
                    help="存当前 deck_registry 为新基线（首次跑或主动重置）")
     _ws(p)
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("domain-pack-check",
+                       help="B17：域包五件套 machine-check（通用化齐备度判定）")
+    p.add_argument("--actor", default="vet-med-ppt-team-team-lead")
+    _ws(p)
+    p.set_defaults(func=cmd_domain_pack_check)
 
     p = sub.add_parser("trend",
                        help="B16：跨任务质量趋势聚合（trace gate 事件计数时间序列）")

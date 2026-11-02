@@ -1,0 +1,143 @@
+# domain-pack-contract.yaml —— 域包五件套契约（B17 · 升级方案 R6 通用化转型）
+#
+# 定位：**任何新域接入专家团时必须齐备的五类资产**的机器可判契约。
+#      它不新增域档案字段（域档案 schema 仍由 config/domain-profiles.yaml 定义），
+#      只规定「一个域包要算『接好了』，机器怎么判」。
+#
+# 为什么需要（真实病灶，非假设）：
+#   升级方案诊断 P-通1：包内三个域（animal-medicine / computing / business-training）
+#   的**完备度严重不齐**——animal-medicine 独占 4 个关键段
+#   （depth_scale_source / audience_profile / course_module_templates /
+#   knowledge_bases_scope），另两个域**一个都没有**。
+#   ⇒ 现在「域切换」只是换了几段提示词，**没有域级的完整资产包**：
+#   · 没有「深度标尺」⇒ 同一主题在两个域产出同样深度，无域差异化；
+#   · 没有「受众画像」⇒ 教学设计靠成员的通用方法论兜底；
+#   · 没有「课程模块模板」⇒ 页表结构靠临场发挥；
+#   · 没有「知识库范围」⇒ 检索范围靠 default。
+#   而这些缺口**此前无任何机器可查的地方**（体检[23] 只查「域专有词残留」，
+#   管的是「不该有的词」，管不了「该有的资产缺没缺」）。
+#
+# 与既有机制的关系（防重复造轮）：
+#   · 域档案字段本身 = config/domain-profiles.yaml（**唯一源**，本文件不复制）；
+#   · 「域专有词残留」巡检 = 体检[23]（config/hygiene-words.yaml 词表唯一源）；
+#   · 域档案的消费方 = scripts/assemble_domain_prompt.py + harness 域相关命令；
+#   · 本文件新增的唯一东西 = **「域包齐备度」的判据 + 五类资产的必备性分级**。
+#
+# ── 纪律（与全包一致）─────────────────────────────────────────────────
+#   ① 禁硬编码：五类资产的段名映射、必备级别、豁免规则全在本文件；代码只执行。
+#   ② 缺键即 fail-closed：contract 缺键 ⇒ 判「契约不完整」并阻断，**不补内置值**。
+#   ③ 只做**确定性判定**：键存在性 + 非空性 + 豁免登记；
+#      「这个域的内容够不够好」**不判**（语义判断归人，机器只执行）。
+#
+# 消费方：scripts/harness.py（domain-pack-check 子命令）
+#         scripts/ensure_settings.py（体检新增一项 · 域包齐备度巡检）
+#
+# ⚠ 本文件不得成为第二规则源——与 references/dual-loop-governance.md、
+#   config/domain-profiles.yaml、config/harness.yaml 冲突时，以那三者为准。
+
+version: "1.0.0"
+
+# ── 五类资产（域包齐备度的五个面）──────────────────────────────────────
+# 每类资产声明：① 承载段（域档案里的键，可多选——任一非空即算该面齐备）
+#              ② 必备级别（required = 缺即阻断 / recommended = 缺则提示）
+#              ③ 缺失时允许的豁免形态（哪些「如实登记的 null」不算缺失）
+assets:
+  - id: terminology
+    title: "词条与术语规范"
+    desc: "该域的专名/缩写/口径规范——课件用语一致性的唯一依据"
+    fields:
+      - "terminology"
+      - "glossary"
+    level: required
+    null_is_valid: false
+    note: "glossary 与 terminology 至少一项非空；空数组/空串不算齐备"
+
+  - id: knowledge_base
+    title: "知识库接入面"
+    desc: "该域从哪个知识库取料，以及没有时怎么办（**不许静默回落别的域**）"
+    fields:
+      - "knowledge_bases_ref"
+      - "knowledge_bases_scope"
+      - "knowledge_bases_note"
+    level: required
+    null_is_valid: false
+    note: "knowledge_bases_ref 必填（指向 config/external-tools.yaml 的段）；note 必填且须写明无库时怎么办——反静默回落的关键"
+
+  - id: depth_scale
+    title: "深度标尺"
+    desc: "该域内容深到哪一档（决定同一主题在不同域产出不同深度）"
+    fields:
+      - "depth_scale_source"
+    level: required
+    null_is_valid: false
+    note: "写明该域的权威标尺来源（标准/规范/官方文档族）+ 核心载体；无标尺的域 = 深度不可控"
+
+  - id: audience_profile
+    title: "受众画像"
+    desc: "该域面向谁、各层要什么、案例形态与互动形态"
+    fields:
+      - "audience_profile"
+    level: required
+    null_is_valid: false
+    note: "含 layer_notes / case_forms / interaction_forms 等；缺它则教学设计退化为通用方法论"
+
+  - id: module_templates
+    title: "课程模块模板"
+    desc: "该域的章节/模块结构模板（页表骨架从哪来）"
+    fields:
+      - "course_module_templates"
+    level: recommended
+    null_is_valid: false
+    note: "recommended 级（缺则提示不阻断）：非教学域（如企业内训）可无模块模板，但须在豁免登记里写明理由"
+
+# ── 豁免登记（某域某面缺失但有正当理由 ⇒ 必须显式登记，否则判缺）────────
+exemption:
+  # 豁免必须写：域 id / 资产 id / 理由（人读）——三缺一即豁免无效
+  required_fields: ["domain", "asset", "reason"]
+  # 登记位置：config/domain-profiles.yaml 顶层 `domain_pack_exemptions`
+  location: "config/domain-profiles.yaml#domain_pack_exemptions"
+  max_exemptions_per_domain: 3
+  # 豁免登记里**已声明的域清单**（唯一源）——执行器据此逐个字面量取豁免记录，
+  # 使读取构成 AST 可重建的**字面量下标链**（路径级证据判据）。
+  # ⚠ 禁在代码里硬编码域名（域清单会漂移 ⇒ 假绿）。
+  registered_domains:
+    - "computing"
+    - "business-training"
+  note: "同一域豁免数超上限 ⇒ 判「豁免滥用」并阻断（豁免不是万能钥匙）"
+
+# ── 试金石域（通用化验证的靶子）────────────────────────────────────────
+# 升级方案 R6 要求「以 computing 域为试金石验证即插即用」——
+# 即：一个**非动物医学**的域能否齐备五件套并通过 machine-check。
+probe_domain:
+  domain: "computing"
+  note: "computing 域是通用化的试金石——它证明五件套不是动物医学专属拼装"
+
+# ── 通用化哨兵升级（在体检[23] 之上加判据）────────────────────────────
+# 体检[23]（域专有词残留）管「不该有的词」；本段管「跨域串味」——
+# 即：某域的**专有资产**（如 depth_scale_source 引用的动物医学标准）
+# 是否被误用到了别的域。
+cross_domain_guard:
+  enabled: true
+  # 跨域串味判据：某域档案里引用了**另一个域**的专有资产标识 ⇒ 判串味
+  # （确定性判定：标识串精确匹配，不做语义判断）
+  forbidden_cross_refs:
+    - from_domain: "computing"
+      must_not_contain:
+        - "动物医学专业教学标准"
+        - "禽病防治技术"
+        - "法氏囊"
+        - "新城疫"
+    - from_domain: "business-training"
+      must_not_contain:
+        - "动物医学专业教学标准"
+        - "禽病防治技术"
+        - "法氏囊"
+        - "新城疫"
+  note: "哨兵只查**域档案文件内**的串味（机器可判）；散文里的举例不在此判"
+
+# ── 齐备度报告（落盘，供跨任务趋势看）──────────────────────────────────
+report:
+  rel: ".workbuddy/domain_pack_report.json"
+  trace_event: "domain_pack_check"
+  # 每个域的齐备度记分：齐备面数 / 总面数（recommended 级不计分）
+  score_basis: "required_only"

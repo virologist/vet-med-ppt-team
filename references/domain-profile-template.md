@@ -10,8 +10,20 @@
 > **知识覆盖深度无从谈起**——用户要"匹配的资深团队"，退化成兜底就不是。
 >
 > **用法**：主理人接到新主题 → 照本模板产出一个域档案 → 追加进 `config/domain-profiles.yaml#domains`
-> → `harness.py route --level <L> --domain <新id> --panel <id1,id2>` 即可生成匹配的专家面板。
+> → `harness.py domain-pack-check` **验齐备度** → `harness.py route --level <L> --domain <新id> --panel <id1,id2>`
+> 即可生成匹配的专家面板。
 > **目标：一个新主题 10 分钟内产出可用域档案。**
+>
+> ⚠ **五件套准入校验（v3.28.3 批次 B17 新增）**：本模板的字段虽全，但**「填了没有」此前无人查**
+> ——实测 animal-medicine 独占 4 个关键段（`depth_scale_source` / `audience_profile` /
+> `course_module_templates` / `knowledge_bases_scope`），另两个示例域**一个都没有**
+> ⇒ 「域切换」只是换了几段提示词，没有域级完整资产包。
+> 现由 `config/domain-pack-contract.yaml`（唯一源）+ `harness.py domain-pack-check` 机器判定：
+> **词条 / 知识库接入面 / 深度标尺 / 受众画像 / 模块模板**五类资产，
+> required 级缺任一 ⇒ rc=1 阻断；recommended 级缺 ⇒ 提示；
+> 形态差异导致的缺失**必须**在 `config/domain-profiles.yaml#domain_pack_exemptions`
+> 显式登记豁免（三要素齐备：域 / 资产 / 理由）。
+> 详见 `references/domain-generalization.md`。
 >
 > ⚠ **字段纪律**（`config/domain-profiles.yaml` 是唯一源，本模板**不新增字段**）：
 > 下面每个字段名都**真实存在于** `config/domain-profiles.yaml#domains[].<字段>`；
