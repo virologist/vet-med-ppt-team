@@ -59,6 +59,46 @@ def _declared_events_from_yaml():
 DECLARED_EVENTS = tuple(_declared_events_from_yaml())
 
 
+def _pkg_changed_files():
+    """取包内当前 git 改动文件（绝对路径）——batch-close 的声明集需覆盖它。"""
+    import subprocess as _sp
+    try:
+        p = _sp.run(["git", "-C", PKG, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=20)
+    except Exception:
+        return []
+    if p.returncode != 0:
+        return []
+    files = []
+    for line in p.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rest = line[3:].strip()
+        if " -> " in rest:
+            rest = rest.split(" -> ")[-1]
+        files.append(os.path.join(PKG, rest.strip()))
+    return files
+
+
+def _last_batch_id(w):
+    """取最近一次 batch-open 产生的批次 id（B13 契约触发用）。
+
+    ⚠ Loop A 状态是**包级**的（state_file 恒为 <包>/.workbuddy/loopA_state.json），
+      **不随 --workspace 变** ⇒ 不能去临时 workspace 里找。
+    """
+    p = os.path.join(PKG, ".workbuddy", "loopA_state.json")
+    if not os.path.exists(p):
+        return ""
+    try:
+        st = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return ""
+    batches = st.get("batches") or {}
+    if not batches:
+        return ""
+    return sorted(batches.keys())[-1]
+
+
 def run(args, cwd=None):
     p = subprocess.run([sys.executable, HARNESS] + args, capture_output=True, text=True, cwd=cwd)
     return p.returncode, p.stdout, p.stderr
@@ -179,6 +219,44 @@ def test_声明的全部事件都有代码产出():
         _make_deck(gate_deck)
         run(["gate", "--deck", gate_deck, "--hours", "1", "--level", "P0", "--no-snap",
              "--workspace", w])
+        # ── B13/B14/B16 补触发（声明了却没在本用例产出 ⇒ 契约测试红）──────────
+        # B13：批次动作与缺陷回流入账本
+        # ⚠ 声明文件集必须**覆盖当前包内全部 git 改动**——batch-close 按
+        #   `git status --porcelain` 算实际改动集（loop_a.patch_discipline=minimal），
+        #   声明不全 ⇒ 判 undeclared_changes 拒绝收批 ⇒ batch_close 事件不落账本。
+        #   故此处动态取当前改动集声明（不是硬编码清单——硬编码会随工作区漂移而失效）。
+        _changed = _pkg_changed_files()
+        _bo = run(["loop", "batch-open", "--loop", "a", "--actor", "team-lead",
+                   "--note", "契约测试批次",
+                   "--files", ",".join(_changed) if _changed else "scripts/harness.py",
+                   "--workspace", w])
+        try:
+            _bid = str((json.loads(_bo[1]).get("batch") or {}).get("id") or "")
+        except Exception:
+            _bid = ""
+        # 回归清单必须**跑齐** loop_a.regression_required 三项，否则 batch-close
+        # 判 regression_incomplete 拒绝收批 ⇒ batch_close 事件不落账本。
+        run(["loop", "batch-close", "--loop", "a", "--actor", "team-lead",
+             "--batch", _bid, "--confirmed",
+             "--regression", "ensure_settings,test_harness,test_five_gates",
+             "--workspace", w])
+        run(["loop", "reflow", "--loop", "a", "--actor", "team-lead",
+             "--file", os.path.join(PKG, "references", "defect-reflow.yaml"),
+             "--workspace", w])
+        # B14：成员写权限校验（放行路径也要产事件）
+        run(["member-write-check", "--agent", "verifier",
+             "--path", os.path.join(w, "reports", "x.md"), "--workspace", w])
+        # B16：质量闭环三件套
+        _cases_dir = os.path.join(w, ".workbuddy", "cases")
+        os.makedirs(_cases_dir, exist_ok=True)
+        with open(os.path.join(_cases_dir, "cases_library.json"), "w", encoding="utf-8") as f:
+            json.dump({"cases": [{"case_id": "C-1", "disease_name": "案例",
+                                  "title": "常规背景案例"}]}, f, ensure_ascii=False)
+        run(["verify-tier", "--workspace", w])
+        run(["sediment", "--target", "domain_profile",
+             "--evidence-ref", "config/domain-profiles.yaml#demo",
+             "--summary", "契约测试沉淀", "--workspace", w])
+        run(["trend", "--workspace", w])
         # error：顶层异常出口（经 run_command 注入异常——异常路径不能只藏在 __main__ 里）
         sys.path.insert(0, HERE)
         import harness as _h

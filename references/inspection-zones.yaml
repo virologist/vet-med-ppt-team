@@ -1,111 +1,76 @@
-# references/inspection-zones.yaml — 免检区（块级消费段）登记表
-#
-# ═══════════════════════════════════════════════════════════════════════
-# ⚠ 本文件是**真源的元登记**，不是真源：真源永远是 `config/*.yaml`。
-# ⚠ `key_count` 与 `keys_sha256` **不要手写**——由
-#     `python3 scripts/ensure_settings.py --dump-block-segments` 生成。
-# ⚠ 段键必须是 `<config 文件名>#<段前缀>`（ADR-6）：同名段跨文件是**不同的段**
-#     （`domain-profiles.yaml#domains` ≠ `domain_config.yaml#domains`），
-#     合并登记会让「新增键处置规则」无法落地。
-#
-# ── 这是什么 ────────────────────────────────────────────────────────
-# 第 18 项（死配置巡检）的静态判据对「父级被代码整块取走」的键**无法逐键确认**
-# ⇒ 这些键落在**免检区**里（当前：39 段 / 1514 键，其中 128 键的末段键名
-# 连同名都没撞上 ⇒ 属「待人工定性候选」）。免检区的键**不是缺陷**——
-# 它们按段被消费，只是静态判据看不到。
-# 本登记表把「免检区」从**一个总数**变成**可行动清单**：
-#   · `consumer`       —— 这段由谁消费（脚本 / 会话层 / 主理人）
-#   · `disposition`    —— 这段里**新增键**该怎么处置
-#   · `keys_sha256`    —— 段内叶子**身份集合**的指纹（**集合相等**语义）
-#
-# ⚠ **`digest_scheme` 字段（顶层）—— 指纹口径声明**：
-#   · `indexed-set-v2` —— **当前口径**：对「**带下标 + 带值**的叶子**身份集合**」
-#     求指纹。身份串形态 = `<路径>=<值的 repr>`（如
-#     `domains[0].expert_panel[2].id='avian_virologist'`）。
-#     ⇒ **带下标**：元素身份可辨（换序 ⇒ 下标变 ⇒ 身份变；
-#       新增「内容重复」的元素 ⇒ 下标变 ⇒ 身份变）。
-#     ⇒ **带值**：内容变更可辨（改 id 的**值** ⇒ 身份变）。
-#     ⚠ 实测证明：**只带路径**的指纹（哪怕带下标）**检测不到值变更**
-#       （改值时路径一个字都没变）⇒ 值必须进身份，否则核心判据是假的。
-#   · `folded-multiset-v1` —— **旧口径**（缺省）：对「**折叠路径多重集**」求指纹。
-#     ⚠ 旧口径**漏检**三类改动（折叠后路径集不变 ⇒ 指纹不变 ⇒ 假阴性）：
-#       ① 元素**改内容**（值变）；② 元素**换序**；③ 新增**内容重复**的元素。
-#     ⇒ 这正是本次升级要修的缺陷。
-#   ⇒ **缺省 = 旧口径** ⇒ 登记表若**未**声明本字段，守卫按旧口径解释
-#     ⇒ **旧口径登记表仍能过**（向后兼容，不会被误判成「脱节」）。
-#   ⇒ 升级口径后**必须**重新生成 `keys_sha256`（39 段的值全部会变）。
-#
-# ⚠ **`key_count` 与 `keys_sha256` 必须同口径**：
-#   `key_count` = **带下标**叶子身份**去重后**的数量（与 `indexed-set-v2` 一致）
-#   ⇒ 否则「只改一个字段就蒙混过关」这条交叉核对会出现口径缺口
-#   （R3 与 R4 互相打架 ⇒ 误以为有双保险）。
-#   ⚠ 实测：本次升级后 39 段的 `key_count` **全部不变**（路径数没变，
-#     只是身份串多了「=值」部分 ⇒ 数量不变）⇒ 旧 `key_count` 值继续有效。
-#
-# ⚠ **`leaf_unused` 字段的口径**（本次修复后已变，看清楚再读）：
-#   `leaf_unused` = 该段里「**末段键名在代码中 0 出现**」的键数
-#   ⇒ 即「**待人工定性候选**」的个数（不是段的总键数）。
-#   ⚠ **人读型登记优先于块级证据**（判定顺序修复后）：
-#     「已登记为人读型」**且**「所在段被整块读取」的键 ⇒ 计 `textual`，
-#     **不**计入 `leaf_unused`（人读型 ≠ 待定性候选）⇒ 但**仍保留**在
-#     本段的 `keys_sha256` 覆盖范围内（段级增量守卫 R3 不被削弱）。
-#   ⇒ 因此本次修复让 `leaf_unused` 合计从 211 降到 145（**66 键**是
-#     「早被登记定性、却被判定顺序短路成假候选」的那一批）。
-#   ⚠ **AST 读取集补第 ④ 种形态后 `leaf_unused` 合计从 145 降到 128**
-#     （**17 个键路径**是「键名藏在**元组/列表/集合字面量**里 ⇒ AST 读取集
-#     看不见 ⇒ 被**误列**为待人工定性候选」的**假阳性**；
-#     典型：`domain-profiles.yaml#domains[].audience_profile.layer_notes` 等
-#     —— 它们**确实**被 `assemble_domain_prompt.py` 真实渲染进提示词）。
-#     ⇒ 该次修复**只**动 `leaf_unused`/`leaf_weak` 两个**观测**字段；
-#       `key_count` / `keys_sha256` **逐段不变**（段内键集合没变），
-#       `dead` 判定口径**未动**（死键数仍为 0）。
-#   ⚠ **带下标 + 带值改造后 `leaf_unused` 合计仍是 145**（口径未变：仍按
-#     「末段键名在代码中 0 出现」计，与元素下标、与值都无关）。
-#
-# ⚠ **`leaf_weak` 字段的口径**（与 `leaf_unused` **精确对位**，两者互斥且穷尽）：
-#   `leaf_weak` = 该段里「**末段键名有出现（撞名）**，但**没有路径级证据**」
-#   的键数 —— 即「**弱证据**」（v3.23.0 F1 明写：弱证据 = 仅末段同名撞车，
-#   **不是**路径级证据）。
-#   ⚠ **为什么需要这个字段（真实判据洞，已实测复现）**：
-#     `weak` 桶因「块级证据」已被前置短路而**永不触发**（真包实测 `weak=0`）
-#     ⇒ 这批键被「块级证据」层接管 ⇒ **既不判死、也不进 `leaf_unused`、
-#       也不进 `weak` 桶** ⇒ **无任何守卫覆盖**（实测 **1029 键 / 68%**）。
-#     ⇒ 一个末段名叫 `note` / `description` / `enabled` 的**新键**，加进
-#       已登记的免检区段里，会**静默绿灯**（假绿）。
-#   ⇒ 修法：**不判死、不进人工定性范围**（这批键大概率确实有人读，
-#     在段内被整块消费）⇒ 只是**登记可见** + 守卫 R8 逐段核对。
-#   ⚠ **不得**因此改动 `dead` 判定口径（本字段是**纯观测**）。
-#   ⚠ 三个桶的口径互斥且穷尽（免检区 1514 键）：
-#     人读型登记 357 · 待人工定性候选 128（`leaf_unused`）· 弱证据 1029（`leaf_weak`）
-#     ⇒ 128 + 1029 = 1157 = 1514 − 357（**恒等式**，可当交叉核对用）。
-#
-# ── 守卫（`scripts/test_dead_config_disposition.py::TestInspectionZoneRegistry`）──
-#   R1  文件存在且含全部段（缺即 FAIL——它是必交付物）
-#   R2  登记的段在实时 config 中仍存在
-#   R3  实时叶子身份集合 digest == 登记 `keys_sha256`（段内增/删/改名任一键 ⇒ 判红）
-#       ⚠ 按顶层 `digest_scheme` 声明的口径计算「实时 digest」
-#         （缺省 = 旧口径 ⇒ 向后兼容）
-#   R4  实时 `key_count` == 登记 `key_count`（与 R3 交叉核对，**同口径**）
-#   R5  实时段集合 == 登记段集合（双向：新段未登记 / 登记了不存在的段 ⇒ 判红）
-#   R6  `consumer` / `disposition` ∈ 枚举
-#   R7  实时 `leaf_unused` == 登记 `leaf_unused`（逐段；「待人工定性候选」桶的大小）
-#   R8  实时 `leaf_weak`   == 登记 `leaf_weak`  （逐段；「弱证据洞」的大小）
-#   ⚠ R7 / R8 是**新增**判据（R1–R6 的编号与语义**零改动**）
-#     ⇒ 登记表**缺** `leaf_weak` 字段 ⇒ R8 必判红 ⇒ **必须**升级本表。
-#
-# ── 处置规则三选一 ─────────────────────────────────────────────────
-#   新增键须登记 —— 该键属声明层，由会话层/主理人消费；新增时须在此登记
-#   新增键须接线 —— 该键应有代码读取点；新增时须同步接线（否则第 18 项会判死）
-#   禁止新增（冻结）—— 该段是判据表/白名单，结构固定；改动须走专门评审
-#
-# ── 版本绑定 ───────────────────────────────────────────────────────
-# 本表与 `config/*.yaml` 的**当前内容**绑定。包版本升级时必须重新生成
-# `keys_sha256`（否则 R3 判红——这是刻意的：升级必须重新审视免检区）。
-# ═══════════════════════════════════════════════════════════════════════
-
-digest_scheme: "indexed-set-v2"
-version: "3.28.3"
+digest_scheme: indexed-set-v2
+version: 3.28.3
 segments:
+- id: verification-tiers.yaml#medium_risk_defaults
+  file: verification-tiers.yaml
+  prefix: medium_risk_defaults
+  key_count: 1
+  keys_sha256: c687f75955aeb4de5cc92ba366d37310d0afe34c
+  leaf_unused: 0
+  leaf_weak: 1
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 未命中高危规则时的默认等级（中危）。harness verify-tier 块级消费。
+- id: verification-tiers.yaml#low_risk_explicit
+  file: verification-tiers.yaml
+  prefix: low_risk_explicit
+  key_count: 2
+  keys_sha256: 00df14fd01adbe11f9dcc2d02a7c4575e2b33588
+  leaf_unused: 0
+  leaf_weak: 2
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 显式低危登记字段（risk_tier=low）。harness verify-tier 块级消费。
+- id: verification-tiers.yaml#tier_intensity
+  file: verification-tiers.yaml
+  prefix: tier_intensity
+  key_count: 3
+  keys_sha256: 78ec5b6b417dea35bc6a76da89e66124add4a2fd
+  leaf_unused: 3
+  leaf_weak: 0
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 风险等级→检验强度映射（high→full/medium→sampled/low→deferred）。harness verify-tier 块级消费。
+- id: verification-tiers.yaml#high_risk_rules
+  file: verification-tiers.yaml
+  prefix: high_risk_rules
+  key_count: 16
+  keys_sha256: aab9e7477d4fd01617a84c6e61245c69b3af8577
+  leaf_unused: 0
+  leaf_weak: 16
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 高危判定规则（关键词/字段/文本字段）。harness verify-tier 块级消费。
+- id: verification-tiers.yaml#deferred_policy
+  file: verification-tiers.yaml
+  prefix: deferred_policy
+  key_count: 4
+  keys_sha256: d99bb7861c44cae396b0b650b86f1e91a2beeda9
+  leaf_unused: 0
+  leaf_weak: 4
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 低危延后策略（待办登记必填 + 占比上限 + 超限阻断）。harness verify-tier 块级消费。
+- id: verification-tiers.yaml#sedimentation
+  file: verification-tiers.yaml
+  prefix: sedimentation
+  key_count: 11
+  keys_sha256: 46085b7196c80aa897a45f6ff89f23764656f4cc
+  leaf_unused: 3
+  leaf_weak: 8
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 沉淀动作契约（证据引用必填 + 三个回流目标）。harness sediment 块级消费。
+- id: verification-tiers.yaml#enums
+  file: verification-tiers.yaml
+  prefix: enums
+  key_count: 8
+  keys_sha256: 1e841c011bba2bcfef5675059b211cd37050b066
+  leaf_unused: 0
+  leaf_weak: 8
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 等级/强度枚举（禁硬编码依据）。harness _load_verification_tiers 块级消费。
 - id: responsibility-matrix.yaml#capabilities
   file: responsibility-matrix.yaml
   prefix: capabilities
@@ -113,9 +78,9 @@ segments:
   keys_sha256: ab4538682a063d743da0fcb2a320a52ca5c30873
   leaf_unused: 0
   leaf_weak: 10
-  consumer: "脚本"
-  disposition: "新增键须登记"
-  note: "职责矩阵（own/consult 三值语义）。member-write-check 块级消费：构建 known_agents 一致性闸。"
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 职责矩阵（own/consult 三值语义）。member-write-check 块级消费：构建 known_agents 一致性闸。
 - id: responsibility-matrix.yaml#escalation
   file: responsibility-matrix.yaml
   prefix: escalation
@@ -123,9 +88,9 @@ segments:
   keys_sha256: 0e22a875756f8dc15359247de6883e1ea80a311b
   leaf_unused: 0
   leaf_weak: 3
-  consumer: "脚本"
-  disposition: "新增键须登记"
-  note: "越级上报链（conflict/science_safety/platform）。member-write-check 拒绝时输出。"
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 越级上报链（conflict/science_safety/platform）。member-write-check 拒绝时输出。
 - id: responsibility-matrix.yaml#audit
   file: responsibility-matrix.yaml
   prefix: audit
@@ -133,9 +98,9 @@ segments:
   keys_sha256: 35f8891eab3bdf4d2b46158e124933092db8ae44
   leaf_unused: 0
   leaf_weak: 2
-  consumer: "脚本"
-  disposition: "新增键须登记"
-  note: "L3 审计对账声明。member-write-check 自校验 record_on 含本动作事件名。"
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: L3 审计对账声明。member-write-check 自校验 record_on 含本动作事件名。
 - id: responsibility-matrix.yaml#write_scope
   file: responsibility-matrix.yaml
   prefix: write_scope
@@ -143,9 +108,9 @@ segments:
   keys_sha256: c27af8f91c0c6d3ef04c61ee02a918934b2097a5
   leaf_unused: 18
   leaf_weak: 0
-  consumer: "脚本"
-  disposition: "新增键须登记"
-  note: "分级权限 L2 写权限面（B14 升级方案 R2）：值为路径模式列表（<任务>/<包> 占位）；member-write-check 写前校验整块消费。"
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 分级权限 L2 写权限面（B14 升级方案 R2）：值为路径模式列表（<任务>/<包> 占位）；member-write-check 写前校验整块消费。
 - id: domain-profiles.yaml#domains
   file: domain-profiles.yaml
   prefix: domains
@@ -215,7 +180,9 @@ segments:
   leaf_weak: 31
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。⚠ v3.29.0 C4·键B 接线：`is_user_default` 从「待人工定性候选」转为「弱证据」——它现由 harness.py::_is_user_default_kb 读取（快照层稳定排序）与 assemble_domain_prompt.py::_kb_is_user_default（渲染层标注），两条消费路径均为**真读**（能红的红证明见 scripts/test_c4_key_wiring.py T7/T9）。
+  note: Ima 知识库清单（owner_scope/replaceable/share_url）。坍缩快照按域取用。⚠ v3.29.0 C4·键B 接线：`is_user_default`
+    从「待人工定性候选」转为「弱证据」——它现由 harness.py::_is_user_default_kb 读取（快照层稳定排序）与 assemble_domain_prompt.py::_kb_is_user_default（渲染层标注），两条消费路径均为**真读**（能红的红证明见
+    scripts/test_c4_key_wiring.py T7/T9）。
 - id: harness.yaml#loop_b
   file: harness.yaml
   prefix: loop_b
@@ -265,7 +232,10 @@ segments:
   leaf_weak: 8
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。⚠ v3.29.0：本段的 `domains[0..3].active`（C3 待接线键）由「待人工定性候选」转入**弱证据**桶——**纯属键名撞车**：harness.py::_on_profile_missing_policy 读的 `active` 是 `domain-profiles.yaml#fallback.active` 开关，**不是**本段的 active。它**不构成**本段的接线（无路径级证据），C3 仍是待办。
+  note: 域级配置（域 id → 专属参数）。与 domain-profiles.yaml#domains **同名但不同语义**（ADR-6）。⚠ v3.29.0：本段的
+    `domains[0..3].active`（C3 待接线键）由「待人工定性候选」转入**弱证据**桶——**纯属键名撞车**：harness.py::_on_profile_missing_policy
+    读的 `active` 是 `domain-profiles.yaml#fallback.active` 开关，**不是**本段的 active。它**不构成**本段的接线（无路径级证据），C3
+    仍是待办。
 - id: harness.yaml#stages
   file: harness.yaml
   prefix: stages
@@ -289,8 +259,8 @@ segments:
 - id: harness.yaml#observability
   file: harness.yaml
   prefix: observability
-  key_count: 18
-  keys_sha256: 8149a70952a07f807e612614c000608e35e7bcc9
+  key_count: 21
+  keys_sha256: bc8caa28347bd6322acafded6c30b6c46b4e5230
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本+会话层+主理人
@@ -309,10 +279,10 @@ segments:
 - id: harness.yaml#loop_a
   file: harness.yaml
   prefix: loop_a
-  key_count: 16
-  keys_sha256: d204e0bcb2ef12836475c9a6528bb421abbfa5e2
+  key_count: 17
+  keys_sha256: cbd4cd7c2e67027b46ae13aa5a0cd3fa13df9901
   leaf_unused: 0
-  leaf_weak: 15
+  leaf_weak: 16
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。
@@ -335,7 +305,13 @@ segments:
   leaf_weak: 8
   consumer: 脚本+会话层+主理人
   disposition: 新增键须登记
-  note: 域档案缺失时的通用兜底渲染块。装配器回落读取。⚠ v3.29.0 C4·键A 接线：`on_profile_missing` 已取得**路径级证据**——现由 harness.py::_on_profile_missing_policy 读取并决定「处置文案 + 退出码」（四个调用点：cmd_route / cmd_domain / cmd_collapse show|confirm；能红的红证明见 scripts/test_c4_key_wiring.py T2/T3/T4/T6），不再是 `harness.py` print 里的第二份硬编码副本。⚠ v3.28.2 实测订正（曾误判「generic_* 三键未接线」）：三键经**跨函数局部变量传递**被真实消费——main():1080 `fallback = _fallback_block(profiles)` → :1135 传入 build_domain_section → _render_generic() 逐键读取（:287/:297/:306），无坍缩装配产物逐字投递三段（端到端实测）；AST 静态判据对跨函数数据流失明故显示为弱证据。守卫：scripts/test_generic_fallback_wired.py（4 例：端到端值级断言 + 断链/删消费变异 + config 缺键优雅降级）。
+  note: 域档案缺失时的通用兜底渲染块。装配器回落读取。⚠ v3.29.0 C4·键A 接线：`on_profile_missing` 已取得**路径级证据**——现由
+    harness.py::_on_profile_missing_policy 读取并决定「处置文案 + 退出码」（四个调用点：cmd_route / cmd_domain
+    / cmd_collapse show|confirm；能红的红证明见 scripts/test_c4_key_wiring.py T2/T3/T4/T6），不再是
+    `harness.py` print 里的第二份硬编码副本。⚠ v3.28.2 实测订正（曾误判「generic_* 三键未接线」）：三键经**跨函数局部变量传递**被真实消费——main():1080
+    `fallback = _fallback_block(profiles)` → :1135 传入 build_domain_section → _render_generic()
+    逐键读取（:287/:297/:306），无坍缩装配产物逐字投递三段（端到端实测）；AST 静态判据对跨函数数据流失明故显示为弱证据。守卫：scripts/test_generic_fallback_wired.py（4
+    例：端到端值级断言 + 断链/删消费变异 + config 缺键优雅降级）。
 - id: harness.yaml#collapse
   file: harness.yaml
   prefix: collapse

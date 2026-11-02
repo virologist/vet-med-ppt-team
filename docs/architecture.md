@@ -41,7 +41,7 @@
 
 <!-- STAGE_MIRROR_BEGIN -->
 stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
-stage 1 | 闸2 设计（证据先行→蓝图·串行） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: no
+stage 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
 stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
 stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
 stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
@@ -52,15 +52,16 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 | 闸 | 名称 | 干活的人 | 是否并行 | 门禁 | 为什么要这么排 |
 |---|---|---|---|---|---|
 | 0 | 闸1 任务冻结 | 主理人（无常驻成员） | — | `user_confirm` | 澄清 + 判级 + 工具探针 + 页数口径与 `--hours` 冻结；用户未确认不得推进 |
-| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 ∥ 严真奥 | **串行** | `user_confirm` | 证据先行→蓝图：蓝图的二八难点清单依赖证据包的「易误解」标注，存在真实数据依赖 ⇒ 串行；并行会必然回问 |
+| 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | 苏学法 ∥ 严真奥 | **并行** | `user_confirm` | 教学蓝图与学科底稿是两条**独立**子产物（前者定教学结构，后者定事实与证据），无数据依赖 ⇒ 可并行；冲突按 `responsibility-matrix#escalation.conflict` 交 team-lead 仲裁 |
 | 2 | 闸3 成稿（页表∥版式） | 苏学法 ∥ 屠明熙 | **并行** | `script_check` | 教学列与版式列是同一页表的两列，不是两份文档；并行产出后由主理人合并，机器校验取代人工确认门 |
 | 3 | 闸4 交付（门禁+独立验证） | 都衡言（叠加机器门禁） | — | `gate_script+verifier` | 门禁本质是脚本（`harness.py gate`），verifier 独立复判防自评失真；主理人自评不作放行依据 |
 | 4 | 闸4.5 案例三源核验 | 严真奥 ∥ 都衡言 | **并行** | `three_source_check` | 严真奥补证据、都衡言独立复算，抽 `cases_library` 10% 未核验案例重跑 |
 
 ### 并行 / 串行的判据（易错点）
 
-- **并行判据 = `harness.yaml#stages[*].parallel` 显式声明**（成员数仅在未声明时回退推导）：stage 2 / 4 → 并行开工；
-  stage 1 为**串行**（v3.17.0 批次 B 伪并行修正：蓝图的二八难点清单依赖证据包的「易误解」标注，存在真实数据依赖 ⇒ 并行必然回问）；
+- **并行判据 = `harness.yaml#stages[*].parallel` 显式声明**（成员数仅在未声明时回退推导）：stage 1 / 2 / 4 → 并行开工；
+  stage 1 于 **B15 批次**由串行改为**并行 + 仲裁**——教学蓝图与学科底稿是两条独立子产物，
+  冲突不靠「预先串行」规避，而靠 `responsibility-matrix#escalation.conflict` 的仲裁链显式收敛；
   stage 0 无成员、stage 3 单成员 → 不并行（stage 3 是"机器门禁 ∥ 人复判"的双轨，不是成员间并行）。
 - **旧文档把阶段 3 写成「苏学法→屠明熙 串行」是错的**：二者是页表的两列作者（并行），
   串行描述会让屠明熙空等苏学法整份产出，也是历史上页表被拆成两份文档的成因之一。

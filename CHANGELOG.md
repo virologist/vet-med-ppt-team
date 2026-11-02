@@ -83,6 +83,73 @@ IMA 7 库恢复后的实际可用性（需凭据）。
   ⚠ 环境注意事项：`source ~/.zshrc` 后 PATH 切至 miniconda python 3.14，其 argparse
   对全角字符崩（0xff09）——带环境变量跑包脚本须显式用 WorkBuddy 自带 python 3.13。
 
+### 四.6、3.28.3 后续批次：升级方案 P4 质量闭环（2026-11-02 · B16）
+
+> 升级方案 P1–P3（B13/B14/B15）已落地；本批落地 **P4 质量闭环**，
+> P5（通用化转型）待续。
+
+- **B16 · 质量闭环三件套**（升级方案 R5）：
+  - **验证风险分级**（`harness.py verify-tier` + `config/verification-tiers.yaml` 唯一源）：
+    闸4.5 三源核验此前对所有未核验案例一视同仁按 `sample_rate` 抽样 ⇒
+    **法定一类疫病 / 生物安全 / 人畜共患等高危案例也只查 10%**（风险与检验强度不匹配）。
+    新机制按等级映射检验强度：high→**全检** / medium→抽检 / low→**登记待办**
+    （低危不静默丢弃，写入 `.workbuddy/verification_backlog.json`）；
+    deferred 占比超上限 ⇒ **rc=3 阻断**，不静默降级为 sampled。
+    ⚠ 未重复造轮：三源抽检的 `sample_rate`/`sample_seed` 唯一源仍在
+    `config/domain_config.yaml#three_source_check`，本批只新增「谁该全检」的判定输入。
+  - **跨任务质量趋势**（`harness.py trend`）：补上数据面缺口——
+    `gate` trace 事件此前只记 exit/meaning **不记质量计数** ⇒ 跨任务趋势无从聚合
+    （`eval` 只做同任务 A/B diff）。现 gate 事件带 `counts`（P0/P1/P2/P3/覆盖率/建议级数），
+    trend 聚合为时间序列；**counts 缺失的事件计入 without_counts，不当作 0**
+    （把无数据当 0 = 假装质量为零，是假的趋势）。
+  - **闸4.5 之后的可选沉淀**（`harness.py sediment`）：把本轮新知带
+    `evidence_ref` 回流域档案 / 病例册 / 知识库引用，让专家团「越用越准」。
+    ⚠ **不占 stage 号**：既有契约锁死 stages 恰好 0–4（体检[24] + `test_five_gates::T2`
+    拒绝 `--stage 5`）⇒ 沉淀做成 stage 4 之后的可选动作，而非第六级闸。
+    `--evidence-ref` 必填且须匹配 pattern（无证据的沉淀 = 新增幻觉源）。
+
+- **B16b · 工具固化（本批发现的真实缺口）**：免检区登记表机算字段刷新器此前是
+  **一次性 /tmp 脚本**——跨会话即失，每次改 config 键值都要重手搓一遍，
+  且自算口径可能与守卫口径不同（曾出现「我自算 ≠ 守卫」的假不一致）。
+  现固化进包内 `scripts/sync_zone_registry.py`，**复用守卫同一套口径函数**
+  （`ensure_settings.segments_digest / segment_digest_inputs / segment_key_count`）
+  ⇒ 口径必然一致；含人工字段零漂移断言（越界自动回滚）+ 幂等 + 预览模式。
+
+- **幽灵版本号二次复发（已纠偏）**：B13/B14/B15 三批的代码注释预写了
+  **从未发布的「v3.28.4」**（harness.py 4 处 + 3 个测试文件）——
+  与 B10 已纠偏过的同款问题**第二次复发**（说明「批次写注释时预写目标版本号」
+  是系统性习惯，不是偶发）。全部纠偏为「3.28.3 批次 B13/B14/B15/B16」。
+
+- **缺陷回流台账 7 条全绿**：新增 RF-20261102-006（observability 事件声明变更）
+  与 RF-20261102-007（同步器固化）；同时因 harness.yaml 变更导致 RF-001/002/003
+  的 rule_hash_after 陈旧 → 按机制设计同步为当前哈希（台账「防事后改账」按设计报警）。
+
+- **Loop A scope 结构性缺口闭合（本批发现）**：`docs/architecture.md` 是
+  `config/guard.yaml#guarded_docs` 的受守卫文档（其阶段镜像块须与
+  `harness.yaml#stages` 逐项一致，test_arch_drift T9 强制），
+  但它**不在 `loop_a.scope` 白名单** ⇒ 改 `#stages` 后「改得了真源却改不了镜像」
+  ＝**无解漂移**。B15 即因此带红提交（4 处镜像漏改）。
+  现按 B6a/W1 同款先例，把该文件**精确单文件**纳入 scope
+  （**不加整个 docs/ 目录**——目录内有历史诊断报告，不该被 Loop A 触及）。
+
+- **B15 遗留镜像源补齐（本批发现并闭合）**：B15 把闸2 由串行改并行时，
+  **只改了 yaml 与一个镜像源**，漏掉另外 **3 处受守卫文档**镜像
+  （`docs/architecture.md` 镜像块 + 人读视图表 + 判据说明 /
+  `references/sop-stages.md` 镜像块 / `references/harness-engine.md` 镜像块 /
+  `agents/vet-med-ppt-team-team-lead.md` 镜像块）。
+  守卫 `test_arch_drift` 因此在 B15 收批时**报红 4 例**——但 B15 收批时该套件
+  未进回归清单（与 B13 同型漏项），于是**带红提交**。
+  本批全量回归抓出后：4 处镜像 + 2 处反例构造（anti_A/anti_D 用的是旧口径文本）
+  全部同步为现行口径 ⇒ `test_arch_drift` 40 passed。
+  ⚠ **规律（升格为纪律）**：`config/harness.yaml#stages` 变更必须同步
+  **`config/guard.yaml#guarded_docs` 清单里全部文档**的镜像块
+  ——共 **4 份文档**，漏一份就红；且 `test_arch_drift` 必须进**每一批**的回归清单。
+
+- **登记表同步**：verification-tiers.yaml 新增 7 段全部登记免检区
+  （tier_intensity / high_risk_rules / medium_risk_defaults / low_risk_explicit /
+  deferred_policy / sedimentation / enums），
+  「改 config 增删键必刷登记表」教训第四次正确执行。
+
 ### 五、本轮自己踩到并修掉的坑（如实记录）
 
 1. **B2 回归清单漏项**：新增 `rationale_quality` 判据后没跑 `test_collapse_domain_render`

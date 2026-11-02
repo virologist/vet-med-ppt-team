@@ -8,7 +8,7 @@
      config/harness.yaml#stages 逐项比对——改 yaml#stages 必须同步本块，由守卫强制、不靠自觉。 -->
 <!-- STAGE_MIRROR_BEGIN -->
 stage 0 | 闸1 任务冻结 | members: - | gate: user_confirm | parallel: no
-stage 1 | 闸2 设计（证据先行→蓝图·串行） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: no
+stage 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | members: pedagogy-architect, dvm-content-expert | gate: user_confirm | parallel: yes
 stage 2 | 闸3 成稿（页表∥版式） | members: pedagogy-architect, visual-slide-designer | gate: script_check | parallel: yes
 stage 3 | 闸4 交付（门禁+独立验证） | members: verifier | gate: gate_script+verifier | parallel: no
 stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, verifier | gate: three_source_check | parallel: yes
@@ -274,6 +274,48 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 ① `task_id` + `workflow` ② `current_stage` + `next_action` ③ 本阶段关键决策摘要（≤3 行）④ 涉及文件的绝对路径清单。
 
 冷启动恢复 = `Read task_state.json` 最小集 + `Read` 本文件对应闸的章节 + `harness.py trace report`，**禁止重读全部历史上下文**。
+
+## 闸 4.5 之后｜沉淀（可选动作 · B16 新增 · **不占 stage 号**）
+
+> **为什么不是 stage 5**：既有契约锁死 `config/harness.yaml#stages` **恰好 0–4**
+> （体检[24]「阶段顺序一致 5 级」+ `test_five_gates::T2` 拒绝 `--stage 5`）。
+> 加 stage 键会与既有守卫直接冲突 ⇒ 沉淀做成**不占 stage 号的可选动作**，
+> 由 `harness.py sediment` 显式调用。
+
+**为什么需要**：闸4.5 之后流程就断了——本轮任务产出的**新知**（域要点 / 新案例 /
+知识库补充）没有任何回流路径 ⇒ 专家团每次都从零开始，「越用越准」是空话。
+
+**执行**（主理人在闸4.5 结论出来后、交付确认前执行）：
+
+```bash
+python3 "<专家包>/scripts/harness.py" sediment \
+  --target domain_profile \              # domain_profile | case_library | knowledge_base
+  --evidence-ref "config/domain-profiles.yaml#avian" \   # 必填：证据引用（可溯源）
+  --summary "本轮沉淀：<要点摘要>已回流域档案" \
+  --workspace <课程工作区>
+```
+
+**契约**（唯一源 `config/verification-tiers.yaml#sedimentation`）：
+- `--evidence-ref` **必填**且须匹配 pattern —— 无证据的沉淀等于新增幻觉源；
+- 三个回流目标：`domain_profile`（域档案要点）/ `case_library`（病例册）/
+  `knowledge_base`（外部知识库引用，本包只登记不执行写入）；
+- 登记落 `<课程工作区>/.workbuddy/sedimentation_log.jsonl`，并入 trace（`sediment` 事件）。
+
+## 质量闭环三件套（B16 · 与闸4.5 配套）
+
+| 命令 | 用途 | 唯一源 |
+|---|---|---|
+| `harness.py verify-tier` | 按**风险分级**给出检验强度计划（高危全检 / 中危抽检 / 低危登记待办） | `config/verification-tiers.yaml` |
+| `harness.py trend` | **跨任务**质量趋势聚合（trace gate 事件计数时间序列） | trace 事件账本 |
+| `harness.py sediment` | 闸4.5 之后的**可选沉淀**（带 evidence_ref 回流） | `config/verification-tiers.yaml#sedimentation` |
+
+⚠ **风险分级的意义**：闸4.5 三源核验此前对**所有**未核验案例一视同仁按
+`sample_rate` 抽样 —— 属**最高法定级别 / 触及生物安全红线 / 跨物种传播**
+这类高危情形的案例（漏检的代价是课件教出错且危险的内容）也只查 10%，
+**风险与检验强度不匹配**。具体判定词表见
+`config/verification-tiers.yaml#high_risk_rules`（可按域替换），域档案以
+`config/domain-profiles.yaml` 为准。
+`verify-tier` 按风险分级把高危案例提升为全检，低危案例登记待办（不静默丢弃）。
 
 ## 历史沿革（已废弃口径，仅供回溯）
 

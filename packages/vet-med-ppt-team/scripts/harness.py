@@ -782,7 +782,7 @@ def cmd_route(args):
     #   路由判出"本任务要建队"是建队的**决策时点**——机器唯一知道
     #   "这次任务是否真的建队、派了哪些人"的地方。L0 不建队 → 不写事件
     #   （写了就是假事件：声明了却没建队，正是本任务要治的病）。
-    # v3.28.4 B15：编排幂等（诊断 P-协3：trace 实测 684 次 team_create 对
+    # 3.28.3 批次 B15：编排幂等（诊断 P-协3：trace 实测 684 次 team_create 对
     #   5 次 preflight——同任务反复重建团队记录、状态未复用）。同一
     #   (task_id, level, domain, spawn 签名) 已有 team_create 记录 ⇒ 不重复
     #   写事件，plan 里标 team_reused + 复用时间戳（消除重复创建成本）。
@@ -2586,7 +2586,8 @@ def _trace(w, cfg, event, actor, detail):
 TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
                          "member_return", "gate", "stage_enter", "stage_exit",
                          "budget_exceeded", "error", "no_progress",
-                         "batch_open", "batch_close", "reflow", "member_write_check")
+                         "batch_open", "batch_close", "reflow", "member_write_check",
+                         "verify_tier", "sediment", "trend")
 
 
 def _trace_error(w, cfg, event, actor, detail):
@@ -2640,7 +2641,7 @@ def cmd_spawn_failed(args):
     v3.17.0 B3-2 新增。spawn 失败此前只有主理人一句口头说明，trace 里查不到
     "试了几次、为什么不行、最后走了哪条降级通道"。
 
-    v3.28.4 B13：reason 结构化——空 reason 的 spawn_failed 无法归因（本轮诊断
+    3.28.3 批次 B13：reason 结构化——空 reason 的 spawn_failed 无法归因（本轮诊断
     P-断1 实测：trace 里的 spawn_failed reason=""）。改为**枚举必填**：
     timeout / tool_error / content_reject / platform_sandbox / quota / unknown，
     附加自由文本 --detail 补充上下文。旧用法（自由文本 reason）向后兼容：
@@ -2685,7 +2686,7 @@ def cmd_spawn_failed(args):
 
 
 def cmd_member_write_check(args):
-    """成员写权限校验（v3.28.4 B14 · 升级方案 R2-L2 分级权限的执行器）。
+    """成员写权限校验（3.28.3 批次 B14 · 升级方案 R2-L2 分级权限的执行器）。
 
     判据源：config/responsibility-matrix.yaml#write_scope（唯一源）。
     · rc=0 允许写；rc=2 拒绝（trace 记 member_write_check: allowed=false）。
@@ -2763,6 +2764,197 @@ def cmd_member_write_check(args):
         return 2
     print(json.dumps({"ok": True, "agent": agent, "path": target,
                       "matched_pattern": hit}, ensure_ascii=False))
+    return 0
+
+
+# ─────────────────── B16 质量闭环：验证风险分级 + 沉淀动作 ────────────────
+def _load_verification_tiers():
+    """读 config/verification-tiers.yaml（B16 唯一源）——缺文件/缺键即 fail-closed。
+
+    纪律：与闸4.5 护栏同款——yaml 缺键 = 护栏不存在，**不补内置值**。
+    """
+    import yaml as _y
+    p = os.path.join(PKG, "config", "verification-tiers.yaml")
+    if not os.path.isfile(p):
+        return None, f"分级配置缺失：{p}——检验强度无法判定，fail-closed"
+    try:
+        d = _y.safe_load(open(p, encoding="utf-8")) or {}
+    except Exception as e:
+        return None, f"分级配置解析失败：{e}"
+    missing = [k for k in ("enums", "tier_intensity", "high_risk_rules",
+                           "deferred_policy", "sedimentation")
+               if not d.get(k)]
+    if missing:
+        return None, f"分级配置缺键 {missing}——不补内置值，fail-closed"
+    # 枚举完整性：tier_intensity 的每个等级都必须落在 enums.risk_tier 内
+    tiers = set((d["enums"].get("risk_tier") or {}).get("values") or [])
+    intens = set((d["enums"].get("verify_intensity") or {}).get("values") or [])
+    bad_t = [k for k in (d["tier_intensity"] or {}) if k not in tiers]
+    bad_i = [v for v in (d["tier_intensity"] or {}).values() if v not in intens]
+    if bad_t or bad_i:
+        return None, (f"分级配置枚举越界：未知等级 {bad_t} / 未知强度 {bad_i}"
+                      f"（允许等级 {sorted(tiers)}，允许强度 {sorted(intens)}）")
+    return d, None
+
+
+def _classify_risk(case, rules):
+    """对单个案例做风险分级（确定性判定：关键词/字段命中，不做语义判断）。"""
+    hr = rules.get("high_risk_rules") or {}
+    kw = hr.get("keywords") or []
+    fields = hr.get("fields") or []
+    text_fields = hr.get("text_fields") or []
+    blob = " ".join(str(case.get(k) or "") for k in text_fields)
+    hit_kw = [k for k in kw if k and k in blob]
+    hit_fld = [f for f in fields if case.get(f) not in (None, False, "", [], {})]
+    if hit_kw or hit_fld:
+        return "high", {"matched_keywords": hit_kw, "matched_fields": hit_fld}
+    low_spec = rules.get("low_risk_explicit") or {}
+    if low_spec.get("field") and case.get(low_spec["field"]) == low_spec.get("value"):
+        return "low", {"explicit_low": True}
+    if (rules.get("medium_risk_defaults") or {}).get("apply_when_no_rule_matched"):
+        return "medium", {"defaulted": True}
+    return "medium", {"defaulted": True}
+
+
+def cmd_verify_tier(args):
+    """按风险分级给出检验强度计划（B16 · 升级方案 R5）。
+
+    用途：闸4.5 三源核验此前对所有未核验案例一视同仁按 sample_rate 抽样；
+    本命令按 config/verification-tiers.yaml 把案例分为 high/medium/low，
+    映射到 full/sampled/deferred 三种检验强度，**高危全检、低危登记待办**。
+
+    退出码：0=计划生成成功 / 1=配置缺失或判定越界（fail-closed）
+            / 2=参数错 / 3=deferred 占比超限（阻断，不静默降级）
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    tiers, err = _load_verification_tiers()
+    if tiers is None:
+        print(f"⛔ {err}", file=sys.stderr)
+        _trace(w, cfg, "verify_tier", args.actor or "verifier",
+               {"verdict": "config_incomplete", "error": err})
+        return 1
+
+    lib_p = os.path.join(w, ".workbuddy", "cases", "cases_library.json")
+    if not os.path.isfile(lib_p):
+        print(f"⛔ 未找到案例登记册：{lib_p}——无法分级", file=sys.stderr)
+        return 1
+    with open(lib_p, encoding="utf-8") as f:
+        lib = json.load(f)
+    cases = lib.get("cases", []) if isinstance(lib, dict) else (lib or [])
+
+    rules = tiers.get("high_risk_rules") or {}
+    tmap = tiers.get("tier_intensity") or {}
+    buckets = {"full": [], "sampled": [], "deferred": []}
+    detail_by_case = {}
+    for c in cases:
+        tier, why = _classify_risk(c, tiers)
+        inten = tmap.get(tier, "sampled")
+        buckets.setdefault(inten, []).append(
+            {"case_id": c.get("case_id"), "disease": c.get("disease_name"),
+             "risk_tier": tier, "intensity": inten})
+        detail_by_case[c.get("case_id")] = {"tier": tier, "intensity": inten, "why": why}
+
+    total = len(cases) or 1
+    deferred_ratio = len(buckets["deferred"]) / total
+    dp = tiers.get("deferred_policy") or {}
+    max_ratio = dp.get("max_deferred_ratio")
+    over = (max_ratio is not None and deferred_ratio > float(max_ratio))
+
+    plan = {"total_cases": len(cases),
+            "buckets": {k: len(v) for k, v in buckets.items()},
+            "deferred_ratio": round(deferred_ratio, 4),
+            "max_deferred_ratio": max_ratio,
+            "over_ratio": over,
+            "cases": {k: buckets.get(k, []) for k in ("full", "sampled", "deferred")},
+            "tier_intensity": tmap}
+
+    # deferred 必须登记到待办清单（不得静默丢弃）
+    backlog_written = None
+    if buckets.get("deferred") and dp.get("require_backlog_entry"):
+        rel = dp.get("backlog_rel") or ".workbuddy/verification_backlog.json"
+        bp = os.path.join(w, rel)
+        os.makedirs(os.path.dirname(bp), exist_ok=True)
+        backlog = {"entries": []}
+        if os.path.isfile(bp):
+            try:
+                backlog = json.load(open(bp, encoding="utf-8")) or {"entries": []}
+            except Exception:
+                backlog = {"entries": []}
+        known = {e.get("case_id") for e in backlog.get("entries", [])}
+        for it in buckets["deferred"]:
+            if it["case_id"] not in known:
+                backlog.setdefault("entries", []).append(
+                    {"case_id": it["case_id"], "disease": it["disease"],
+                     "risk_tier": it["risk_tier"], "intensity": "deferred",
+                     "reason": "低危：登记待办，后续补检", "ts": now_iso()})
+        with open(bp, "w", encoding="utf-8") as f:
+            json.dump(backlog, f, ensure_ascii=False, indent=2)
+        backlog_written = bp
+
+    plan["backlog_written"] = backlog_written
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
+    _trace(w, cfg, "verify_tier", args.actor or "verifier",
+           {"total_cases": plan["total_cases"], "buckets": plan["buckets"],
+            "deferred_ratio": plan["deferred_ratio"],
+            "over_ratio": over, "backlog_written": backlog_written})
+    if over:
+        print(f"⛔ deferred 占比 {deferred_ratio:.1%} 超上限 "
+              f"{float(max_ratio):.1%}——按 {dp.get('over_ratio_action')} 处置，"
+              f"**不静默降级为 sampled**。", file=sys.stderr)
+        return 3
+    return 0
+
+
+def cmd_sediment(args):
+    """闸4.5 之后的**可选沉淀动作**（B16 · 升级方案 R5-闸5）。
+
+    ⚠ 为什么不是 stage 5：既有守卫（test_five_gates::T2 + 体检[24]「阶段顺序一致
+    5 级」）明确锁死 stages 恰好 0-4 且拒绝 stage 5 ⇒ 加 stage 键会与既有契约
+    冲突。本动作**不占 stage 号**，是 stage 4（闸4.5）之后的可选沉淀。
+
+    用途：把本轮任务的新知（域要点 / 案例 / 知识库引用）带 evidence_ref 回流到
+    目标面——让专家团「越用越准」，而非每次从零开始。
+
+    退出码：0=登记成功 / 1=配置缺失或证据引用不合规（fail-closed）/ 2=参数错
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    tiers, err = _load_verification_tiers()
+    if tiers is None:
+        print(f"⛔ {err}", file=sys.stderr)
+        return 1
+    sed = tiers.get("sedimentation") or {}
+    targets = {t.get("id"): t for t in (sed.get("targets") or [])}
+    tgt = args.target
+    if tgt not in targets:
+        print(f"⛔ 未知沉淀目标 {tgt!r}——允许：{sorted(targets)}", file=sys.stderr)
+        return 2
+
+    ev_ref = (args.evidence_ref or "").strip()
+    if sed.get("require_evidence_ref") and not ev_ref:
+        print("⛔ --evidence-ref 必填——沉淀必须可溯源（无证据的沉淀等于新增幻觉源）",
+              file=sys.stderr)
+        return 2
+    pat = sed.get("evidence_ref_pattern")
+    if pat and ev_ref:
+        import re as _re
+        if not _re.match(pat, ev_ref):
+            print(f"⛔ --evidence-ref 不合规（须匹配 {pat}）", file=sys.stderr)
+            return 2
+
+    entry = {"target": tgt, "evidence_ref": ev_ref,
+             "summary": args.summary or "", "task_id": args.task_id or "",
+             "actor": args.actor or "team-lead", "ts": now_iso()}
+    log_p = os.path.join(w, ".workbuddy", "sedimentation_log.jsonl")
+    os.makedirs(os.path.dirname(log_p), exist_ok=True)
+    with open(log_p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    _trace(w, cfg, "sediment", entry["actor"],
+           {"target": tgt, "evidence_ref": ev_ref, "task_id": entry["task_id"],
+            "log": log_p})
+    print(json.dumps({"ok": True, "entry": entry, "log": log_p},
+                     ensure_ascii=False, indent=2))
     return 0
 
 
@@ -3070,9 +3262,36 @@ def cmd_gate(args):
     print(p.stdout, end="")
     if p.stderr:
         print(p.stderr, end="", file=sys.stderr)
+    # ── B16：gate 事件补结构化质量计数（趋势聚合的数据源）────────────
+    # 缺口（升级方案 P-质1）：trace 的 gate 事件此前只记 exit/meaning，
+    #   **不记 P0/P1/P2 计数** ⇒ 「质量是否在变好/变坏」无法跨任务聚合
+    #   （eval 子命令只做同任务 A/B diff，无跨任务时间序列）。
+    # 修法：读 verify_deck 落盘的 JSON 报告（--json）取 gate 段计数。
+    #   报告不存在 ⇒ counts 为 null 并明示（不假装有数据）。
+    q_counts = None
+    if getattr(args, "json", ""):
+        try:
+            with open(args.json, encoding="utf-8") as _f:
+                _rep = json.load(_f)
+            _g = _rep.get("gate") or {}
+            _red = _rep.get("red") or {}
+            q_counts = {
+                "p0": _g.get("p0"),
+                "p1": _g.get("p1"),
+                "p2_block": _g.get("p2_block"),
+                "p3": _g.get("p3"),
+                "note_coverage": _g.get("note_coverage"),
+                "rubric_count": _g.get("rubric_count"),
+                "red_total": (sum(int(v) for v in _red.values())
+                              if _red and all(isinstance(v, (int, float))
+                                              for v in _red.values()) else None),
+            }
+        except Exception as _e:
+            q_counts = {"error": f"报告解析失败：{type(_e).__name__}"}
     _trace(w, cfg, "gate", args.actor or "ppt-producer",
            {"deck": os.path.basename(args.deck), "level": args.level, "exit": p.returncode,
             "meaning": meaning, "seconds": secs,
+            "counts": q_counts,
             "stderr_tail": (p.stderr or "")[-300:]})
     print(f"\n[harness.gate] exit={p.returncode}（{meaning}） 耗时 {secs}s —— "
           f"已写入 trace；exit=4 属运行错误，走缺陷回流，不得当作课件红灯打回成员。")
@@ -7208,6 +7427,9 @@ def cmd_doctor(args):
         ("degrade",    "v3.17.0 B3-2：登记成员降级（写 trace degrade）", "--agent", "--task-id/--channel/--reason", "0", "harness.py degrade --agent pedagogy-architect --task-id t1 --channel general-purpose+persona --reason 'spawn 2 次均 not available'"),
         ("stage",      "v3.4.1：显式发 stage_enter/exit（填 stage_seconds）", "--action/--stage", "--task-id/--note", "0/2", "harness.py stage --action enter --stage 1"),
         ("gate",       "包装 verify_deck（lint+snap+gate 一体）",     "--deck",  "--hours/--level/--baseline/--tag", "0/1/2/3/4", "harness.py gate --deck x.pptx --hours 1"),
+        ("verify-tier", "B16：按风险分级给出检验强度计划（高危全检/低危待办）", "无", "--actor/--workspace", "0/1/3", "harness.py verify-tier --workspace <课程工作区>"),
+        ("sediment", "B16：闸4.5 之后的可选沉淀动作（带 evidence_ref 回流）", "--target", "--evidence-ref/--summary/--task-id", "0/1/2", "harness.py sediment --target domain_profile --evidence-ref domain-profiles.yaml#avian"),
+        ("trend", "B16：跨任务质量趋势聚合（trace gate 计数时间序列）", "无", "--actor/--workspace", "0/1", "harness.py trend --workspace <课程工作区>"),
         ("verify-artifact", "核验成员自报落盘（反自评失真硬校验）",    "--path",  "--expect-bytes/--min-bytes", "0/1", "harness.py verify-artifact --path x.md --expect-bytes 1200"),
         ("verify-ref",     "v3.4.2 P0-3：cases_library 文献引用预检（假 PMID/格式错/缺时间戳）", "--path", "--online/--write-back", "0/1/2", "harness.py verify-ref --path cases_library.json --online --write-back"),
         ("sweep",         "v3.4.2 P0-1：递归扫全量 pptx → 收编 deck_registry（v3.1.0 失落的闸外能力）", "--root", "--hours/--level/--max-decks", "0/1/3/4", "harness.py sweep --root <工作区>"),
@@ -7514,6 +7736,80 @@ def cmd_eval(args):
     return 1 if regress else 0
 
 
+def cmd_trend(args):
+    """跨任务质量趋势聚合（B16 · 升级方案 R5）。
+
+    缺口（升级方案 P-质1）：eval 子命令只做**同任务** A/B diff（sweep 基线 vs 当前），
+    回答「这次比上次好不好」；**跨任务时间序列**（本月各次任务的 P0/P1 走势）无
+    任何实现 ⇒ 「专家团整体是否在变好」无法回答。
+    数据源：trace 的 gate 事件（B16 起带 counts 结构化计数）。
+
+    口径：
+      · 按 trace 记录顺序（时间序）逐条聚合 gate 事件；
+      · counts 缺失（老事件或未带 --json 的运行）→ 计入「无数据」桶，
+        **不当作 0**（把无数据当 0 = 假装质量为零，是假的趋势）；
+      · 阻断判定基于**有计数**的事件序列，趋势方向 = 末次 vs 首次。
+
+    退出码：0=聚合成功 / 1=trace 不存在 / 2=参数错
+    """
+    cfg, _ = load_cfg()
+    w = wkspace(args)
+    tp = trace_path(w, cfg)
+    if not os.path.isfile(tp):
+        print(f"⛔ 未找到 trace：{tp}", file=sys.stderr)
+        return 1
+    gates, no_data = [], 0
+    with open(tp, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("event") != "gate":
+                continue
+            c = (r.get("detail") or {}).get("counts")
+            if not isinstance(c, dict) or c.get("p0") is None:
+                no_data += 1
+                continue
+            gates.append({"ts": r.get("ts"), "actor": r.get("actor"),
+                          "deck": (r.get("detail") or {}).get("deck"),
+                          "exit": (r.get("detail") or {}).get("exit"),
+                          "p0": c.get("p0"), "p1": c.get("p1"),
+                          "note_coverage": c.get("note_coverage")})
+
+    def _trend(key):
+        vals = [g[key] for g in gates if isinstance(g.get(key), (int, float))]
+        if len(vals) < 2:
+            return {"first": vals[0] if vals else None, "last": vals[-1] if vals else None,
+                    "delta": None, "n": len(vals),
+                    "verdict": "数据不足（<2 个有计数的 gate 事件）"}
+        delta = vals[-1] - vals[0]
+        return {"first": vals[0], "last": vals[-1], "delta": delta, "n": len(vals),
+                "verdict": ("改善" if delta < 0 else
+                            ("恶化" if delta > 0 else "持平"))}
+
+    rep = {"total_gate_events": len(gates) + no_data,
+           "with_counts": len(gates), "without_counts": no_data,
+           "p0_trend": _trend("p0"), "p1_trend": _trend("p1"),
+           "series": gates,
+           "note": "counts 缺失的事件计入 without_counts，**不当作 0**"}
+    print(json.dumps(rep, ensure_ascii=False, indent=2))
+    out = os.path.join(w, ".workbuddy", "artifacts", "quality_trend.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, indent=2)
+    print(f"\n趋势报告：{out}")
+    _trace(w, cfg, "trend", args.actor or "team-lead",
+           {"total_gate_events": rep["total_gate_events"],
+            "with_counts": rep["with_counts"],
+            "p0_delta": rep["p0_trend"]["delta"],
+            "p1_delta": rep["p1_trend"]["delta"]})
+    return 0
+
+
 def cmd_stage(args):
     """v3.4.1 R11：主理人编排循环在每个闸切换时显式发 stage_enter/stage_exit。
 
@@ -7728,11 +8024,29 @@ def main():
     p.set_defaults(func=cmd_spawn_failed)
 
     p = sub.add_parser("member-write-check",
-                       help="v3.28.4 B14：成员写权限校验（responsibility-matrix#write_scope）")
+                       help="3.28.3 批次 B14：成员写权限校验（responsibility-matrix#write_scope）")
     p.add_argument("--agent", required=True, help="成员 id（矩阵未登记 = 零权限）")
     p.add_argument("--path", required=True, help="待写入目标路径")
     _ws(p)
     p.set_defaults(func=cmd_member_write_check)
+
+    p = sub.add_parser("verify-tier",
+                       help="B16：按风险分级给出检验强度计划（verification-tiers.yaml）")
+    p.add_argument("--actor", default="verifier")
+    _ws(p)
+    p.set_defaults(func=cmd_verify_tier)
+
+    p = sub.add_parser("sediment",
+                       help="B16：闸4.5 之后的可选沉淀动作（带 evidence_ref 回流）")
+    p.add_argument("--target", required=True,
+                   help="沉淀目标 id（domain_profile / case_library / knowledge_base）")
+    p.add_argument("--evidence-ref", dest="evidence_ref", default="",
+                   help="证据引用（必填，须匹配 verification-tiers.yaml 的 pattern）")
+    p.add_argument("--summary", default="", help="沉淀摘要（一句话说清沉淀了什么）")
+    p.add_argument("--task-id", dest="task_id", default="")
+    p.add_argument("--actor", default="vet-med-ppt-team-team-lead")
+    _ws(p)
+    p.set_defaults(func=cmd_sediment)
 
     p = sub.add_parser("degrade",
                        help="v3.17.0 B3-2：登记成员降级（写 trace 事件 degrade——"
@@ -7781,6 +8095,12 @@ def main():
                    help="存当前 deck_registry 为新基线（首次跑或主动重置）")
     _ws(p)
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("trend",
+                       help="B16：跨任务质量趋势聚合（trace gate 事件计数时间序列）")
+    p.add_argument("--actor", default="vet-med-ppt-team-team-lead")
+    _ws(p)
+    p.set_defaults(func=cmd_trend)
 
     p = sub.add_parser("gate", help="包装 verify_deck，统一退出码语义并落 trace")
     p.add_argument("--deck", required=True)

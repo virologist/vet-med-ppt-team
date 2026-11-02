@@ -299,7 +299,7 @@ observability:
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
                  "error", "no_progress", "compaction",
                  "batch_open", "batch_close", "reflow",
-                 "member_write_check"]
+                 "member_write_check", "verify_tier", "sediment", "trend"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
@@ -334,6 +334,13 @@ loop_a:
     - "<包>/config"
     - "<包>/references"
     - "<包>/agents"
+    # ── B16：docs/architecture.md 纳入白名单（**单文件**，同 B6a/W1 先例）──
+    # 缘由：它是 config/guard.yaml#guarded_docs 的受守卫文档，其「阶段镜像块」
+    #   必须与 #stages 逐项一致（test_arch_drift T9 强制）——但它此前**不在
+    #   scope** ⇒ 改 #stages 后「改得了真源却改不了镜像」＝**无解漂移**
+    #   （B15 即因此带红提交：4 处镜像漏改，本批才闭合）。
+    # 边界：**只加这一个文件**，不放开整个 docs/ 目录（目录内有历史诊断报告）。
+    - "<包>/docs/architecture.md"
     # ── v3.28.2 B6a：README.md 纳入白名单（**单文件**，不放开包根）──────────
     # 缘由（本轮 L1 实测）：README.md:97 写「当前版本 v1.4.1」、:59 写「5 份 agent MD」
     #   （实有 6 份，漏 verifier）。这是**包级门面文档的版本/结构口径漂移**，

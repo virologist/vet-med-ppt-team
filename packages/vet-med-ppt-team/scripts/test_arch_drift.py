@@ -1182,8 +1182,9 @@ class TestGuardAntiExamples(unittest.TestCase):
         def mutate(pkg):
             p = pkg / "docs" / "architecture.md"
             t = p.read_text(encoding="utf-8")
-            old = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 ∥ 严真奥 | **串行** |"
-            new = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 ∥ 严真奥 | **并行** |"
+            # 现行口径 = 并行（yaml parallel: yes）；反例把「是否并行」列改回串行
+            old = "| 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | 苏学法 ∥ 严真奥 | **并行** |"
+            new = "| 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | 苏学法 ∥ 严真奥 | **串行** |"
             self.assertIn(old, t, "反例前提不成立：人读表 stage 1 行未按预期排版")
             p.write_text(t.replace(old, new), encoding="utf-8")
         self._fail_case("反例 A（并行标记漂移）", mutate, "是否并行")
@@ -1218,8 +1219,8 @@ class TestGuardAntiExamples(unittest.TestCase):
         def mutate(pkg):
             p = pkg / "docs" / "architecture.md"
             t = p.read_text(encoding="utf-8")
-            old = "证据先行→蓝图：蓝图的二八难点清单依赖证据包的「易误解」标注，存在真实数据依赖 ⇒ 串行；并行会必然回问"
-            new = "（散文措辞改写测试：语义不变，只是换了说法）证据先行→蓝图。"
+            old = "教学蓝图与学科底稿是两条**独立**子产物（前者定教学结构，后者定事实与证据），无数据依赖 ⇒ 可并行；冲突按 `responsibility-matrix#escalation.conflict` 交 team-lead 仲裁"
+            new = "（散文措辞改写测试：语义不变，只是换了说法）教学蓝图与学科底稿并行产出。"
             self.assertIn(old, t, "反例前提不成立：stage 1 理由列未按预期")
             p.write_text(t.replace(old, new), encoding="utf-8")
         self._pass_case("反例 D（只改散文）", mutate)

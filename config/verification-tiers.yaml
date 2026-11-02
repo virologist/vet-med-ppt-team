@@ -1,0 +1,113 @@
+# verification-tiers.yaml —— 验证风险分级（3.28.3 批次 B16 · 升级方案 R5）
+#
+# 定位：**检验强度分级**的唯一源。它不改变「什么算缺陷」（那是 verify_deck.py
+#      与 config/visual-rules.yaml 的职责），只决定「对哪一批对象**检验到什么强度**」。
+#
+# 为什么需要（真实病灶，非假设）：
+#   闸4.5 三源核验此前对**所有**未核验案例一视同仁地按 sample_rate 抽样
+#   （config/domain_config.yaml#three_source_check.sample_rate=0.1）。
+#   但案例的风险并不齐平：
+#     · 高危案例（法定一类疫病 / 生物安全红线 / 人畜共患 / 剂量与用药）
+#       —— 一旦核验不过，课件教出去的是**错误且危险**的内容，漏检成本极高；
+#     · 低危案例（背景补充 / 典型临床表现描述 / 常规文献引用）
+#       —— 漏检一条的代价是「引用不够严谨」，可留待后续补齐。
+#   ⇒ 统一比例抽样 = 对高危案例也只查 10% = **风险与检验强度不匹配**。
+#
+# 与既有机制的关系（防重复造轮）：
+#   · 三源核验的**抽样比例**唯一源仍是 config/domain_config.yaml#three_source_check
+#     （本文件不改它，只提供「谁该被全检」的判定输入）；
+#   · verify_deck 的**缺陷判据**唯一源仍是 config/visual-rules.yaml（本文件不动它）；
+#   · 本文件新增的唯一东西 = **风险等级 → 检验强度**的映射，以及高危对象的
+#     判定规则（关键词/字段）。
+#
+# ── 纪律（与全包一致）─────────────────────────────────────────────────
+#   ① 禁硬编码：等级枚举、强度枚举、比例阈值、判定关键词全在本文件；代码只执行。
+#   ② 缺键即 fail-closed：缺 tier 定义 / 缺强度枚举 ⇒ 判「分级配置不完整」并阻断，
+#      **不补内置值**（补了就等于 yaml 成装饰品——与闸4.5 护栏同款纪律）。
+#   ③ 只做**确定性判定**：关键词命中 / 字段缺失 / 计数比较；不判「该不该全检」
+#      这类语义判断（语义归人，机器只执行）。
+#
+# 消费方：scripts/harness.py（verify-tier 子命令 + sediment 动作的证据核验）
+#
+# ⚠ 本文件不得成为第二规则源——与 references/dual-loop-governance.md 与
+#   config/harness.yaml 冲突时，以那两者为准。
+
+version: "1.0.0"
+
+# ── 枚举 ──────────────────────────────────────────────────────────────
+enums:
+  risk_tier:
+    values: [high, medium, low]
+    notes: >
+      high   = 高危：法定一类疫病 / 生物安全红线 / 人畜共患 / 用药剂量与耐药性
+      medium = 中危：常规临床与病理描述、常见诊疗操作
+      low    = 低危：背景补充、延伸阅读、常规文献引用
+  verify_intensity:
+    values: [full, sampled, deferred]
+    notes: >
+      full     = 全量检验（每个对象都必须过）
+      sampled  = 按 sample_rate 抽样检验（比例取自 domain_config.yaml#three_source_check）
+      deferred = 本轮不检，但**必须登记到待办清单**（不得静默丢弃）
+
+# ── 强度映射（等级 → 检验强度）────────────────────────────────────────
+tier_intensity:
+  high: full
+  medium: sampled
+  low: deferred
+
+# ── 高危对象判定规则（确定性关键词/字段命中即升级为 high）──────────────
+high_risk_rules:
+  # ① 关键词命中（对案例的 scenario/title/notes 等文本字段做子串匹配）
+  keywords:
+    - "高致病性禽流感"
+    - "一类动物疫病"
+    - "生物安全"
+    - "人畜共患"
+    - "剂量"
+    - "耐药"
+    - "停药期"
+    - "扑杀"
+    - "无害化处理"
+  # ② 字段命中（案例带这些字段时，无论关键词如何都判高危）
+  fields:
+    - "biosafety_flag"
+    - "zoonotic_flag"
+    - "statutory_class_one"
+  # ③ 文本字段参与匹配的键（避免把结构字段当文本扫）
+  text_fields:
+    - "title"
+    - "scenario"
+    - "notes"
+    - "disease_name"
+
+# ── 中危判定（既不命中高危规则、也不显式低危时，按中危处理）────────────
+medium_risk_defaults:
+  apply_when_no_rule_matched: true
+
+# ── 低危显式登记（可选：案例显式标记 low 时走 deferred）────────────────
+low_risk_explicit:
+  field: "risk_tier"
+  value: "low"
+
+# ── 待办清单要求（deferred 强度必须留痕）──────────────────────────────
+deferred_policy:
+  require_backlog_entry: true      # deferred 对象必须登记到待办清单
+  backlog_rel: ".workbuddy/verification_backlog.json"
+  max_deferred_ratio: 0.5          # deferred 占比上限；超限 ⇒ 不得用 deferred 策略
+  # ⚠ 占比超限的处置：fail-closed（阻断），不静默降级为 sampled
+  over_ratio_action: "block"
+
+# ── 沉淀证据要求（闸4.5 之后的沉淀动作必须带 evidence_ref）────────────
+sedimentation:
+  require_evidence_ref: true
+  evidence_ref_pattern: "^[A-Za-z0-9_\\-./:#]{4,120}$"
+  targets:
+    - id: "domain_profile"
+      desc: "回流 config/domain-profiles.yaml 的域档案/模块要点"
+      rel: "config/domain-profiles.yaml"
+    - id: "case_library"
+      desc: "回流 <课程工作区>/.workbuddy/cases/cases_library.json 的案例册"
+      rel: ".workbuddy/cases/cases_library.json"
+    - id: "knowledge_base"
+      desc: "回流外部知识库（IMA 等）——本包只登记引用，不执行写入"
+      rel: "external"
