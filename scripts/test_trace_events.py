@@ -80,6 +80,19 @@ def _pkg_changed_files():
     return files
 
 
+def _pkg_yaml_regression_required():
+    """读 yaml#loop_a.regression_required 现值（唯一源；硬编码=双源漂移）。
+
+    B20-④ 扩容到 7 项后，本文件的 batch-close 触发须与生产同源取清单——
+    硬编码三项会在收批时被判 regression_incomplete（rc=1）⇒ batch_close
+    事件不落账本 ⇒ 契约用例假红。
+    """
+    import yaml as _y
+    with open(os.path.join(PKG, "config", "harness.yaml"), encoding="utf-8") as f:
+        cfg = _y.safe_load(f) or {}
+    return [str(x) for x in ((cfg.get("loop_a") or {}).get("regression_required") or [])]
+
+
 def _last_batch_id(w):
     """取最近一次 batch-open 产生的批次 id（B13 契约触发用）。
 
@@ -234,11 +247,13 @@ def test_声明的全部事件都有代码产出():
             _bid = str((json.loads(_bo[1]).get("batch") or {}).get("id") or "")
         except Exception:
             _bid = ""
-        # 回归清单必须**跑齐** loop_a.regression_required 三项，否则 batch-close
-        # 判 regression_incomplete 拒绝收批 ⇒ batch_close 事件不落账本。
+        # 回归清单必须**跑齐** loop_a.regression_required（B20-④ 扩容后 7 项；
+        # 动态取 yaml 现值——硬编码会在下次扩容时假红），且每个套件名真实
+        # 存在（B19 真实性校验：未知名 ⇒ rc=2 拒绝 ⇒ batch_close 不落账本）。
+        _req = _pkg_yaml_regression_required()
         run(["loop", "batch-close", "--loop", "a", "--actor", "team-lead",
              "--batch", _bid, "--confirmed",
-             "--regression", "ensure_settings,test_harness,test_five_gates",
+             "--regression", ",".join(_req),
              "--workspace", w])
         run(["loop", "reflow", "--loop", "a", "--actor", "team-lead",
              "--file", os.path.join(PKG, "references", "defect-reflow.yaml"),
@@ -257,6 +272,11 @@ def test_声明的全部事件都有代码产出():
              "--evidence-ref", "config/domain-profiles.yaml#demo",
              "--summary", "契约测试沉淀", "--workspace", w])
         run(["trend", "--workspace", w])
+        # B17：域包五件套 machine-check → 写 domain_pack_check。
+        #   ⚠ B19 修复的契约盲区：B17 加事件后本用例没补触发——
+        #   「声明了却没产出」检查对新事件失明 8 天（双向对账 T4 补上后
+        #   才暴露 yaml 侧也漏）。真命令跑一遍，产出点在此闭环。
+        run(["domain-pack-check", "--workspace", w])
         # error：顶层异常出口（经 run_command 注入异常——异常路径不能只藏在 __main__ 里）
         sys.path.insert(0, HERE)
         import harness as _h
@@ -292,7 +312,19 @@ def test_声明与产出双向差集可查():
 
     ① declared_events_missing —— "声明了却没产出"（本轮治的病）
     ② undeclared_events     —— "产出了却没声明"（反向同型病；agent_spawn 曾是这种）
+
+    B19 追加第 ③ 向：**yaml 声明集 == harness#TRACE_EVENTS_DECLARED 常量集**
+    （双向差集皆空）。第三轮诊断实测两份手工声明已各漂 1 项——
+    单靠「yaml→产出」单向检查对「常量侧多/少」失明。
     """
+    # ③ 常量侧对账（不依赖工作区，先判）
+    sys.path.insert(0, HERE)
+    import harness as _harness_mod
+    _const = set(getattr(_harness_mod, "TRACE_EVENTS_DECLARED", ()) or ())
+    check("trace：yaml 事件集 == harness 常量集（双向差集空）",
+          set(DECLARED_EVENTS) == _const,
+          f"yaml-only={sorted(set(DECLARED_EVENTS) - _const)} "
+          f"const-only={sorted(_const - set(DECLARED_EVENTS))}")
     with _ws() as w:
         run(["spawn", "--agent", "dvm-content-expert", "--task-id", "T1", "--workspace", w])
         rc, out, _ = run(["trace", "report", "--workspace", w])

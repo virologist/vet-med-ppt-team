@@ -213,14 +213,21 @@ class TestLoopABatchGate(_TmpLoop):
         self.assertIn("未确认", se)
 
     def test_T4b_regression_gate(self):
-        """T4b：regression_required 缺一 ⇒ 收批被拒（"跑两项就算了"必须拦住）。"""
+        """T4b：regression_required 缺一 ⇒ 收批被拒（"跑两项就算了"必须拦住）。
+
+        B20-④ 扩容后必备 = 7 项（新增 4 套高频连带守卫）——断言从
+        硬编码三项改为**动态取 yaml 现值**（否则每次扩容本用例必假红）。
+        """
+        req_now = _base_cfg()["loop_a"]["regression_required"]
         self._open(files=os.path.join(PKG, "scripts", "harness.py"))
         rc, so, se = _run(_args(action="batch-close", loop="a", workspace=self.w,
                                 batch="b1", confirmed=True, regression="ensure_settings"))
-        self.assertEqual(rc, 1, f"回归缺 2 项仍收批：{se[:200]}")
+        self.assertEqual(rc, 1, f"回归缺 {len(req_now) - 1} 项仍收批：{se[:200]}")
         out = _jout(so)
         self.assertEqual(out["reason"], "regression_incomplete")
-        self.assertEqual(sorted(out["missing"]), ["test_five_gates", "test_harness"])
+        self.assertEqual(sorted(out["missing"]),
+                         sorted(r for r in req_now if r != "ensure_settings"),
+                         f"missing 必须等于 yaml 现值减已跑项（B20 扩容后 {len(req_now)} 项）")
 
     def test_T4c_declared_file_scope_check(self):
         """T4c：声明文件越出 loop_a.scope ⇒ **开批即被拒**（与 check-path 同一份判定）。"""
