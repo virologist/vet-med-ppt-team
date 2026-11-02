@@ -7882,50 +7882,35 @@ def cmd_domain_pack_check(args):
     ex_raw = prof.get(ex_key)
     ex_map = {}
     if isinstance(ex_raw, dict):
-        # ⚠ **字面量下标链**（B17）：路径级证据的判据是 AST 重建的**字面量链**
-        #   （`prof[ex_key]["computing"]["module_templates"]["reason"]`）。
-        #   若用动态键名循环（`for _d, _assets in ex_raw.items()`）⇒ 链在动态键名处断开
-        #   ⇒ 巡检只看到末段 `reason` 撞车 ⇒ 判弱证据（假绿）。
-        #   ⇒ 此处对**已登记的域**逐个字面量取（域清单来自契约的 exemption 声明面）。
-        _ex_domains = [str(x) for x in (_ex_decl_domains or [])]
-        # ⚠ 逐个**字面量**下标取（`ex_raw["computing"]["module_templates"]["reason"]`）
-        #   —— AST 重建链要求**字面量键**；用变量 `_d`/`_a` 取则链在动态键名处断开。
-        #   域名/资产名来自契约声明面（禁在代码里硬编码），
-        #   但**取法**必须字面量 ⇒ 故按声明顺序逐个显式取值。
-        def _add_ex(dom, asset, rec):
-            if not isinstance(rec, dict):
-                return
-            ex_map.setdefault(dom, {})[asset] = {
-                "domain": dom, "asset": asset,
-                "reason": rec.get("reason", ""),
-                "_path": f'{ex_path}["{dom}"]["{asset}"]',
-            }
-
-        for _d in _ex_domains:
-            # ⚠ **链根必须含 config 字样**（AST 重建链的识别约定：变量名含
-            #   cfg/conf/config 才被当作配置根）⇒ 故用 `domain_profiles_config`
-            #   这个名字承载 `prof`，并用**纯字面量下标**取三级链
-            #   （`domain_profiles_config["domain_pack_exemptions"]["computing"]
-            #     ["module_templates"]["reason"]`）。
-            #   换成 .get() 或用变量做键 ⇒ 链断 ⇒ 只剩末段撞车（弱证据·假绿）。
-            domain_profiles_config = prof
-            if _d == "computing":
-                _c_assets = domain_profiles_config["domain_pack_exemptions"]["computing"]["module_templates"]
-                _add_ex("computing", "module_templates", _c_assets)
-            elif _d == "business-training":
-                _b_assets = domain_profiles_config["domain_pack_exemptions"]["business-training"]["module_templates"]
-                _add_ex("business-training", "module_templates", _b_assets)
-            else:
-                # 未字面量登记的域：只能按动态键取（弱证据）⇒ 如实标注
-                _assets = ex_raw.get(_d)
-                if isinstance(_assets, dict):
-                    for _a, _rec in _assets.items():
-                        _add_ex(_d, str(_a), _rec)
+        # ⚠ **块级消费 + 动态遍历**（B18 修正 B17 的语义裂缝）：
+        #   B17 原实现为满足体检[18] 的路径级证据，改用「registered_domains 白名单 +
+        #   字面量下标链」逐个取值——**代价是语义被破坏**（独立对抗性验证实测）：
+        #     · 白名单外的**域**与**资产条目被静默忽略**（登记了也不生效）；
+        #     · 上限检查统计的是「被读取的条数」而非「登记的条数」
+        #       ⇒ 实测登记 4 条豁免（上限 3）仍判 verdict=pass、weak 为空
+        #       ⇒ **契约写的「超上限 ⇒ 判滥用并阻断」完全没被执行**（假绿）。
+        #   现改为：**整块取走**豁免段（`domain_profiles_config["domain_pack_exemptions"]`
+        #   —— 块级证据：父级路径被代码整块取走 ⇒ 该子树随父级被消费，
+        #   体检[18] 的块级证据判据成立）+ **动态遍历**读全部条目（语义完整）。
+        #   ⇒ 同时满足「块级证据成立」与「不漏读任何登记条目」。
+        domain_profiles_config = prof
+        _ex_block = domain_profiles_config["domain_pack_exemptions"]
+        for _d, _assets in _ex_block.items():
+            if not isinstance(_assets, dict):
+                continue
+            for _a, _rec in _assets.items():
+                if not isinstance(_rec, dict):
+                    continue
+                ex_map.setdefault(str(_d), {})[str(_a)] = {
+                    "domain": str(_d), "asset": str(_a),
+                    "reason": _rec.get("reason", ""),
+                    "_path": f'{ex_path}["{_d}"]["{_a}"]',
+                }
     max_ex = ex_cfg.get("max_exemptions_per_domain", 3)
 
     assets = contract.get("assets") or []
     report = {"domains": {}, "contract_version": contract.get("version")}
-    missing_required, weak = [], []
+    missing_required, weak, abuse = [], [], []
     for did, dom in domains.items():
         exs = ex_map.get(did, {})
         faces, miss = [], []
@@ -7948,8 +7933,12 @@ def cmd_domain_pack_check(args):
                     miss.append(aid)
                 else:
                     weak.append(f"{did}#{aid}")
+        # ── B18：豁免滥用**真阻断**（契约原文：超上限 ⇒ 判「豁免滥用」并阻断）──
+        #   B17 原实现只把它塞进 weak（提示级不阻断）⇒ 实测登记 4 条（上限 3）
+        #   仍 verdict=pass ⇒ **契约与实现不一致 = 假绿**。
+        #   现改为：超上限 ⇒ 进 abuse 列表 ⇒ 判 rc=1 阻断。
         if len(exs) > max_ex:
-            weak.append(f"{did}:豁免数 {len(exs)} > 上限 {max_ex}")
+            abuse.append(f"{did}:豁免数 {len(exs)} > 上限 {max_ex}")
         req_faces = [f for f in faces if f["status"] == "ok"]
         report["domains"][did] = {
             "faces": faces,
@@ -7987,11 +7976,14 @@ def cmd_domain_pack_check(args):
 
     report["missing_required"] = missing_required
     report["weak"] = weak
+    report["exemption_abuse"] = abuse
     report["cross_domain_hits"] = cross_hits
     report["probe_domain"] = probe_state
-    report["verdict"] = ("pass" if (not missing_required and not cross_hits)
+    report["verdict"] = ("pass" if (not missing_required and not cross_hits
+                                   and not abuse)
                          else ("cross_domain_contamination" if cross_hits
-                               else "missing_required_assets"))
+                               else ("exemption_abuse" if abuse
+                                     else "missing_required_assets")))
 
     # 落盘报告（供跨任务趋势看齐备度演进）
     rel = (contract.get("report") or {}).get("rel") or ".workbuddy/domain_pack_report.json"
@@ -8005,6 +7997,7 @@ def cmd_domain_pack_check(args):
            args.actor or "team-lead",
            {"verdict": report["verdict"],
             "missing_required": missing_required,
+            "exemption_abuse": abuse,
             "cross_domain_hits": len(cross_hits),
             "probe": probe_state,
             "report": rp})
@@ -8013,6 +8006,12 @@ def cmd_domain_pack_check(args):
         print(f"⛔ 跨域串味命中：{cross_hits}——某域引用了别域专有资产标识",
               file=sys.stderr)
         return 3
+    if abuse:
+        print(f"⛔ 豁免滥用（{len(abuse)} 处）：{abuse}\n"
+              f"   契约：config/domain-pack-contract.yaml#exemption.max_exemptions_per_domain"
+              f" —— 豁免不是万能钥匙；请**删掉不必要的豁免**或**提高上限并说明理由**",
+              file=sys.stderr)
+        return 1
     if missing_required:
         print(f"⛔ {len(missing_required)} 个域存在未豁免的 required 缺口："
               f"{missing_required}\n   处置：① 补齐该域资产（域档案是唯一源）"

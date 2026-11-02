@@ -318,6 +318,121 @@ class TestDomainPackRedProofs(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestB18ExemptionSemantics(unittest.TestCase):
+    """B18：豁免语义完整性（独立对抗性验证抓出的缺陷，防复发）。
+
+    缺陷背景：B17 为满足体检[18] 的路径级证据，改用「registered_domains 白名单 +
+    字面量下标链」取值 ⇒ 白名单外的域/资产条目**被静默忽略**，
+    且「豁免数超上限 ⇒ 阻断」统计的是「被读取条数」⇒ 形同虚设
+    （实测：登记 4 条、上限 3，仍 verdict=pass）。
+    """
+
+    def _copy_pkg(self):
+        tmp = Path(tempfile.mkdtemp(prefix="b18-pkg-"))
+        shutil.copytree(PKG / "scripts", tmp / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(PKG / "config", tmp / "config")
+        for rel in (".codebuddy-plugin/plugin.json", "agents"):
+            src = PKG / rel
+            dst = tmp / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        return tmp
+
+    def test_T13_exemption_over_limit_blocks(self):
+        """豁免数超上限 ⇒ rc=1 阻断（契约明写「判滥用并阻断」）。"""
+        tmp = self._copy_pkg()
+        try:
+            import yaml
+            pf = tmp / "config" / "domain-profiles.yaml"
+            d = yaml.safe_load(pf.read_text(encoding="utf-8"))
+            ex = d["domain_pack_exemptions"]["computing"]
+            for i in range(3):
+                ex[f"extra_asset_{i}"] = {"reason": f"超上限测试豁免 {i}"}
+            pf.write_text(yaml.safe_dump(d, allow_unicode=True, sort_keys=False),
+                          encoding="utf-8")
+            ws = _ws()
+            try:
+                proc = subprocess.run([PY, str(tmp / "scripts" / "harness.py"),
+                                       "domain-pack-check", "--workspace", str(ws)],
+                                      capture_output=True, text=True, timeout=180)
+                self.assertEqual(proc.returncode, 1,
+                                 f"豁免超上限应 rc=1 阻断，实得 {proc.returncode}")
+                rep = _parse_json(proc.stdout)
+                self.assertEqual(rep["verdict"], "exemption_abuse")
+                self.assertTrue(rep.get("exemption_abuse"),
+                                "exemption_abuse 列表为空 ⇒ 上限检查未生效")
+            finally:
+                shutil.rmtree(ws, ignore_errors=True)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_T14_exemption_for_new_domain_takes_effect(self):
+        """新域的豁免登记**无需改代码**即生效（不得被白名单静默忽略）。"""
+        tmp = self._copy_pkg()
+        try:
+            import yaml
+            pf = tmp / "config" / "domain-profiles.yaml"
+            d = yaml.safe_load(pf.read_text(encoding="utf-8"))
+            # 新域 + 其豁免（depth_scale 是**白名单里没有**的资产面）
+            d["domain_pack_exemptions"]["finance"] = {
+                "module_templates": {"reason": "风控以案例情景为单位，无教材章节序列"},
+                "depth_scale": {"reason": "风控深度标尺待补（监管规则梳理中）"},
+            }
+            d["domains"].append({
+                "id": "finance", "display_name": "金融风控",
+                "match_hints": ["主题词：风控"],
+                "role_persona": {"title": "风控内容权威"},
+                "expert_panel": [], "content_axes": ["风控规则"],
+                "evidence_hierarchy": {"institutional": ["监管机构指引"]},
+                "image_channel": {"channels": []},
+                "knowledge_bases_ref": "config/external-tools.yaml#domains_without_knowledge_bases",
+                "terminology": ["术语统一"],
+                "glossary": [{"zh": "风控", "en": "Risk Control"}],
+                "delivery_language": "zh-CN",
+                "safety_redlines": ["不给规避监管的操作步骤"],
+                "knowledge_anchor": {"path": None, "note": "无包内锚点"},
+                "user_supplied_sources": {"enabled": True},
+                "member_bindings": [],
+            })
+            pf.write_text(yaml.safe_dump(d, allow_unicode=True, sort_keys=False),
+                          encoding="utf-8")
+            ws = _ws()
+            try:
+                proc = subprocess.run([PY, str(tmp / "scripts" / "harness.py"),
+                                       "domain-pack-check", "--workspace", str(ws)],
+                                      capture_output=True, text=True, timeout=180)
+                rep = _parse_json(proc.stdout)
+                faces = {f["asset"]: f["status"]
+                         for f in rep["domains"]["finance"]["faces"]}
+                self.assertEqual(faces.get("depth_scale"), "exempted",
+                                 f"新域的 depth_scale 豁免未生效（被静默忽略）：{faces}")
+                self.assertEqual(faces.get("module_templates"), "exempted",
+                                 f"新域的 module_templates 豁免未生效：{faces}")
+                self.assertEqual(faces.get("audience_profile"), "missing",
+                                 f"未豁免的 required 面应判 missing：{faces}")
+                self.assertEqual(proc.returncode, 1,
+                                 "新域有未豁免的 required 缺口 ⇒ 应 rc=1")
+            finally:
+                shutil.rmtree(ws, ignore_errors=True)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_T15_contract_has_no_domain_whitelist(self):
+        """契约**不得**再有 registered_domains 白名单（它是语义裂缝的来源）。"""
+        import yaml
+        c = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+        ex = c.get("exemption") or {}
+        self.assertNotIn("registered_domains", ex,
+                         "契约仍带 registered_domains 白名单 ⇒ 白名单外条目会被静默忽略")
+        # 且契约必须声明「超上限 ⇒ 阻断」
+        self.assertIn("阻断", str(ex.get("note") or ""),
+                      "契约 note 未声明超上限即阻断")
+
+
 class TestGeneralizationSentinelDirection(unittest.TestCase):
     """③ 通用化哨兵：两个方向都要可查。"""
 

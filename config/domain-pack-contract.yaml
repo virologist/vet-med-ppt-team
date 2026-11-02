@@ -97,12 +97,13 @@ exemption:
   # 登记位置：config/domain-profiles.yaml 顶层 `domain_pack_exemptions`
   location: "config/domain-profiles.yaml#domain_pack_exemptions"
   max_exemptions_per_domain: 3
-  # 豁免登记里**已声明的域清单**（唯一源）——执行器据此逐个字面量取豁免记录，
-  # 使读取构成 AST 可重建的**字面量下标链**（路径级证据判据）。
-  # ⚠ 禁在代码里硬编码域名（域清单会漂移 ⇒ 假绿）。
-  registered_domains:
-    - "computing"
-    - "business-training"
+  # ⚠ B18：**不再有 registered_domains 白名单**——
+  #   B17 曾用「白名单 + 字面量下标链」来满足体检[18] 的路径级证据判据，
+  #   代价是**白名单外的域与资产条目被静默忽略**（登记了也不生效），
+  #   且「豁免数超上限 ⇒ 阻断」因统计的是「被读取条数」而形同虚设
+  #   （独立对抗性验证实测：登记 4 条、上限 3，仍判 verdict=pass）。
+  #   现改为：执行器**整块取走**豁免段（块级证据判据成立）+ 动态遍历全部条目
+  #   ⇒ 语义完整，且任何域/资产的豁免登记都立即生效。
   note: "同一域豁免数超上限 ⇒ 判「豁免滥用」并阻断（豁免不是万能钥匙）"
 
 # ── 试金石域（通用化验证的靶子）────────────────────────────────────────

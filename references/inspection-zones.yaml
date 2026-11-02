@@ -25,10 +25,10 @@ segments:
 - id: domain-pack-contract.yaml#exemption
   file: domain-pack-contract.yaml
   prefix: exemption
-  key_count: 8
-  keys_sha256: 914fc253283a8af575664b5a8ac6bf8cf02def67
+  key_count: 6
+  keys_sha256: a00fb3ee33bcf6d9a4046830ddc3016fc3e95142
   leaf_unused: 0
-  leaf_weak: 7
+  leaf_weak: 5
   consumer: 脚本
   disposition: 新增键须登记
   note: 豁免登记契约（三要素 + 位置 + 上限）。harness domain-pack-check 块级消费。
