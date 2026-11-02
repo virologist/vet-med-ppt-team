@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.3
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.4
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -2583,11 +2583,17 @@ def _trace(w, cfg, event, actor, detail):
 #   error        ← 各命令的异常出口（_trace_error）
 
 # trace 事件名 → yaml 声明的全集（用于自检：声明了却没产出点 = 仍是纯声明）
+# ⚠ B19（第三轮诊断 P1-2）：此常量与 yaml#observability.trace_events 是
+#   **两份手工同步的声明**——B17 加 domain_pack_check 时漏了 yaml 侧、
+#   v3.18.0 加 compaction 时漏了本常量侧，双向漂移各 1 项。
+#   双向对账断言已入 test_trace_events（yaml 集合 == 本常量集合），
+#   此后任一侧单独增删事件名都会红。
 TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
                          "member_return", "gate", "stage_enter", "stage_exit",
                          "budget_exceeded", "error", "no_progress",
                          "batch_open", "batch_close", "reflow", "member_write_check",
-                         "verify_tier", "sediment", "trend", "domain_pack_check")
+                         "verify_tier", "sediment", "trend", "domain_pack_check",
+                         "compaction")
 
 
 def _trace_error(w, cfg, event, actor, detail):
@@ -5437,6 +5443,36 @@ def _loop_reflow(args, cfg):
     return 0
 
 
+def _regression_suite_exists(name):
+    """B19：回归套件名真实性判据（batch-close 用）。
+
+    合法形态（满足其一）：
+      · name == "ensure_settings"（内置执行器，非 test_ 前缀形态）；
+      · scripts/<name>.py 存在（声明名本身带 test_ 前缀，如 test_domain_pack）；
+      · scripts/test_<name>.py 存在（声明名是裸名，如 test_harness 声作 harness——
+        regression_required 历史三项就是裸名形态）。
+    为什么必须 fail-closed：收批证据（回归清单）本身无真实性核验时，
+    「声明跑过」与「真的跑过」在状态文件里不可区分——这是 v3.4.2
+    verify-artifact 治过的 self-report 失真在批次门上的复发。
+    """
+    n = str(name or "").strip()
+    if not n:
+        return False
+    if n == "ensure_settings":
+        return True
+    sc = os.path.join(PKG, "scripts")
+    return os.path.isfile(os.path.join(sc, f"{n}.py")) or \
+        os.path.isfile(os.path.join(sc, f"test_{n}.py"))
+
+
+def _batch_seq(bid):
+    """B19：批次 id 的排序键——b<unix秒> 形态取数值；非形态按字符串排序兜底。"""
+    s = str(bid or "")
+    if s.startswith("b") and s[1:].isdigit():
+        return (1, int(s[1:]))
+    return (0, s)
+
+
 def _loop_batch(args, cfg, w, actor=""):
     """Loop A 批次门：batch-open / batch-close / batch-status。
 
@@ -5469,6 +5505,78 @@ def _loop_batch(args, cfg, w, actor=""):
             out["warning"] = f"批次 {bid} 未登记（已登记的：{sorted(batches)}）"
         _lc_note(notes)
         print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    # ── B20 ③（第三轮诊断 P2-1）：batch-gc 批次历史压缩 ──────────────────
+    # 病灶：71 批次 / 200KB 无限膨胀（对照 snapshot LRU keep=3、task_state
+    #   state_history_keep=10——loopA 批次是唯一无压缩策略的状态面）；
+    #   28 个测试残留未闭合批次稀释「未闭合=在途」信号。
+    # 策略：**显式触发**（不自动）——closed 且超出保留数（默认 20）的批次
+    #   压入 st["archived_batches"] 摘要区（只留 id/theme/closed_at 三元组）；
+    #   误开批次走 --drop-open 显式废弃（标记 abandoned，不静默删——留痕可溯）。
+    if args.action == "batch-gc":
+        keep = getattr(args, "keep", 0) or 0
+        dry = bool(getattr(args, "dry_run", False))
+        drop_ids = _parse_csv(getattr(args, "drop_open", ""))
+        # 保留数取自 yaml#loop_a.batch_history_keep（B20 新增键），回落 20
+        if keep <= 0:
+            notes = []
+            bcfg = lc.loop_a_batch_cfg(cfg, notes)
+            keep = int(bcfg.get("batch_history_keep", 20) or 20)
+            _lc_note(notes)
+        closed_ids = sorted((k for k, v in batches.items()
+                             if isinstance(v, dict) and v.get("closed")),
+                            key=_batch_seq)
+        # closed 且超出最近 keep 个 ⇒ 待压缩
+        to_archive = closed_ids[:-keep] if len(closed_ids) > keep else []
+        arch = st.setdefault("archived_batches", [])
+        plan = {"archive": to_archive, "drop_open": drop_ids,
+                "keep": keep, "dry_run": dry,
+                "before_batches": len(batches),
+                "before_open": sum(1 for v in batches.values()
+                                   if isinstance(v, dict) and not v.get("closed")
+                                   and not v.get("abandoned"))}
+        # 误开批次显式废弃：只允许废弃**未闭合**批次，且必须给出理由级参数（显式列出 id）
+        for did in drop_ids:
+            if did not in batches:
+                print(json.dumps({"ok": False, "reason": "unknown_batch",
+                                  "batch": did,
+                                  "hint": "--drop-open 只接受已登记的批次 id"},
+                                 ensure_ascii=False, indent=2), file=sys.stderr)
+                return 2
+            if batches[did].get("closed"):
+                print(json.dumps({"ok": False, "reason": "batch_already_closed",
+                                  "batch": did,
+                                  "hint": "closed 批次走 archive 路径，不走 drop-open"},
+                                 ensure_ascii=False, indent=2), file=sys.stderr)
+                return 2
+        if dry:
+            plan["after_batches"] = len(batches) - len(to_archive) - len(drop_ids)
+            print(json.dumps({"ok": True, "mode": "dry-run", "plan": plan},
+                             ensure_ascii=False, indent=2))
+            return 0
+        for k in to_archive:
+            b = batches[k]
+            arch.append({"id": b.get("id", k), "theme": b.get("theme", ""),
+                         "closed_at": b.get("closed_at", ""),
+                         "archived_at": now_iso()})
+            del batches[k]
+        for k in drop_ids:
+            batches[k]["abandoned"] = True
+            batches[k]["abandoned_at"] = now_iso()
+        _loop_mark_writer(st, actor)
+        _loop_hist(st, "batch_gc", {"archived": len(to_archive),
+                                    "dropped_open": len(drop_ids), "keep": keep})
+        _trace(w, cfg, "batch_close", actor,
+               {"loop": "a", "action_detail": "batch-gc",
+                "archived": len(to_archive), "dropped_open": len(drop_ids),
+                "keep": keep})
+        _atomic_write_json(path, st)
+        print(json.dumps({"ok": True, "archived": len(to_archive),
+                          "dropped_open": len(drop_ids), "keep": keep,
+                          "batches_now": len(batches),
+                          "archived_total": len(arch), "state_file": path},
+                         ensure_ascii=False, indent=2))
         return 0
 
     # ── batch-open：开工前声明 + 越界校验 + 起基线 commit ────────────────
@@ -5579,6 +5687,49 @@ def _loop_batch(args, cfg, w, actor=""):
               f"跑齐再收批（loop_a.regression_required）；"
               f"「跑了两项就算了」是最常见的自评失真入口", file=sys.stderr)
         return 1
+
+    # ── B19 ②b（第三轮诊断 P1-1）：回归套件名真实性校验 ──────────────────
+    # 病灶（本轮隔离实证）：传 nonexist_suite 被静默接受且 ok:true——
+    #   「跑过回归」可以是幻觉声明（self-report 失真的最新变种）。
+    # 判据：声明的每个套件须对应 scripts/test_<name>.py 或 ensure_settings
+    #   （内置执行器）——未知名 ⇒ rc=2 拒绝且**不落状态**（fail-closed）。
+    unknown = [r for r in ran if not _regression_suite_exists(r)]
+    if unknown:
+        _trace(w, cfg, "batch_close", actor,
+               {"batch": bid, "loop": "a", "ok": False,
+                "reason": "unknown_regression_suite",
+                "unknown": unknown})
+        print(json.dumps({"ok": False, "batch": bid,
+                          "reason": "unknown_regression_suite",
+                          "unknown_suites": unknown,
+                          "hint": "每个声明的套件须对应 scripts/test_<name>.py "
+                                  "或 ensure_settings",
+                          "notes": notes_all}, ensure_ascii=False, indent=2))
+        print(f"⛔ 回归清单含 {len(unknown)} 个不存在的套件：{unknown}——"
+              f"「跑过回归」不得是幻觉声明（B19）；批次保持 open", file=sys.stderr)
+        return 2
+
+    # ── B19 ②c（第三轮诊断 P1-1 连带）：闭合批次归属校验 ──────────────────
+    # 病灶（本轮实证）：诊断探针用假套件名顺手闭合了 28 天前的旧批次
+    #   （b1793532390）——任意已开批次可被后续任意一次 batch-close 闭合。
+    # 判据：不带 --batch 时若存在多个未闭合批次，**只允许闭合最近开的一个**
+    #   （误开批次应显式走 batch-gc 清理，而不是被顺手闭合）。
+    opened_ids = [k for k, v in batches.items()
+                  if isinstance(v, dict) and not v.get("closed")]
+    if opened_ids and bid in opened_ids and bid != max(opened_ids, key=_batch_seq):
+        newest = max(opened_ids, key=_batch_seq)
+        _trace(w, cfg, "batch_close", actor,
+               {"batch": bid, "loop": "a", "ok": False,
+                "reason": "stale_batch_close", "newest_open": newest})
+        print(json.dumps({"ok": False, "batch": bid, "reason": "stale_batch_close",
+                          "newest_open_batch": newest,
+                          "open_batches": opened_ids,
+                          "hint": "存在更新的未闭合批次——旧批次不得被顺手闭合；"
+                                  "确要关闭请先用 loop batch-gc 清理误开批次",
+                          "notes": notes_all}, ensure_ascii=False, indent=2))
+        print(f"⛔ 批次 {bid} 不是最新未闭合批次（最新：{newest}）——"
+              f"旧批次不得被后续调用顺手闭合（B19）", file=sys.stderr)
+        return 2
 
     # ③ 最小补丁纪律（patch_discipline）：实际改动集合 ⊆ 声明集合
     actual, why = _git_changed_files()
@@ -6178,7 +6329,7 @@ def cmd_loop(args):
                   file=sys.stderr)
 
     # ── v3.20.0 B：Loop A 批次门（仅 --loop a；Loop A 状态独立于 Loop B）────
-    if args.action in ("batch-open", "batch-close", "batch-status"):
+    if args.action in ("batch-open", "batch-close", "batch-status", "batch-gc"):
         if loop != "a":
             print(f"用法错误：`{args.action}` 属 Loop A（改专家团工程），须带 --loop a；"
                   f"处理用户课件用 Loop B。", file=sys.stderr)
@@ -7385,8 +7536,12 @@ LOOP_ACTION_DOC = [
     ("batch-close", "A", "收批次（确认→回归→最小补丁）",
      "[--batch] --confirmed --regression a,b,c",
      "loop_a.confirm_before_each_batch / regression_required / patch_discipline",
-     "0 收批 / 1 未确认或回归缺或改动超范围 / 2 用法错"),
+     "0 收批 / 1 未确认或回归缺或改动超范围 / 2 用法错或未知套件或旧批次"),
     ("batch-status", "A", "批次与判据来源（取自 yaml / 回落内置值）", "[--batch]", "loop_a.*", "0"),
+    ("batch-gc", "A", "批次历史压缩（closed 超保留数压入 archived 摘要区；误开批次显式废弃）",
+     "[--keep N] [--drop-open <id,...>] [--dry-run]",
+     "loop_a.batch_history_keep（B20 新增，缺省 20）",
+     "0 完成（或 dry-run） / 2 用法错"),
     ("review", "B", "轮报登记（六项齐全且非空）", "--file",
      "loop_b.round_review.required + required_items", "0 齐 / 1 缺项 / 2 用法错"),
     ("retrieval", "B", "检索次数计数（超预算即停）", "--n",
@@ -7453,7 +7608,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.28.3", "executable": __file__,
+    out = {"version": "v3.28.4", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -8079,7 +8234,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.3")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.4")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -8381,6 +8536,8 @@ def main():
                                       "make-gate", "block", "terminate", "check-path",
                                       # v3.20.0 B：Loop A 批次门（仅 --loop a）
                                       "batch-open", "batch-close", "batch-status",
+                                      # B20（第三轮 P2-1）：批次历史压缩（显式触发，不自动）
+                                      "batch-gc",
                                       # v3.20.0 C：Loop B 判据动作
                                       "review", "retrieval", "baseline", "delta",
                                       "geo-baseline", "defaults",
@@ -8430,6 +8587,13 @@ def main():
     p.add_argument("--regression", default="",
                    help="batch-close：已跑回归项（逗号分隔；缺一即不收批，"
                         "取自 harness.yaml#loop_a.regression_required）")
+    # ── B20：batch-gc 参数（批次历史压缩，显式触发）───────────────────────
+    p.add_argument("--keep", type=int, default=0,
+                   help="batch-gc：closed 批次保留数（默认取 yaml#loop_a.batch_history_keep，缺省 20）")
+    p.add_argument("--drop-open", dest="drop_open", default="",
+                   help="batch-gc：显式废弃的误开批次 id（逗号分隔；标记 abandoned 留痕，不静默删）")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="batch-gc：只打印压缩计划，不落状态")
     # ── v3.20.0 C：Loop B 判据动作参数 ────────────────────────────────────
     p.add_argument("--n", type=int, default=1,
                    help="retrieval：本次检索次数（累加到本轮，超 "

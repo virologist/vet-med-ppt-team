@@ -67,13 +67,25 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 > harness.py loop batch-open  --loop a --note <本批主题> --files scripts/<目标脚本>.py,config/<目标配置>.yaml
 > harness.py loop batch-status --loop a [--batch <id>]
 > harness.py loop batch-close --loop a --batch <id> --confirmed \
->            --regression ensure_settings,test_harness,test_five_gates
+>            --regression <yaml#loop_a.regression_required 现值（B20 后 7 项，勿硬编码）>
+> harness.py loop batch-gc    --loop a [--keep N] [--drop-open <id,...>] [--dry-run]
 > ```
 > · `batch-open`：声明文件须先过白名单（`loop_a.scope` / `forbidden_paths`），越界即拒
-> · `batch-close` 三条判据（均读 `config/harness.yaml#loop_a`）：
+> · `batch-close` 五条判据（均读 `config/harness.yaml#loop_a`）：
 >   ① `confirm_before_each_batch=true` 且未带 `--confirmed` → **exit 1**（第 4 步）
 >   ② `regression_required` 列出的项没跑齐 → exit 1 并列出缺哪几项（第 6 步）
 >   ③ `patch_discipline=minimal` → 用 `git status` 比对**实际改动集合 ⊆ 声明集合**（第 3 步）
+>   ④ **B19 套件名真实性**：`--regression` 含未知套件（既非 `scripts/<名>.py`
+>      亦非 `scripts/test_<名>.py` 亦非 `ensure_settings`）→ **exit 2** 且批次保持
+>      open——「跑过回归」不得是幻觉声明（第三轮诊断实证：`nonexist_suite`
+>      曾被静默接受且 ok:true）
+>   ⑤ **B19 闭合归属**：存在更新的未闭合批次时闭合旧批次 → **exit 2**
+>      （旧批次曾被诊断探针用假套件名顺手闭合——跨批污染状态机）
+> · `batch-gc`（**B20 · 第三轮 P2-1**）：批次历史压缩，**显式触发不自动**——
+>   closed 超保留数（`loop_a.batch_history_keep`，缺省 20）压入
+>   `archived_batches` 摘要区（id/theme/closed_at 三元组，可溯不可展开）；
+>   误开批次走 `--drop-open` 显式废弃（标记 abandoned 留痕）；`--dry-run` 只看计划。
+>   背景：71 批次/200KB 无压缩先例（snapshot 有 LRU keep=3、task_state 有 keep=10）。
 > ⚠ ③ 判的是"改动有没有超出声明范围"，**不是**"改得多不多、该不该改"——后者是人的判断。
 > ⚠ 包目录非 git 仓库或 git 不可用时，③ **不做比对并显式告警**（不静默放行、也不假称已判）。
 

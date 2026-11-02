@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.28.3"
+version: "3.28.4"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -295,11 +295,15 @@ observability:
   # v3.18.0 G6：新增 compaction ← `state compact`（状态压缩）。此前 `state validate`
   #   报「状态文件 N bytes 超过上限，必须 compaction」，但**全包无 compaction 实现**，
   #   那句报错没有下文；现在它对应一条真命令，压缩动作也必须留痕（压前/压后字节 + 丢了什么）。
+  # ⚠ B19（第三轮诊断 P1-2）：事件声明与 harness.py#TRACE_EVENTS_DECLARED 双向对账
+  #   （test_trace_events 断言两集合相等）。B17 加 domain_pack_check 时漏改本段——
+  #   「声明了却没产出」检查对新事件失明 8 天。此后任一侧单独增删事件名都会红。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
                  "error", "no_progress", "compaction",
                  "batch_open", "batch_close", "reflow",
-                 "member_write_check", "verify_tier", "sediment", "trend"]
+                 "member_write_check", "verify_tier", "sediment", "trend",
+                 "domain_pack_check"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──
@@ -372,7 +376,17 @@ loop_a:
     - "<工作区>/.workbuddy/artifacts"
   patch_discipline: "minimal"     # 只围绕已核验真实缺口做最小补丁
   confirm_before_each_batch: true # 每批修改前必须向管家节点确认
-  regression_required: ["ensure_settings", "test_harness", "test_five_gates"]
+  # B20-④（第三轮诊断 P2-2）：扩容 +4——B13-B18 期间「改 config 键值⇒登记表守卫红」
+  #   触发 5 次、test_arch_drift 漏带造成过一次带红提交（B15）。这四套是事实上的
+  #   高频必带项，此前全靠主理人记忆传参（漏带=收批门禁对最常红的面失明）。
+  #   ensure_settings 是内置执行器，其余均对应 scripts/test_<name>.py。
+  regression_required: ["ensure_settings", "test_harness", "test_five_gates",
+                        "test_dead_config_disposition", "test_inspection_zone_registry_red",
+                        "test_arch_drift", "test_domain_pack"]
+  # B20-③（第三轮诊断 P2-1）：批次历史压缩保留数——closed 批次超此数压入
+  #   archived_batches 摘要区（显式 `loop batch-gc` 触发，不自动）。
+  #   对照先例：snapshot LRU keep=3 / task_state state_history_keep=10。
+  batch_history_keep: 20
 
 # ── 缺陷回流台账（v3.28.2 · Loop A 十三维度诊断 D6/P0-1 缺口）────────────
 # 病灶（本轮实测）：Loop A 反复出现「**改规则不改输出**」——config/references 里的

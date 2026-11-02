@@ -6,7 +6,51 @@
 
 ---
 
-## [v3.28.3] - 2026-11-01（Loop A 从零诊断十三维度：七批加固）
+## [v3.28.4] - 2026-11-02（Loop A 第三轮从零诊断：B19+B20 双修）
+
+> 依据：第三轮总控指令（与前两轮同文）。诊断报告落盘于会话工作区
+> `outputs/LoopA3_诊断报告_20261102.md`。
+> 基线：856 passed / 1 skipped / 0 failed，体检 27/27 ✅，HEAD=1760162（B18 终态）。
+> 本轮聚焦「升级之升级」：六批机制存活核查 10/10 + 升级自身引入的 5 项新短板
+> （2 P1 + 2 P2 + 1 P3；P3 沉默期如实登记不修）。
+
+### B19（P1×2 · 收批门禁可信度）
+
+- **P1-1 套件名真实性校验**：batch-close 的 `--regression` 含未知套件
+  （不对应 `scripts/<名>.py` / `scripts/test_<名>.py` / `ensure_settings` 任一形态）
+  ⇒ **rc=2 拒绝且批次保持 open**（fail-closed）。第三轮实证：`nonexist_suite`
+  曾被静默接受且 ok:true——「跑过回归」可以是幻觉声明。
+- **P1-1 连带·闭合归属校验**：存在更新的未闭合批次时闭合旧批次 ⇒ rc=2 拒绝
+  （诊断探针曾用假套件名顺手闭合 28 天前的 b1793532390）。
+- **P1-2 trace_events 双向对账**：yaml 补 `domain_pack_check`（B17 漏）、
+  harness 常量补 `compaction`（v3.18.0 漏）——双向漂移各 1 项归零；
+  新增「yaml 集合 == harness 常量集合」断言（test_trace_events ③向 +
+  test_batch_gate_b19 T4/T5），任一侧单独增删事件名都会红；
+  test_trace_events 补 `domain-pack-check` 真触发（契约盲区 8 天后闭合）。
+
+### B20（P2×2 · 状态治理）
+
+- **P2-1 batch-gc 批次历史压缩**：新子命令 `loop batch-gc`（**显式触发不自动**）——
+  closed 超保留数（新键 `loop_a.batch_history_keep=20`）压入 `archived_batches`
+  摘要区（id/theme/closed_at 三元组）；误开批次 `--drop-open` 显式废弃
+  （标记 abandoned 留痕不静默删）；`--dry-run` 只看计划。背景：71 批次/200KB
+  无压缩策略（对照 snapshot LRU keep=3、task_state keep=10）。
+- **P2-2 regression_required 扩容 +4**：纳入四套高频连带守卫
+  （test_dead_config_disposition / test_inspection_zone_registry_red /
+  test_arch_drift / test_domain_pack）——B13-B18 期间「改 config⇒登记表守卫红」
+  触发 5 次、B15 曾因漏带 test_arch_drift 带红提交；扩容后收批漏带自动红。
+
+### 守卫与验证
+
+- 新增 `scripts/test_batch_gate_b19.py`（10 例：T1-T10）+ **3 个变异体全杀**
+  （真实性校验旁路⇒T1红 / 归属校验旁路⇒T3红 / gc删档不留痕⇒T7红）。
+- 连带同步：test_loop_wiring T4b 改动态取 yaml 现值（扩容即适配）；
+  test_trace_events 收批触发改同源取清单 + 补 domain-pack-check 触发；
+  references/dual-loop-governance.md 批次门段更新（三条判据→五条 + batch-gc）。
+- 免检区登记表：harness.yaml#observability / #loop_a 两段指纹已刷
+  （sync_zone_registry.py --confirm，教训第 6 次触发仍零遗漏）。
+
+---
 
 > ⚠ **版本号纠正**：上一轮（2026-10-30）的 v3.28.2 条目已发布，但当时**漏改**
 > `.codebuddy-plugin/plugin.json`（一直停在 3.28.1）⇒ 版本序列在 3.28.2 处断裂。

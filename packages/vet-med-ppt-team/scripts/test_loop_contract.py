@@ -301,42 +301,55 @@ class TestT5OriginalReadonly(_Base):
 
 # ══════════════════════════ T6–T7：Loop A 批次门 ══════════════════════════
 class TestT6Regression(_Base):
-    """T6：loop_a.regression_required —— 回归项是否跑齐。"""
+    """T6：loop_a.regression_required —— 回归项是否跑齐。
+
+    B20-④ 扩容后必备 = 7 项——断言从硬编码三项改为**动态取 yaml 现值**
+    （保证每次扩容本套不假红；扩容本身由 test_batch_gate_b19 T9 专项守卫）。
+    """
+
+    def _required_now(self):
+        import yaml as _y
+        with open(os.path.join(PKG, "config", "harness.yaml"), encoding="utf-8") as f:
+            _c = _y.safe_load(f) or {}
+        return [str(x) for x in ((_c.get("loop_a") or {}).get("regression_required") or [])]
 
     def test_T6_positive_all_ran(self):
-        ok, missing, required, extra = LC.regression_check(
-            self.cfg, ["ensure_settings", "test_harness", "test_five_gates"])
-        self.assertTrue(ok, f"三项齐应通过，缺：{missing}")
+        req = self._required_now()
+        ok, missing, required, extra = LC.regression_check(self.cfg, list(req))
+        self.assertTrue(ok, f"全部 {len(req)} 项齐应通过，缺：{missing}")
         self.assertEqual(missing, [])
-        self.assertEqual(sorted(required),
-                         ["ensure_settings", "test_five_gates", "test_harness"])
+        self.assertEqual(sorted(required), sorted(req))
         self.assertEqual(extra, [])
 
     def test_T6_reverse_two_of_three(self):
-        """反例：只跑两项 ⇒ missing 必须非空且指名缺哪一项。
+        """反例：只跑前两项 ⇒ missing 必须非空且指名缺哪些项。
 
         如果这个值改了，**regression_check()** 的 missing 应该跟着变。
         "跑了两项就算了"是 Loop A 最典型的自评失真入口。
         """
+        req = self._required_now()
         ok, missing, _required, _extra = LC.regression_check(
-            self.cfg, ["ensure_settings", "test_harness"])
-        self.assertFalse(ok, "只跑两项却判合格——回归门形同虚设")
-        self.assertEqual(missing, ["test_five_gates"])
+            self.cfg, req[:2])
+        self.assertFalse(ok, "只跑前两项却判合格——回归门形同虚设")
+        # missing 按 required 原序返回（非排序）——与 regression_check 语义一致
+        self.assertEqual(missing, [r for r in req if r not in req[:2]])
 
     def test_T6_reverse_required_list_from_yaml(self):
-        """反例：往 yaml 的 regression_required 加一项 ⇒ 原"全跑"组合立刻判缺。
+        """反例：往 yaml 的 regression_required 追加一项 ⇒ 原"全跑"组合立刻判缺。
 
         如果这个值改了，**regression_check()** 的 required/missing 应该跟着变
         ——证明"跑齐"的清单真的来自配置，而不是写死在函数里。
+        ⚠ B20 后 yaml 该键是**多行流式列表**——旧的单行 patch_text 目标已不存在，
+        改为运行时改 cfg（同型判定：改配置→行为必须跟着变）。
         """
-        t = patch_text(HARNESS_TEXT,
-                       "regression_required: [\"ensure_settings\", \"test_harness\", "
-                       "\"test_five_gates\"]",
-                       "regression_required: [\"ensure_settings\", \"test_harness\", "
-                       "\"test_five_gates\", \"test_loop_contract\"]")
+        req = self._required_now()
+        cfg2 = dict(self.cfg)
+        la2 = dict(cfg2.get("loop_a") or {})
+        la2["regression_required"] = req + ["test_loop_contract"]
+        cfg2["loop_a"] = la2
         ok, missing, required, _ = LC.regression_check(
-            cfg_of(t), ["ensure_settings", "test_harness", "test_five_gates"])
-        self.assertFalse(ok, "yaml 加了第四项后原组合仍判合格——清单不是从配置读的")
+            cfg2, list(req))
+        self.assertFalse(ok, "清单加一项后原组合仍判合格——清单不是从配置读的")
         self.assertEqual(missing, ["test_loop_contract"])
         self.assertIn("test_loop_contract", required)
 
@@ -944,8 +957,13 @@ class TestT20ConfigGetters(_Base):
         la = LC.loop_a_batch_cfg(self.cfg)
         self.assertTrue(la["confirm_before_each_batch"])
         self.assertEqual(la["patch_discipline"], "minimal")
+        # B20-④ 扩容后动态取 yaml 现值（断言与生产同源；硬编码会在扩容时假红）
+        import yaml as _y
+        with open(os.path.join(PKG, "config", "harness.yaml"), encoding="utf-8") as f:
+            _c = _y.safe_load(f) or {}
         self.assertEqual(la["regression_required"],
-                         ["ensure_settings", "test_harness", "test_five_gates"])
+                         [str(x) for x in ((_c.get("loop_a") or {})
+                                           .get("regression_required") or [])])
 
     def test_T20_reverse_geo_baseline_required(self):
         """反例：defaults.geo_baseline_required 改 false ⇒ 返回值跟着变。
