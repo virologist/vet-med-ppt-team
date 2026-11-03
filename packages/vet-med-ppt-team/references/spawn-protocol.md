@@ -41,18 +41,19 @@
   （`config/visual-rules.yaml` / `references/course-profile-defaults.md` / `references/seven-dimension-rubric.md`），
   任务包只写「源 <文件>#<键>」，避免出现第二份数值
 
-> ⚠️ **代码侧尚未强制（跨批需求，v3.17.0 如实标注，不粉饰）**
-> 装配脚本 `vendor/shared-core/assemble_spawn_prompt.py` 的 `check_task_package()` 目前**只校验四要素**：
-> 常量 `TASK_PACKAGE_FIELDS`（该文件第 63 行）与函数体（第 210–217 行）做的是
-> 「**字段名是否作为子串出现在任务包文本里**」的字符串包含判断——
-> `"objective": "x"` 这类**占位写法同样能过**，且**没有验收标准字段**。
-> 因此 `acceptance_criteria` 目前是**文档级契约**，**装配脚本不会拦**；
-> 主理人在 spawn 前须**人工核对**本要素是否齐备（尤其阈值是否指向唯一源）。
-> 代码侧补强方案见本批交付报告的「跨批需求」条目（`shared-core/` 属 vendor 目录，由主理人统一派单）。
+> ✅ **B21（v3.28.5，2026-11-03）已代码强制——以下两段为历史存档，保留以志教训。**
+> 现行校验：`check_task_package_v5()`（联邦真源 plugins/shared-core/，vendor 副本
+> sha256 同步）——JSON 结构解析（整体/```json 围栏/平衡花括号段三形态）+ 五要素
+> 逐字段非空非占位（占位黑名单：x/todo/tbd/待填等）+ acceptance_criteria 非空数组
+> + 每条三件套齐全 + judge_mode ∈ {机,人,机+人} + threshold 须含「源 」引用。
+> 守卫：`scripts/test_batch_gate_b21.py` T1-T5（含散文糊弄必拒的定向反例）+
+> 变异三杀（四要素退化/占位放行/gate 计数伪造）。CLI：`--check-task-package`
+> 默认 v5 口径；`--legacy-check` 保留旧口径仅供兼容。
 >
-> ⚠️ 另注：四要素的现有校验是**子串包含**而非**结构解析**，因此
-> 「字段名出现在正文散文里」也算「已填」——这条弱校验已被本包既有行为证实
-> （正文提及即过），**不可**据此认为任务包合规。
+> ⚠️ **代码侧尚未强制（v3.17.0 至 v3.28.4 期间的历史状态，如实存档）**
+> 装配脚本的 `check_task_package()` 当时**只校验四要素**且是子串包含判断——
+> `"objective": "x"` 占位写法能过、验收标准字段完全缺失、散文提及字段名也算已填。
+> 该状态持续两轮诊断（第三轮升格 P1）后由 B21 清偿。
 
 ### 回传信封（v3.12.0：定义见 `references/result-envelope.yaml`，此处只列必填）
 

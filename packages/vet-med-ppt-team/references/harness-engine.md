@@ -24,7 +24,9 @@ W="<工作空间>"
 $H preflight --team <团队名> --workspace "$W"
 
 # ② 确定性路由：复杂度 → spawn 计划（不再靠主理人临场判断）
-$H route --level L2
+#    ⚠ B21（F4）：route 必带 --task-id——不带则 team_create 事件无任务标识，
+#    trace 按任务回放/归因失效（存量 687 条无 id 事件即此因，不可补救）。
+$H route --level L2 --task-id <本次任务ID>
 
 # ③ 初始化状态机与预算
 $H state init --workflow WF-1 --stage 0 --workspace "$W"

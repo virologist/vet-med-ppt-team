@@ -6,6 +6,50 @@
 
 ---
 
+## [v3.28.5] - 2026-11-03（Loop A 第四轮从零诊断：B21+B22 双修）
+
+> 依据：第四轮总控指令（与前两轮同文）。诊断报告落盘
+> `outputs/LoopA4_诊断报告_20261103.md`。
+> 基线：54/54 套件 rc=0，体检 27/27 ✅，v3.28.4（B19+B20 终态）。
+> 本轮四维度评估结论：治理地基完备；核心缺口=「多智能体系统成色」——
+> 任务包质量门禁是软约束 + 全系统零生产流量。
+
+### B21（P1×2 · 门禁与流量的真实性）
+
+- **① 任务包校验升维（F1，v3.17.0 跨批需求清偿）**：联邦真源
+  `shared-core/assemble_spawn_prompt.py` 新增 `check_task_package_v5()`——
+  JSON 结构解析（三形态）+ 五要素逐字段非空非占位（占位黑名单）+
+  acceptance_criteria 三件套 + judge_mode 枚举 + threshold「源 」引用格式。
+  子串包含判断时代的三种糊弄法（散文提及字段名/占位值/缺第五要素）全部失效。
+  CLI：`--check-task-package` 默认 v5；`--legacy-check` 保留旧口径。
+  联邦连带：vendor 副本 sha256 同步；loop_a.scope 白名单 +vendor/shared-core/
+  （B16 单文件先例扩展）；其余 3 包 list-members 冒烟通过（该契约仅本包守卫）。
+- **② 批次生命周期接入 gate 事件面（F3 可行子集）**：batch-open/close 写
+  gate 事件（deck=[loopA]<bid>，counts.p0=拒收数/p1=无信封 spawn 数）——
+  **trend 首次有真实数据流**（工程环自流量，不越权 Loop B）。
+
+### B22（P2×2 + P3 · 可回放与可度量）
+
+- **③ spawn-信封对账（F2）**：cmd_spawn 新增 `--envelope`（校验六必填→回填
+  sha256）；收批时 `_spans_without_envelope()` 扫描批内无信封 spawn——
+  stderr warning + gate 事件 envelopes_missing 可见化（不阻断）。
+- **④ route --task-id 纪律（F4）**：实测代码已透传（B15 幂等签名含 task_id），
+  缺口在调用习惯——harness-engine.md 开工三步强制带 --task-id（存量 687 条
+  无 id 事件不可补救，如实标注）。
+- **⑤ 智能化指标定义（F5）**：`references/intelligence-metrics.md`——
+  M1 人工介入率 / M2 首过率 / M3 返工率 / M4 自动化覆盖率，四指标三件套
+  （定义+数据源事件+口径公式）挂既有事件；红线：指标不得反噬门禁、
+  无数据≠0、不另立第二事件源。实施路线 S1✅→S2🟡→S3⏳→S4⏳。
+
+### 守卫与验证
+
+- 新增 `scripts/test_batch_gate_b21.py`（12 例）+ **变异三杀**（V1 四要素退化
+  首轮逃逸→T2 断言加固消息口径→重试击杀；V2 占位放行/V3 gate 计数伪造首杀）。
+- 连带：test_vendor_core / test_loop_wiring / test_loop_contract /
+  test_batch_gate_b19 全绿（125 passed）；登记表 loop_a 段指纹刷新。
+
+---
+
 ## [v3.28.4] - 2026-11-02（Loop A 第三轮从零诊断：B19+B20 双修）
 
 > 依据：第三轮总控指令（与前两轮同文）。诊断报告落盘于会话工作区
