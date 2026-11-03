@@ -62,6 +62,17 @@ LOG_PREFIX = "[assemble_spawn_prompt]"
 # 任务包四要素（Anthropic 委派协议；缺一即补齐再 spawn）
 TASK_PACKAGE_FIELDS = ["objective", "output_format", "constraints", "task_boundary"]
 
+# ── B21（vet-med-ppt-team 第四轮诊断 F1）：第五要素与结构化校验 ──────────────
+# 验收标准三件套（check / judge_mode / threshold）——v3.17.0 起为文档级契约，
+# 本批起为代码级契约（JSON 结构解析，不再是子串包含判断）。
+TASK_PACKAGE_FIELDS_V5 = TASK_PACKAGE_FIELDS + ["acceptance_criteria"]
+ACCEPTANCE_TRIPLET = ("check", "judge_mode", "threshold")
+# 判定方式枚举（唯一源对齐 vet-med-ppt-team references/diagnosis-report-schema.yaml
+# #enums.judge_mode；联邦件不自立新枚举——跨包新增枚举值须回写该唯一源）
+JUDGE_MODE_ENUM = ("机", "人", "机+人")
+# 占位值黑名单：这些「值」在结构解析通过后仍判为未填（防 "x"/空串糊弄）
+_PLACEHOLDER_VALUES = {"", "x", "xx", "xxx", "todo", "tbd", "n/a", "待填", "占位", "?"}
+
 
 def log(msg: str) -> None:
     """统一日志输出到 stderr，避免污染 stdout 的 prompt 正文。"""
@@ -301,10 +312,138 @@ def check_task_package(task_text: str) -> tuple[bool, list[str]]:
     """
     校验任务包四要素是否齐全（objective / output_format / constraints / task_boundary）。
     这是**结构性校验**（字段存在性），属确定性范畴；内容质量由主理人判断。
+
+    ⚠ B21 前的旧实现是**子串包含判断**（`f not in low`）——「字段名出现在
+    正文散文里」也算已填，且无第五要素。保留仅为兼容既有单测；**生产路径
+    请用 check_task_package_v5**（JSON 结构解析 + 五要素 + 三件套 + 占位值拒收）。
     """
     low = task_text.lower()
     missing = [f for f in TASK_PACKAGE_FIELDS if f not in low]
     return (not missing), missing
+
+
+def _extract_task_json(task_text: str):
+    """从任务包文本提取 JSON 对象——三种形态按序尝试：
+    ① 整体即 JSON；② ```json 围栏块；③ 首个 {...} 平衡段。找不到返回 None。"""
+    import json as _json
+    text = (task_text or "").strip()
+    if not text:
+        return None
+    # ① 整体
+    try:
+        obj = _json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    # ② 围栏块
+    import re as _re
+    m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.S)
+    if m:
+        try:
+            obj = _json.loads(m.group(1))
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+    # ③ 平衡花括号段（从首个 { 起做括号配平，容忍字符串内花括号）
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            c = text[i]
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = _json.loads(text[start:i + 1])
+                        return obj if isinstance(obj, dict) else None
+                    except Exception:
+                        break
+        start = text.find("{", start + 1)
+    return None
+
+
+def check_task_package_v5(task_text: str) -> tuple[bool, list[str]]:
+    """
+    B21：任务包五要素的**结构化校验**（替代子串包含判断）。
+
+    判什么（全部确定性可判）：
+      ① 任务包文本可解析出 JSON 对象（整体/围栏/平衡段三形态）；
+      ② 五要素齐全：objective / output_format / constraints / task_boundary /
+         acceptance_criteria；
+      ③ 四个基础要素非空非占位（constraints 允许空数组——「无约束」是合法声明，
+         但须显式写 []，不是字段缺失）；
+      ④ acceptance_criteria 是数组且非空；每条是对象且三件套齐全
+         （check / judge_mode / threshold）；
+      ⑤ judge_mode ∈ {机, 人, 机+人}；threshold 含「源 」引用格式（阈值必须
+         指向唯一源，不得在任务包里另写一份裸数值——spawn-protocol.md §一纪律）。
+
+    不判什么：验收标准的内容对不对、阈值数值合不合理——那是主理人与
+    评审人的语义判断，脚本不介入（三件事分工宪法）。
+
+    返回 (ok, problems)；problems 为人读问题清单（空列表 = 通过）。
+    """
+    import json as _json
+    problems: list[str] = []
+    obj = _extract_task_json(task_text)
+    if obj is None:
+        return False, ["任务包未解析出 JSON 对象（三种形态均未命中）——"
+                       "五要素须以 JSON 形态给出（整体/```json 围栏/平衡花括号段）"]
+
+    # ② 五要素存在性
+    for f in TASK_PACKAGE_FIELDS_V5:
+        if f not in obj:
+            problems.append(f"缺要素：{f}")
+    if problems:
+        return False, problems
+
+    # ③ 基础要素非空非占位
+    for f in TASK_PACKAGE_FIELDS:
+        v = obj.get(f)
+        s = str(v).strip() if not isinstance(v, (list, dict)) else (
+            "" if isinstance(v, list) and not v else "ok")
+        if isinstance(v, str) and s.lower() in _PLACEHOLDER_VALUES:
+            problems.append(f"要素 {f} 是占位值（{s!r}）——不得用占位符糊弄")
+        elif isinstance(v, str) and not s:
+            problems.append(f"要素 {f} 为空串")
+        elif v is None:
+            problems.append(f"要素 {f} 为 null")
+
+    # ④⑤ 验收标准结构与枚举
+    ac = obj.get("acceptance_criteria")
+    if not isinstance(ac, list) or not ac:
+        problems.append("acceptance_criteria 须为非空数组")
+    else:
+        for idx, item in enumerate(ac, 1):
+            if not isinstance(item, dict):
+                problems.append(f"验收项 #{idx} 不是对象")
+                continue
+            for k in ACCEPTANCE_TRIPLET:
+                if k not in item:
+                    problems.append(f"验收项 #{idx} 缺三件套字段：{k}")
+                elif isinstance(item[k], str) and not item[k].strip():
+                    problems.append(f"验收项 #{idx} 字段 {k} 为空串")
+            jm = item.get("judge_mode")
+            if isinstance(jm, str) and jm not in JUDGE_MODE_ENUM:
+                problems.append(f"验收项 #{idx} judge_mode={jm!r} 不在枚举 {JUDGE_MODE_ENUM}")
+            th = item.get("threshold")
+            if isinstance(th, str) and th.strip() and "源" not in th:
+                problems.append(f"验收项 #{idx} threshold 未含「源 」引用格式"
+                                f"（须指向唯一源，如「>= 12.0，源 config/visual-rules.yaml#font.body_min_pt」）")
+
+    return (not problems), problems
 
 
 def resolve_body_skills(expert_dir: Path, body: str) -> list[str]:
@@ -422,7 +561,11 @@ def main() -> int:
     ap.add_argument("--task-id", help="任务 ID，如 T-20260929-001")
     ap.add_argument("--out", help="输出到文件（默认 stdout）")
     ap.add_argument("--check-task-package", action="store_true",
-                    help="校验任务包四要素齐全，缺则 exit 4")
+                    help="校验任务包（B21 起默认五要素结构化校验：JSON 解析+"
+                         "acceptance_criteria 三件套+占位值拒收；缺则 exit 4）")
+    ap.add_argument("--legacy-check", action="store_true",
+                    help="配合 --check-task-package 用旧四要素子串口径"
+                         "（仅为兼容既有脚本；新代码禁用）")
     ap.add_argument("--run-dir", default=None,
                     help="本轮运行目录；传入后会在 prompt 中注入「产出落盘契约」"
                          "（成员必须把产出写入 <run-dir>/<task_id>__<member-id>.md）")
@@ -483,11 +626,23 @@ def main() -> int:
         task_text = tf.read_text(encoding="utf-8")
 
         if args.check_task_package:
-            ok, missing = check_task_package(task_text)
-            if not ok:
-                log(f"❌ 任务包缺要素：{missing}（四要素：{TASK_PACKAGE_FIELDS}）")
-                return 4
-            log(f"✅ 任务包四要素齐全")
+            # B21：默认走 v5 结构化校验（五要素+三件套+占位值拒收）；
+            # --legacy-check 保留旧四要素子串口径（仅为既有脚本兼容，不建议）。
+            if getattr(args, "legacy_check", False):
+                ok, missing = check_task_package(task_text)
+                if not ok:
+                    log(f"❌ 任务包缺要素：{missing}（四要素：{TASK_PACKAGE_FIELDS}）")
+                    return 4
+                log(f"✅ 任务包四要素齐全（legacy 子串口径）")
+            else:
+                ok, problems = check_task_package_v5(task_text)
+                if not ok:
+                    log(f"❌ 任务包未过五要素结构化校验（B21）：")
+                    for p in problems:
+                        log(f"   - {p}")
+                    return 4
+                log(f"✅ 任务包五要素结构化校验通过"
+                    f"（含 acceptance_criteria {len(_extract_task_json(task_text).get('acceptance_criteria', []))} 条）")
 
     run_dir = None
     if args.run_dir:

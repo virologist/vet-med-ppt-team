@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.4
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.5
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -5215,6 +5215,47 @@ def _loop_hist(st, action, detail):
         {"ts": now_iso(), "action": action, "detail": detail})
 
 
+def _spans_without_envelope(st, w, cfg, bid):
+    """B21③：spawn-信封对账——返回本批期间登记的 spawn 中**无回传信封**的清单。
+
+    病灶（第四轮诊断 F2）：`spawn` 命令是登记器，真实拉起靠宿主平台——
+    「登记的 spawn」与「真实发生并回传的 spawn」无对账机制（self-report
+    最后死角）。本函数把缺口**可见化**（不阻断，收批时列 warning）。
+
+    对账口径：
+      · spawn 侧：cmd_spawn 带 --envelope <path> 时把信封 sha256 回填进
+        detail.envelope_sha256（成员回传信封落盘后主理人回填）；
+      · 本函数扫 trace 中本批时间窗（batch_open 之后）的 spawn 事件，
+        无 envelope_sha256 的即「未对账」。
+    """
+    try:
+        tp = trace_path(w, cfg)
+        if not os.path.isfile(tp):
+            return []
+        opened_at = None
+        b = (st.get("batches") or {}).get(bid) or {}
+        opened_at = b.get("opened_at")
+        out = []
+        with open(tp, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("event") != "spawn":
+                    continue
+                if opened_at and rec.get("ts", "") < opened_at:
+                    continue    # 本批开闸前的 spawn 不属于本批
+                d = rec.get("detail") or {}
+                if not d.get("envelope_sha256"):
+                    out.append({"agent": rec.get("actor", "?"),
+                                "task_id": d.get("task_id", ""),
+                                "ts": rec.get("ts", "")})
+        return out
+    except Exception:
+        return []    # 对账失败不得阻断收批（可见化是增强，不是门禁）
+
+
 def _loop_counts(st):
     items = st.get("items", {})
     frozen = [k for k, v in items.items() if v.get("status") == "frozen"]
@@ -5632,6 +5673,19 @@ def _loop_batch(args, cfg, w, actor=""):
                {"batch": bid, "loop": getattr(args, "loop", "a"),
                 "theme": getattr(args, "note", "") or "",
                 "files": [str(f) for f in declared]})
+        # ── B21②：批次生命周期接入 gate 事件面（第四轮诊断 F3 可行子集）─────
+        # 病灶：gate/verify_tier/trend/sediment 全 0 条——B16 质量闭环三机制
+        #   建好后**零生产数据**（Loop A 不产课件，事件面等 Loop B）。
+        # 本接线不越权 Loop B：把**工程环自身**的批次生命周期映射进 gate 事件
+        #   （deck→batch、counts.p0=开批即拒数），trend 首次有真实数据流。
+        # 口径：batch-open 的 p0=越界拒收文件数（declared 全过=0），
+        #   p1=0（开批无 warning 面）；deck 字段承载 bid（trend 按 deck 聚合
+        #   天然变成按批次聚合）。
+        _trace(w, cfg, "gate", actor,
+               {"deck": f"[loopA]{bid}", "level": "batch-open", "exit": 0,
+                "meaning": "批次开闸（工程环流量）",
+                "counts": {"p0": len(rejected), "p1": 0,
+                           "declared_files": len(declared)}})
         _atomic_write_json(path, st)
         print(json.dumps({"ok": True, "batch": batches[bid], "state_file": path,
                           "notes": notes}, ensure_ascii=False, indent=2))
@@ -5765,6 +5819,23 @@ def _loop_batch(args, cfg, w, actor=""):
             "confirmed": bool(getattr(args, "confirmed", False)),
             "regression": ran,
             "actual_files": [str(f) for f in (actual or [])]})
+    # ── B21③：spawn-信封对账（第四轮诊断 F2）────────────────────────────
+    # 收批时列 warning：本批期间登记的 spawn 若无回传信封落盘，逐条点名
+    # （self-report 最后死角的**可见化**——不阻断，但不得静默）。
+    _spawns_wo_env = _spans_without_envelope(st, w, cfg, bid)
+    if _spawns_wo_env:
+        print(f"⚠ 本批有 {len(_spawns_wo_env)} 个 spawn 登记未见回传信封"
+              f"（对账详情见 trace batch_close.envelopes_missing）", file=sys.stderr)
+    # ── B21②：收批成功的 gate 事件（工程环流量；trend 数据源）────────────
+    # 口径：p0=0（收批即全部校验通过），p1=无信封 spawn 数（warning 面可见），
+    # counts 同时带工程环结构化计数（回归数/改动文件数），trend 可聚合。
+    _trace(w, cfg, "gate", actor,
+           {"deck": f"[loopA]{bid}", "level": "batch-close", "exit": 0,
+            "meaning": "批次收口（工程环流量）",
+            "counts": {"p0": 0, "p1": len(_spawns_wo_env),
+                       "regression_ran": len(ran),
+                       "files_changed": len(actual or [])},
+            "envelopes_missing": _spawns_wo_env or None})
     _atomic_write_json(path, st)
     print(json.dumps({"ok": True, "batch": b, "state_file": path,
                       "notes": notes_all}, ensure_ascii=False, indent=2))
@@ -7608,7 +7679,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.28.4", "executable": __file__,
+    out = {"version": "v3.28.5", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -7677,6 +7748,29 @@ def cmd_spawn(args):
         print(f"⚠ 上下文预算超限：注入 {detail['input_chars']} 字 > 上限 {cap} 字"
               f"（harness.yaml#context.per_stage_inject_cap）——"
               f"按闸序优先裁剪：先裁拓展阅读类素材，保判据类内容。", file=sys.stderr)
+    # ── B21③：spawn-信封对账——回传信封落盘后回填 sha256（消除登记与
+    #    真实回传的对账死角）。信封须符合 result-envelope 六必填（只验存在
+    #    与可解析，语义由 verifier 判）。
+    env_path = str(getattr(args, "envelope", "") or "").strip()
+    if env_path:
+        ep = Path(env_path).expanduser()
+        if not ep.is_file():
+            print(f"用法错误：--envelope 指向的信封文件不存在：{ep}", file=sys.stderr)
+            return 2
+        try:
+            _env = json.loads(ep.read_text(encoding="utf-8"))
+            _env_missing = [k for k in ("agent_id", "task_id", "phase", "status",
+                                        "confidence", "deliverable_summary")
+                            if k not in _env]
+            if _env_missing:
+                print(f"用法错误：信封缺 result-envelope 六必填字段：{_env_missing}",
+                      file=sys.stderr)
+                return 2
+        except Exception as e:
+            print(f"用法错误：信封不是合法 JSON（{type(e).__name__}）", file=sys.stderr)
+            return 2
+        detail["envelope_sha256"] = _sha256_file(ep)
+        detail["envelope_path"] = str(ep)
     rec = _trace(w, cfg, "spawn", args.agent, detail)
     _trace(w, cfg, "agent_spawn", args.agent, detail)      # 兼容既有文档/既有 trace
     print(json.dumps(rec, ensure_ascii=False, indent=2))
@@ -8234,7 +8328,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.4")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.5")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -8359,6 +8453,9 @@ def main():
     p.add_argument("--stage", type=int, default=None, help="当前闸号（0-4）")
     p.add_argument("--input-bytes", type=int, default=0, help="输入 token 估算（按 1 token ≈ 4 chars）")
     p.add_argument("--output-bytes", type=int, default=0, help="输出 token 估算（按 1 token ≈ 4 chars）")
+    p.add_argument("--envelope", default="",
+                   help="B21③：成员回传信封文件路径（result-envelope 六必填）；"
+                        "回填 sha256 进 spawn 事件——收批时对账无信封 spawn 列 warning")
     _ws(p)
     p.set_defaults(func=cmd_spawn)
 

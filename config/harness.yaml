@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.28.4"
+version: "3.28.5"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -338,6 +338,12 @@ loop_a:
     - "<包>/config"
     - "<包>/references"
     - "<包>/agents"
+    # ── B21：vendor/shared-core/ 纳入白名单（目录级，同 test_vendor_core 守卫面）──
+    # 缘由：联邦共享件「真源（plugins/shared-core/）↔ vendor 副本」的 sha256 一致
+    #   由 tests/test_vendor_core.py 强制（防漂移）；但 vendor 副本不在 scope ⇒
+    #   真源升级后「改得了真源却改不了包内副本」＝ 无解漂移（同 B16 docs 先例）。
+    # 边界：只放开 vendor/shared-core/（联邦件的包内落点），不放开整个 vendor/。
+    - "<包>/vendor/shared-core"
     # ── B16：docs/architecture.md 纳入白名单（**单文件**，同 B6a/W1 先例）──
     # 缘由：它是 config/guard.yaml#guarded_docs 的受守卫文档，其「阶段镜像块」
     #   必须与 #stages 逐项一致（test_arch_drift T9 强制）——但它此前**不在
