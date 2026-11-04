@@ -401,10 +401,90 @@ REGRESSION_SKIP_BLOCKS_RELEASE = False
 #:   的假绿形态 —— 那正是本项要消灭的东西。
 REGRESSION_UNVERIFIED = {"suites": [], "cases": 0}
 
-#: 套件级状态常量（三态，供分级报告使用）
+#: 套件级状态常量（四态，供分级报告使用）
 REG_PASS = "pass"                          # 真通过：rc=0 且未检出跳过
 REG_PASS_WITH_SKIPS = "pass_with_skips"   # rc=0 但检出「因环境限制被跳过」
-REG_FAIL = "fail"                          # rc≠0（**语义沿用** v3.9.0 起的行为，不变）
+#: ⚠ **R18 语义变更**（v3.28.8）：此前 rc≠0 **一律**判 `REG_FAIL`（注释写着
+#:   「语义沿用 v3.9.0 起的行为，不变」）⇒ 套件因**宿主 broker 拦 mkdir** 而报错
+#:   （真环境噪声）与套件**真检出缺陷**被混为一谈 ⇒ 噪声伪装成生产缺陷。
+#:   ⇒ R18 起 rc≠0 需再过「三重合取」（见 `detect_env_limited_failure`）：
+#:   满足 ⇒ 判 `REG_ENV_LIMITED`（**不阻断，但计入未验证**）；
+#:   不满足 ⇒ 仍判 `REG_FAIL`（**真缺陷仍阻断**）。
+REG_FAIL = "fail"                          # rc≠0 且**非**环境受限（真缺陷 ⇒ 阻断）
+#: rc≠0，但经三重合取判定为「宿主环境受限」（PermissionError/BlockingIOError
+#: + broker 特征 + 无真缺陷信号）⇒ **不阻断**，但**必须**计入未验证累加器
+#: （否则结论区会显示「✅ 全部通过」⇒ 假绿，比假红更危险）。
+REG_ENV_LIMITED = "env_limited"
+
+#: ── R18-续：超时第三类状态 `REG_TIMEOUT`（v3.28.8）────────────────────
+#: rc≠0 但**不是失败、也不是环境受限** ⇒ 套件在阈值内**没跑完** ⇒
+#:   该套件的「能红」属性本轮**未验证**（既没通过，也没给出失败结论）。
+#:
+#: ⚠ **为何必须单列第三态**（前两态都不够用）：
+#:   · 判 `REG_FAIL`        ⇒ **假红**：超时不是包缺陷，拿它阻断发布属误伤
+#:     （与 R18 治理 `REG_ENV_LIMITED` 的动机同源，但更极端——超时连
+#:      "环境不允许"这个可归因结论都没有）。
+#:   · 判 `REG_ENV_LIMITED` ⇒ **归因错误**：超时与「宿主 broker 拦 mkdir」
+#:      是两回事 ⇒ 把它写成"宿主环境受限"会教用户去查环境，而真因是
+#:      **套件本身太慢**（阈值不够）⇒ 掩盖了「该优化套件」这条真结论。
+#:   · 判 `REG_PASS`         ⇒ **假绿**：压根没跑完，写"通过"是硬造假。
+#:
+#: ⇒ 故：超时 ⇒ `REG_TIMEOUT` ⇒ **不阻断**（rc 仍为 0），
+#:   但**必须**计入未验证累加器（否则结论区写「✅ 全部通过」⇒ 假绿）。
+REG_TIMEOUT = "timeout"
+
+#: 单个回归套件的**默认超时阈值**（秒）——兜底值。
+#:
+#: ⚠ 真源在 `config/harness.yaml#loop_a.regression_timeout_s`；
+#:   本常量仅作「yaml 不可读 / 键缺失」时的兜底（不静默生效，见
+#:   `load_regression_timeout_s`）。
+REGRESSION_TIMEOUT_DEFAULT_S = 180
+
+#: ── R18：环境受限失败的三重合取特征词表（模块级常量，可被测试覆写）──────
+#:
+#: ⚠ **为何做成模块级元组常量**（而非散在函数体里）：
+#:   反向对照（变异测试）必须能**只改这一处**就把判据改坏 ⇒
+#:   若词表硬编码在函数体里，测试只能改函数源码或用 mock ⇒ 对照成本高、
+#:   且容易改出「另一个语义」而非「真的改坏条件」。
+#:   ⇒ 提为常量后，测试只需 `monkeypatch`/属性覆写即可制造「判据恒假」，
+#:   断言随即翻红 ⇒ 证明判据**不是恒真摆设**。
+#:
+#: broker 特征（条件②）：宿主沙箱 broker 拦截时的输出痕迹。
+#:   `broker` / `brokered` / `sandbox-bash` / `shim` / `brokered-sandbox-bash-env.sh`
+#:   —— ⚠ 用**小写**比对（输出形态千变万化：可能有大小写差异）。
+ENV_LIMITED_BROKER_MARKERS = (
+    "broker",
+    "brokered",
+    "sandbox-bash",
+    "shim",
+    "brokered-sandbox-bash-env.sh",
+)
+
+#: 环境受限异常的**类型特征**（条件①）——覆盖 `PermissionError` /
+#: `BlockingIOError` 两个类型名及其常见 errno 变体：
+#:   · `PermissionError` ⇒ `OSError: [Errno 13] Permission denied` 的类型名
+#:   · `BlockingIOError` ⇒ `OSError: [Errno 11] Resource temporarily unavailable`
+#:   · `Operation not permitted` ⇒ macOS 上的 errno 1 变体
+#: ⚠ **只看 errno 不够**：真实权限缺陷（包内某个测试写错路径）同样报
+#:   `Permission denied` ⇒ 真正的闸门是「类型 ∈ 有限白名单」+ 条件② broker 特征。
+ENV_LIMITED_EXCEPTION_MARKERS = (
+    "PermissionError",
+    "BlockingIOError",
+    "OSError: [Errno 13]",
+    "Operation not permitted",
+    "Resource temporarily unavailable",
+)
+
+#: 真缺陷信号（条件③）——**任一命中即否决环境类**：
+#:   · `AssertionError` ⇒ 断言失败（unittest 的 `FAILED (failures=N)` 形态）
+#:   · `failures=`     ⇒ unittest 摘要里的失败计数（**只要有 failures 字段就是断言失败**）
+#: ⚠ 为何 `failures=` 优先级高于一切：unittest 的两种失败摘要形态含义完全不同 ——
+#:   `FAILED (failures=N)` = 断言失败 = **真缺陷**；`FAILED (errors=N)` = 异常抛出。
+#:   ⇒ 只要摘要里出现 `failures=`，无论有没有 broker 特征，一律判 `REG_FAIL`。
+ENV_LIMITED_FALSE_DEFECT_MARKERS = (
+    "AssertionError",
+    "failures=",
+)
 
 
 def count_suite_skips(stdout, stderr=""):
@@ -479,25 +559,159 @@ def has_env_skip(stdout, stderr=""):
     return bool(sig["marker_hit"] and sig["skipped_cases"] > 0)  # MUT_POINT:SKIP_VERDICT
 
 
+def detect_env_limited_failure(stdout, stderr=""):
+    """判定套件失败是否属「宿主环境受限」——**纯函数**（R18 新增）。
+
+    为什么不碰文件系统、不起子进程：判定依据全部来自套件的**输出文本**
+    ⇒ 测试可直接用构造样本调用，无需真跑全量回归。
+
+    ⚠ **三重合取**（任一不满足 ⇒ 非环境类 ⇒ 回退 `REG_FAIL`）：
+      ① 异常类型 ∈ {PermissionError, BlockingIOError}
+         （含 `OSError: [Errno 13] Permission denied` /
+           `Operation not permitted` / `Resource temporarily unavailable` 变体）
+         —— **为何不能只看 errno**：真实权限缺陷（包内测试写错路径、目录权限
+           被改）同样报 `Permission denied` ⇒ 真正的闸门是「类型 ∈ 有限白名单」。
+      ② 消息含 **broker 特征**（`broker` / `brokered` / `sandbox-bash` /
+         `shim` / `brokered-sandbox-bash-env.sh`）
+         —— **为何不能只看异常类型**：任何权限问题都算环境问题 ⇒ 真实的
+           权限缺陷会被洗白成「未验证」（假绿）。
+      ③ 摘要**无**真缺陷信号（无 `AssertionError`、无 `failures=`）
+         —— **为何必须**：unittest 的两种失败摘要形态含义完全不同：
+           `FAILED (failures=N)` = 断言失败 = **真缺陷**；
+           `FAILED (errors=N)`   = 异常抛出（才可能是环境类）。
+           ⇒ 只要出现 `failures=`，无论有无 broker 特征，一律判 `REG_FAIL`。
+
+    ⚠ **反向陷阱**（条件①就是为它设的闸）：`errors=N` 也可能是**代码 bug**
+      （如 `AttributeError`）⇒ 条件①把这类挡在外面 ⇒ 只有
+      `PermissionError`/`BlockingIOError` 才可能进环境类。
+
+    ⚠ **为何用文本匹配而非解析 unittest 结构**：套件输出形态千变万化
+      （pytest / unittest / traceback 格式各异），结构解析脆弱 ⇒ 文本匹配
+      更稳；代价是词表需覆盖已知变体（见 `ENV_LIMITED_EXCEPTION_MARKERS`）。
+
+    返回 bool：True = 判为「宿主环境受限」（⇒ `REG_ENV_LIMITED`）。
+    """
+    out = stdout or ""
+    err = stderr or ""
+    blob = out + "\n" + err
+    low = blob.lower()
+    # ① 异常类型 ∈ 有限白名单
+    if not any(m in blob for m in ENV_LIMITED_EXCEPTION_MARKERS):
+        return False
+    # ② 消息含 broker 特征（大小写不敏感）
+    if not any(m.lower() in low for m in ENV_LIMITED_BROKER_MARKERS):
+        return False
+    # ③ 摘要无真缺陷信号
+    if any(m in blob for m in ENV_LIMITED_FALSE_DEFECT_MARKERS):
+        return False
+    return True
+
+
+def load_regression_timeout_s(expert_dir):
+    """读回归套件超时阈值（秒）⇒ int（**纯函数 + 只读配置**）。
+
+    真源：`config/harness.yaml#loop_a.regression_timeout_s`（v3.28.8 新增键）。
+
+    ⚠ **为何要外提成配置键**（原先是裸 `timeout=180` 硬编码）：
+      ① 体检第 7 项的「单套件超时」是**机器判据**（超时 ⇒ 未验证 ⇒ 降级结论），
+         而阈值是**运营参数**——不同机器性能差异大（本次实测：`test_batch_gate_b19`
+         单跑 49s，整包 10 项合计数分钟）⇒ 写死 180 必然在慢机/重负载时
+         假红（真套件被判超时）。
+      ② 本包铁律「禁硬编码」：所有判据参数下沉 yaml，代码只执行。
+      ③ 改动阈值的**连带成本**必须显式：yaml 在免检区登记表内
+         ⇒ 改它必须连带刷新 `references/inspection-zones.yaml` 的机算字段
+         ⇒ 阈值调整是**留痕的**，不是悄悄生效。
+
+    ⚠ **读不到时回落兜底值并显式告警**（不静默）：与本包既有惯例一致
+      （`load_cfg` 的 `_FALLBACK` 路径同样是「失败 ⇒ 回退 + 告警」）。
+
+    返回：(timeout_s: int, source: str)——source ∈ {yaml, default}
+    """
+    hp = os.path.join(expert_dir, "config", "harness.yaml")
+    try:
+        import yaml
+        with open(hp, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        raw = ((cfg.get("loop_a") or {}).get("regression_timeout_s"))
+        val = int(raw)
+        if val <= 0:
+            raise ValueError(f"阈值非正数：{raw!r}")
+        return val, "yaml"
+    except Exception as e:
+        print(f"⚠ 读 harness.yaml#loop_a.regression_timeout_s 失败（{e}）——"
+              f"回退兜底阈值 {REGRESSION_TIMEOUT_DEFAULT_S}s", file=sys.stderr)
+        return REGRESSION_TIMEOUT_DEFAULT_S, "default"
+
+
+def analyze_timeout_suite(name, timeout_s):
+    """构造「超时」套件的判定结果 ⇒ (status, detail)（**纯函数**）。
+
+    ⚠ **为何单独抽成纯函数**（沿用 v3.27.0/v3.28.8 的教训）：
+      判据若只做静态源码检查 ⇒ 变异（把 `REG_TIMEOUT` 改回 `REG_FAIL`）
+      后静态检查照样通过 ⇒ **判据红了假绿**。
+      ⇒ 抽成纯函数 ⇒ 测试可直接调用并断言返回值 ⇒ 变异必红。
+
+    返回 (REG_TIMEOUT, detail)
+    """
+    detail = {
+        "marker_hit": False,
+        "skipped_cases": 0,
+        "anti_skips": 0,
+        "env_limited": False,
+        "env_limited_cases": 0,
+        # ⚠ 超时套件的「受影响用例数」：无法精确知道（进程被 kill）⇒
+        #   记 1（至少有一个套件未跑完）⇒ 未验证累加器不会写「0 个用例」。
+        "timeout_cases": 1,
+        "timeout_s": int(timeout_s),
+        "fail_tail": f"超时 >{int(timeout_s)}s",
+        "text": f"超时 >{int(timeout_s)}s / 未跑完（**未验证**，非失败、非环境受限）",
+    }
+    return REG_TIMEOUT, detail
+
+
 def analyze_suite_output(name, rc, stdout, stderr=""):
     """判定单个回归套件的输出 ⇒ (status, detail)（**纯函数**）。
 
-    status ∈ {REG_PASS, REG_PASS_WITH_SKIPS, REG_FAIL}
+    status ∈ {REG_PASS, REG_PASS_WITH_SKIPS, REG_ENV_LIMITED, REG_FAIL}
     detail: dict（见 `count_suite_skips` 的返回结构 + `fail_tail`）
 
     ⚠ 纯函数：不碰文件系统、不起子进程 ⇒ 测试可直接调用，
       无需真跑全量回归（真跑一次约 2 分钟，且在本机会因宿主 broker 拦 mkdir
       而产生「因环境限制跳过」的真实现象，反而污染判据本身）。
+
+    ⚠ **R18 语义变更**（v3.28.8）：此前 rc≠0 **一律**判 `REG_FAIL`
+      ⇒ 宿主 broker 拦 mkdir 的**真环境噪声**与套件**真检出缺陷**被混为一谈
+      ⇒ 噪声伪装成生产缺陷（掩盖真实告警）。
+      ⇒ 现按**三重合取**分流：满足 ⇒ `REG_ENV_LIMITED`（**不阻断**，
+        但**必须**计入未验证累加器）；不满足 ⇒ 仍 `REG_FAIL`（**真缺陷仍阻断**）。
     """
     sig = count_suite_skips(stdout or "", stderr or "")
     detail = {
         "marker_hit": sig["marker_hit"],
         "skipped_cases": sig["skipped_cases"],
         "anti_skips": sig["anti_skips"],
+        # ⚠ R18 新增两字段：`env_limited`（是否环境类）/`env_limited_cases`
+        #   （受影响的用例数）。⚠ **不与 `skipped_cases` 混用同一个字段**——
+        #   两者语义不同（跳过 = 没执行；环境受限 = 跑了但环境不允许）⇒
+        #   混在一个字段里会写出「跳过用例 0 个」这种自相矛盾的话。
+        "env_limited": False,
+        "env_limited_cases": 0,
         "text": f"rc={rc}",
     }
     if rc != 0:
-        # ⚠ 失败语义**优先**：rc≠0 一律判失败，跳过信号不得掩盖失败。
+        # ⚠ 失败语义**优先**：rc≠0 不得被跳过信号掩盖（真缺陷必须硬红）。
+        #   ⚠ **R18 追加**：但 rc≠0 也可能是**宿主环境受限**（真噪声）⇒
+        #     过三重合取才降级为 `REG_ENV_LIMITED`；缺一即回退 `REG_FAIL`。
+        if detect_env_limited_failure(stdout, stderr):
+            detail["env_limited"] = True
+            #: 受影响的用例数：从 unittest 摘要的 `errors=N` 取（环境类必是
+            #:   `errors=` 形态——`failures=` 已被条件③挡掉）；取不到则记 1
+            #:   （至少有一个用例受环境阻断）。
+            m = re.findall(r"errors=(\d+)", (stderr or "") + "\n" + (stdout or ""))
+            detail["env_limited_cases"] = max(int(x) for x in m) if m else 1
+            detail["text"] = (f"rc={rc} / 判定为宿主环境受限"
+                              f"（PermissionError + broker），未计入阻断")
+            return REG_ENV_LIMITED, detail
         return REG_FAIL, detail
     if has_env_skip(stdout, stderr):
         extra = (f"，其中反例用例 {sig['anti_skips']} 个"
@@ -515,9 +729,26 @@ def format_regression_report(results, total_suites):
     返回 (lines, rc)：
       lines —— 报告行（list[str]，不带换行）
       rc    —— 是否**阻断**（0/1）
+
+    ⚠ **R18 语义**（v3.28.8）：状态从三态扩到四态。
+      · `REG_FAIL`            ⇒ 🔴 ⇒ **阻断**（真缺陷）
+      · `REG_PASS_WITH_SKIPS` ⇒ ⚠ ⇒ 不阻断，但**计入未验证**（rc=0 但有跳过）
+      · `REG_ENV_LIMITED`     ⇒ ⚠ ⇒ 不阻断，但**计入未验证**（宿主环境受限失败）
+      ⚠ **`REG_ENV_LIMITED` 绝不进 `failed` 列表** ⇒ 否则会被算成阻断，
+        把「不阻断」的设计意图反转（这正是 R18 要消灭的误伤）。
+      ⚠ 但它**必须**被单独列出来（⚠ 行）且进未验证累加器 ⇒ 否则会掉进
+        末尾的「✓ 全部通过」分支 ⇒ **假绿**（比假红更危险：用户以为没问题）。
+    ⚠ **R18-续（v3.28.8）：第五态 `REG_TIMEOUT`**
+      · `REG_TIMEOUT` ⇒ ⚠ ⇒ 不阻断，但**计入未验证**（套件没跑完）
+      ⚠ 它**同样绝不进 `failed` 列表**（超时不是缺陷），
+        但**必须**单列（⚠ 行）且进未验证累加器 ⇒ 否则假绿。
     """
     failed = [(n, d) for (n, s, d) in results if s == REG_FAIL]
     skipped = [(n, d) for (n, s, d) in results if s == REG_PASS_WITH_SKIPS]
+    #: ⚠ R18：环境受限组**独立于 failed**（不阻断），但要单列（可见性）。
+    env_limited = [(n, d) for (n, s, d) in results if s == REG_ENV_LIMITED]
+    #: ⚠ R18-续：超时组同样**独立于 failed**（超时不是缺陷），但要单列。
+    timed_out = [(n, d) for (n, s, d) in results if s == REG_TIMEOUT]
     lines = []
     if failed:
         lines.append(f"[7/{N}] 🔴 回归测试失败：{len(failed)}/{total_suites} 个套件不通过")
@@ -525,20 +756,83 @@ def format_regression_report(results, total_suites):
             lines.append(f"     {name}  → {(d.get('fail_tail') or d['text'])[:120]}")
         lines.append("     → 处置：先修失败套件再发布；单套件调试：python3 scripts/<套件>.py")
         return lines, 1
-    if skipped:
-        total_cases = sum(d["skipped_cases"] for _, d in skipped)
-        lines.append(f"[7/{N}] ⚠ 回归测试通过但有 {len(skipped)} 个套件因环境限制跳过"
-                     f"（反例批次未验证）")
-        for name, d in skipped:
-            lines.append(f"     {name} → {d['text']}")
-        lines.append(f"     → 合计 {total_cases} 个用例未执行 ⇒ 守卫的「能红」属性本轮"
-                     f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
+    if skipped or env_limited or timed_out:
+        #: ① 「因环境限制被跳过」组（rc=0，但用例没执行）
+        if skipped:
+            total_cases = sum(d.get("skipped_cases", 0) for _, d in skipped)
+            lines.append(f"[7/{N}] ⚠ 回归测试通过但有 {len(skipped)} 个套件因环境限制跳过"
+                         f"（反例批次未验证）")
+            for name, d in skipped:
+                lines.append(f"     {name} → {d['text']}")
+            lines.append(f"     → 合计 {total_cases} 个用例未执行 ⇒ 守卫的「能红」属性本轮"
+                         f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
+        #: ② 「宿主环境受限失败」组（R18 新增）——**单列**，不混进 skipped：
+        #:   语义不同（跳过 = 没跑；环境受限 = 跑了但环境不允许）⇒ 混写会
+        #:   写出「跳过用例 0 个」这种自相矛盾的话。
+        if env_limited:
+            env_cases = sum(d.get("env_limited_cases", 0) for _, d in env_limited)
+            lines.append(f"[7/{N}] ⚠ 回归测试有 {len(env_limited)} 个套件因**宿主环境受限**失败"
+                         f"（非包缺陷，但相关守卫**未验证**）")
+            for name, d in env_limited:
+                lines.append(f"     {name} → {d.get('text', 'rc=1 / 宿主环境受限')}")
+            lines.append(f"     → 合计 {env_cases} 个用例受环境阻断 ⇒ 相关守卫的「能红」属性本轮"
+                         f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
+        #: ③ 「超时未跑完」组（R18-续 新增）——**单列**，不混进 skipped / env_limited：
+        #:   语义不同（跳过 = 没跑；环境受限 = 跑了但被环境打断；超时 = 没跑完）。
+        if timed_out:
+            to_cases = sum(d.get("timeout_cases", 0) for _, d in timed_out)
+            lines.append(f"[7/{N}] ⚠ 回归测试有 {len(timed_out)} 个套件**超时未跑完**"
+                         f"（非失败、非环境受限，但相关守卫**未验证**）")
+            for name, d in timed_out:
+                lines.append(f"     {name} → {d.get('text', '超时未跑完')}")
+            lines.append(f"     → 合计 {to_cases} 个套件未跑完 ⇒ 相关守卫的「能红」属性本轮"
+                         f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
         lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写），"
                      "**不是包缺陷**；换个会话或另设 TMPDIR 后重跑本套件再判")
+        #: ⚠ 阻断与否沿用 `REGRESSION_SKIP_BLOCKS_RELEASE`（既有可切换设计）：
+        #:   判「不阻断」的是**同一个常量** ⇒ 将来若决定阻断，改常量即可，
+        #:   判定逻辑与文案都不必动。
         return lines, (1 if REGRESSION_SKIP_BLOCKS_RELEASE else 0)
     tails = " ".join(f"{n}={d['text']}" for (n, _s, d) in results)
     lines.append(f"[7/{N}] ✓ 回归测试通过（{len(results)}/{total_suites} 套件：{tails}）")
     return lines, 0
+
+
+def collect_unverified(results):
+    """汇总「未验证」套件与用例数 ⇒ (suites, cases)（**纯函数**，R18 新增）。
+
+    ⚠ **为何必须抽成纯函数**（沿用 v3.27.0「结论渲染抽纯函数」的教训）：
+      判据若只做**静态源码检查**（AST 查「累加器里有没有引用 `REG_ENV_LIMITED`」）
+      ⇒ 实测**反向对照失败**——把并集条件改坏而 `.get(...)` 那行仍引用着它
+      ⇒ 静态检查照样通过 ⇒ **判据红了假绿**（本包 v3.27.0 踩过的坑）。
+      ⇒ 抽成纯函数后，判据可**真正执行**并断言返回值 ⇒ 变异必红。
+
+    ⚠ **未验证集合 = `REG_PASS_WITH_SKIPS` ∪ `REG_ENV_LIMITED` ∪ `REG_TIMEOUT`**：
+      · `REG_PASS_WITH_SKIPS` ⇒ rc=0，但反例批次因环境限制被跳过（没执行）
+      · `REG_ENV_LIMITED`     ⇒ rc≠0，但属宿主环境受限（跑了但被环境打断）
+      · `REG_TIMEOUT`         ⇒ rc≠0（异常超时），套件**没跑完**（v3.28.8 新增）
+      ⇒ 三类**都**意味着「相关守卫的『能红』属性本轮未验证」⇒ 都必须计入。
+      ⚠ **`REG_FAIL` 不计入** —— 真缺陷是**已验证的失败**，不是未验证。
+      ⚠ **漏掉 `REG_TIMEOUT` ⇒ 假绿**（本轮重点防范）：
+        超时是 rc≠0 但 `format_regression_report` 判「不阻断」⇒ 若不进累加器
+        ⇒ 结论区走「rc=0 且无未验证项」分支写「✅ 全部通过，可发布」
+        ⇒ 超时未验证被洗成全绿 ⇒ **假绿比假红更危险**（假红会被人看见）。
+
+    ⚠ 三类的用例数**分别取各自字段**（`skipped_cases` / `env_limited_cases` /
+      `timeout_cases`）再相加 —— 语义不同（跳过 = 没执行；环境受限 = 被环境打断；
+      超时 = 没跑完），混用一个字段会写出自相矛盾的文案（「跳过用例 0 个」）。
+
+    返回：(suites: list[str], cases: int)
+    """
+    unverified = [(n, s, d) for (n, s, d) in results
+                  if s in (REG_PASS_WITH_SKIPS, REG_ENV_LIMITED, REG_TIMEOUT)]
+    suites = [n for n, _s, _d in unverified]
+    cases = sum(
+        (d.get("skipped_cases", 0) if s == REG_PASS_WITH_SKIPS
+         else d.get("env_limited_cases", 0) if s == REG_ENV_LIMITED
+         else d.get("timeout_cases", 0))
+        for _n, s, d in unverified)
+    return suites, cases
 
 
 def format_final_conclusion(rc, unverified):
@@ -569,12 +863,13 @@ def format_final_conclusion(rc, unverified):
     if rc == 0 and suites:
         lines = [
             f"结论：⚠️ 存在**未验证项**（{len(suites)} 个套件 / {cases} 个用例"
-            f"因环境限制被跳过）——**未验 ≠ 已验**，"
+            f"因环境限制未验证：或被跳过、或受宿主环境受限、或超时未跑完）——**未验 ≠ 已验**，"
             f"勿据此认为相关守卫的『能红』属性有效",
         ]
         for s in suites:
             lines.append(f"     未验证套件：{s}")
-        lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写），"
+        lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写）"
+                     "或套件超时（阈值见 harness.yaml#loop_a.regression_timeout_s），"
                      "**不是包缺陷**；解除后重跑该套件再判")
         return lines
     if rc == 0:
@@ -596,7 +891,12 @@ def check_regression(expert_dir):
       显式透传到最终结论（`REGRESSION_UNVERIFIED`）。
 
     ⚠ **返值语义（本项最关键的决策）**：
-      · rc≠0（套件失败）⇒ return 1（**沿用** v3.9.0 起的行为，不变）
+      · rc≠0 且属**真缺陷** ⇒ return 1（**沿用** v3.9.0 起的行为，不变）
+      · rc≠0 但属**宿主环境受限**（R18 三重合取命中）⇒ **return 0（不阻断）**，
+        但**必须**进未验证累加器 ⇒ 结论区降级为「有未验证项」。
+        理由与「跳过」同源：环境噪声不是包缺陷，拿它阻断发布属误伤；
+        但它比「跳过」更严重（跳过 = 没跑；环境受限 = 跑了但被环境打断 ⇒
+        守卫的「能红」属性同样**未验证**）⇒ 必须显式可见。
       · rc=0 但检出「因环境限制被跳过」⇒ **return 0（不阻断）**，理由三条：
         ① 跳过源于**环境**（宿主 broker 拦 mkdir / TMPDIR 不可写），不是包缺陷；
            拿环境问题阻断发布属误伤。
@@ -604,7 +904,12 @@ def check_regression(expert_dir):
            第 11/22 项才阻断；"证据不足/环境受限"更近第 23 项的性质。
         ③ **告警疲劳**：某些会话里宿主 broker 会持续拦截 ⇒ 若阻断，体检
            **恒红** ⇒ 用户学会忽略体检输出 ⇒ 后续真告警全部失效。
-      · ⚠ 但"不阻断"**不等于**"看不见"：跳过必须**显式打印**（⚠ 行），
+      · **套件超时（v3.28.8 新增第三类）⇒ return 0（不阻断）**，但**进未验证**：
+        超时 ≠ 失败 ≠ 环境受限 ⇒ 判 `REG_TIMEOUT`（既不阻断也不洗成通过）。
+        理由：超时的真因通常是「套件太慢 / 阈值不够」，不是包缺陷；
+        阻断属误伤，但**必须**在结论区显式降级（未验 ≠ 已验）。
+        ⚠ 阈值来自 `harness.yaml#loop_a.regression_timeout_s`（禁硬编码）。
+      · ⚠ 但"不阻断"**不等于**"看不见"：跳过与环境受限必须**显式打印**（⚠ 行），
         且最终结论要**降级**为「有未验证项」⇒ 绝不让"未验"显示成"已验"。
       · ⚠ 若将来决定改为阻断：把 `REGRESSION_SKIP_BLOCKS_RELEASE` 改成 True
         即可（**双向可查**：判定逻辑与文案都不必动）。
@@ -616,18 +921,24 @@ def check_regression(expert_dir):
         return 1
     REGRESSION_UNVERIFIED["suites"] = []
     REGRESSION_UNVERIFIED["cases"] = 0
+    #: ⚠ **R18-续**：超时阈值从 `harness.yaml#loop_a.regression_timeout_s` 读
+    #:   （禁硬编码；yaml 不可读时回落兜底值并显式告警）。
+    timeout_s, timeout_src = load_regression_timeout_s(expert_dir)
+    if timeout_src != "yaml":
+        print(f"⚠ 回归超时阈值未从 yaml 读到（回落 {timeout_s}s）——"
+              f"该阈值是机器判据参数，兜底生效属**降级**，须修 yaml", file=sys.stderr)
     results = []
     for t in suites:
         name = os.path.basename(t)
         try:
             p = subprocess.run([sys.executable, t], capture_output=True, text=True,
-                               timeout=180)
+                               timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            results.append((name, REG_FAIL, {"text": "超时 >180s",
-                                             "fail_tail": "超时 >180s",
-                                             "marker_hit": False,
-                                             "skipped_cases": 0,
-                                             "anti_skips": 0}))
+            #: ⚠ **R18-续**：超时**不再判 `REG_FAIL`**（假红）——
+            #:   超时既不是包缺陷，也不是环境受限 ⇒ 判 `REG_TIMEOUT`
+            #:   （不阻断，但**必须**进未验证累加器 ⇒ 否则结论区假绿）。
+            status, detail = analyze_timeout_suite(name, timeout_s)
+            results.append((name, status, detail))
             continue
         last = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
         # v3.16.0 修：此前优先显示 stdout 末行文本，而部分套件的末行是 JSON 的收尾大括号，
@@ -637,16 +948,24 @@ def check_regression(expert_dir):
         if p.returncode and last:
             tail += f" / {last[-1][:20]}"
         status, detail = analyze_suite_output(name, p.returncode, p.stdout, p.stderr)
-        if status == REG_FAIL:
+        if status in (REG_FAIL, REG_ENV_LIMITED):
+            #: ⚠ R18：`REG_ENV_LIMITED` 也补 `fail_tail` —— 它是**失败**，
+            #:   排查者需要看到末尾片段定位是哪个用例被环境打断；
+            #:   但它**不进 failed 列表** ⇒ 不会被算成阻断。
             detail["fail_tail"] = tail
         results.append((name, status, detail))
     lines, rc = format_regression_report(results, len(suites))
     for ln in lines:
         print(ln)
-    skipped = [(n, d) for (n, s, d) in results if s == REG_PASS_WITH_SKIPS]
-    if skipped:
-        REGRESSION_UNVERIFIED["suites"] = [n for n, _ in skipped]
-        REGRESSION_UNVERIFIED["cases"] = sum(d["skipped_cases"] for _, d in skipped)
+    #: ⚠ **R18**：未验证累加器 = `REG_PASS_WITH_SKIPS` ∪ `REG_ENV_LIMITED` ∪ `REG_TIMEOUT`。
+    #:   ⚠ **`REG_ENV_LIMITED` 必须并入** —— 否则结论区会走「rc=0 且无未验证项」
+    #:     分支写出「✅ 全部通过，可发布」⇒ **假绿**（用户以为没问题），
+    #:     比假红更危险（假红会被人看见，假绿不会）。
+    #:   ⚠ **`REG_TIMEOUT` 同样必须并入**（v3.28.8）—— 超时不阻断（rc=0），
+    #:     若不进累加器 ⇒ 超时未验证被洗成「✅ 全部通过」⇒ **假绿**。
+    suites_unv, cases_unv = collect_unverified(results)
+    REGRESSION_UNVERIFIED["suites"] = suites_unv
+    REGRESSION_UNVERIFIED["cases"] = cases_unv
     return rc
 
 

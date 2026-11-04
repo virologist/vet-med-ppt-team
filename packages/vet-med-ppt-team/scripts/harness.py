@@ -5640,6 +5640,216 @@ def _batch_seq(bid):
     return (0, s)
 
 
+def _open_batches(batches):
+    """**未闭合且未废弃**的批次 id 列表（口径真源，单一函数）。
+
+    病灶（任务F·病灶⑤，主理人 2026-11-04 隔离取证）：
+      `batch-gc --drop-open` 的 `before_open` 统计**认** `abandoned`，
+      而 `batch-close` 的归属校验 `opened_ids` **不认** ⇒
+      两处对「什么算未闭合批次」的口径不一致 ⇒
+      **标记废弃 ≠ 判定废弃** ⇒ 已显式废弃的批次仍会被算进
+      `batch-close` 的「最新未闭合批次」候选集 ⇒
+      ① 真正的最新批次可能因一个已废弃的更晚批次而收不掉（stale 误拦）
+      ② `batch-gc` 报告的 open 数与 `batch-close` 实际认定的 open 数对不上
+         ⇒ 操作成功但效果为零。
+
+    判据（三重合取，与 `batch-gc` 的 `before_open` 逐字对齐）：
+      是 dict 形态  ∧  未 closed  ∧  未 abandoned
+
+    ⚠ 返回 **list** 而非 set：下游 `max(opened_ids, key=_batch_seq)` 需要
+      可迭代有序容器，且 JSON 输出里 `"open_batches": opened_ids` 要求可序列化。
+      list 保序（dict 插入序），满足全部下游用法。
+    """
+    return [k for k, v in batches.items()
+            if isinstance(v, dict) and not v.get("closed")
+            and not v.get("abandoned")]
+
+
+# ── 任务F·病灶②：回归实测证据（evidence）通道 ───────────────────────────
+# 病灶（P0 级纪律漏洞，主理人 2026-11-04 20:15–20:18 实测取证）：
+#   `b["regression_ran"] = ran` 里的 ran 就是 `--regression` **命令行传入的名字列表**
+#   —— 它是**声明**，不是实测。B19 的真实性校验只验「套件名真实存在」，
+#   **从不验「套件是否真跑过」**。⇒ 纯声明即可收批：实测 b1793794707 在 **1 秒内**
+#   完成 open→close，却记录了 7 项回归清单（这 7 项从未真正执行）。
+#   连带：契约测试若传满 `loop_a.regression_required`，可**凭空闭合真包账本里
+#   任意一个最新的 open 批次**。
+#
+# ⚠ B19 自己的注释（harness.py:5872 一带）写着「『跑过回归』可以是幻觉声明
+#   （self-report 失真的最新变种）」——本批就是补上该防护的**下一层**：
+#   从「名字像真的」升级到「**证据是真的**」。
+#
+# 语义分列（**不改字段名**，避免破坏既有测试与账本读取点）：
+#   · regression_ran       —— **声明**（--regression 传入的名字列表），保持既有行为
+#   · regression_verified  —— **实测**（--regression-evidence 提供的证据清单）
+#   · confirmed            —— 账本里**唯一**代表「这批验收过」的标记
+#   · confirmed_reason     —— confirmed 的理由（evidence_ok / no_regression_evidence
+#                             / evidence_rc_nonzero）
+#
+# 降级规则（fail-closed，但不过度阻断——过度阻断会让所有历史批次命令失效）：
+#   ┌ 情形                                   │ 行为                                    │
+#   ├────────────────────────────────────────┼────────────────────────────────────────┤
+#   │ 有 evidence，覆盖全部名单，每项 rc=0    │ confirmed=true，正常收批                │
+#   │ 有 evidence，某项 rc≠0                 │ **rc=1 拒绝收批**，点名哪一项失败        │
+#   │ 无 evidence                            │ **不拒绝**（向后兼容），confirmed=false  │
+#   │                                        │ + confirmed_reason=no_regression_evidence │
+#   │                                        │ + regression_verified=[] + stderr ⚠ 警告 │
+#   │ 有 evidence 但套件名对不上 --regression │ **rc=2 拒绝**（fail-closed，防张冠李戴） │
+#   └────────────────────────────────────────┴────────────────────────────────────────┘
+#
+# ⚠ 关键理由：`confirmed: true` 是账本里唯一代表「这批验收过」的标记。
+#   若未提供实测证据却仍置 confirmed=true ⇒ 漏洞原样保留 ⇒ **必须降级**。
+#   但**不阻断**（否则历史批次命令全部失效，且「降级」本身已把信息落进账本）。
+
+
+class _EvidenceError(Exception):
+    """回归实测证据不可用（文件缺失 / JSON 非法 / 结构非法）。
+
+    区分于「证据显示失败」：证据**不可用** ⇒ rc=2（用法错，fail-closed）；
+    证据**可用但某项 rc≠0** ⇒ rc=1（回归失败）。
+    """
+
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+def _load_regression_evidence(path):
+    """读并解析回归实测证据文件（--regression-evidence）。
+
+    证据文件格式（唯一格式）：
+        {
+          "suites": [
+            {"suite": "ensure_settings", "rc": 0, "duration_s": 2451.3},
+            {"suite": "test_harness",     "rc": 0, "duration_s": 12.1}
+          ]
+        }
+
+    返回 (suites, path_abs)；suites 为规范化后的 list[dict]（含 suite/rc/duration_s）。
+
+    失败一律抛 _EvidenceError（rc=2，fail-closed）——理由同
+    `_load_quality_from_verify_json`：证据不可得时**不按 0 处理、不静默取默认**，
+    静默取 0 会造出「回归全绿」的假象（比不取数更危险）。
+    """
+    p = os.path.abspath(str(path))
+    if not os.path.isfile(p):
+        raise _EvidenceError(f"实测证据文件不存在：{p}")
+    try:
+        with open(p, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception as e:
+        raise _EvidenceError(f"实测证据文件不可解析：{p}（{type(e).__name__}: {e}）")
+    if not isinstance(doc, dict):
+        raise _EvidenceError(
+            f"实测证据顶层不是对象：{p}（{type(doc).__name__}）——"
+            f"期望 {{'suites': [...]}}")
+    raw = doc.get("suites")
+    if not isinstance(raw, list) or not raw:
+        raise _EvidenceError(
+            f"实测证据缺 suites 段或为空：{p}（顶层键 {sorted(doc)}）——"
+            f"期望 {{'suites': [{{'suite': ..., 'rc': ...}}]}}")
+    suites = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise _EvidenceError(
+                f"实测证据 suites[{i}] 不是对象：{p}（{type(item).__name__}）")
+        name = str(item.get("suite") or "").strip()
+        if not name:
+            raise _EvidenceError(f"实测证据 suites[{i}] 缺 suite 名：{p}")
+        rc = item.get("rc")
+        if isinstance(rc, bool) or not isinstance(rc, int):
+            raise _EvidenceError(
+                f"实测证据 suites[{i}]（{name}）的 rc 非法：{rc!r}——"
+                f"须为整数（0=通过，非 0=失败）")
+        dur = item.get("duration_s")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)):
+            dur = None
+        suites.append({"suite": name, "rc": int(rc),
+                       "duration_s": float(dur) if dur is not None else None})
+    return suites, p
+
+
+def _evidence_suite_names(suites):
+    """证据里的套件名集合（去重）。"""
+    return {str(s.get("suite") or "").strip() for s in (suites or [])
+            if str(s.get("suite") or "").strip()}
+
+
+def _evidence_failures(suites):
+    """证据里 rc≠0 的项（按证据文件里的出现顺序）。"""
+    return [s for s in (suites or []) if int(s.get("rc") or 0) != 0]
+
+
+def _regression_evidence_verdict(args, ran):
+    """回归实测证据裁决（batch-close 用）——**声明**与**实测**分列的判定层。
+
+    返回一个 dict：
+      ok        —— bool，是否放行收批
+      rc        —— 拒绝时的退出码（1=证据显示失败 / 2=证据不可用或张冠李戴）
+      reason    —— reason 码（放行时为 confirmed_reason）
+      confirmed —— 放行后账本里的 confirmed 值（**唯一**代表「这批验收过」）
+      verified  —— 放行后落账的 regression_verified（实测证据列表）
+      detail    —— 补充信息（写进 JSON 输出与 trace）
+
+    ⚠ **不静默取默认**：证据不可得时既不按「全绿」也不按「全红」处理，
+      而是按 rc=2 fail-closed（证据不可用 = 用法错），批次保持 open。
+    """
+    ev_path = (getattr(args, "regression_evidence", "") or "").strip()
+    ran_names = {str(x).strip() for x in (ran or []) if str(x).strip()}
+
+    # ── 情形 A：未提供实测证据 ⇒ 放行但**降级**（向后兼容 + 漏洞封堵）────
+    if not ev_path:
+        return {"ok": True, "rc": 0, "reason": "no_regression_evidence",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": None,
+                           "warning": "本次收批未提供实测证据 ⇒ 账本只能记录「声明」，"
+                                      "不能记录「已验证」"}}
+
+    # ── 情形 B：提供了证据 ⇒ 解析（不可用 ⇒ rc=2 fail-closed）──────────
+    try:
+        suites, abs_path = _load_regression_evidence(ev_path)
+    except _EvidenceError as e:
+        return {"ok": False, "rc": int(getattr(e, "code", 2) or 2),
+                "reason": "evidence_invalid", "confirmed": False, "verified": [],
+                "detail": {"evidence": os.path.abspath(ev_path),
+                           "error": str(e),
+                           "hint": "实测证据格式：{\"suites\": [{\"suite\": ..., "
+                                   "\"rc\": 0, \"duration_s\": ...}]}"}}
+
+    ev_names = _evidence_suite_names(suites)
+
+    # ── 情形 B-1：套件名与 --regression 名单对不上 ⇒ rc=2（防张冠李戴）──
+    #   两个方向都算「对不上」：
+    #     · missing —— 证据少一项（没覆盖全部名单 ⇒ 有声明项没实测）
+    #     · extra   —— 证据多一项（名单外的套件 ⇒ 张冠李戴/别的批次的证据）
+    missing = sorted(ran_names - ev_names)
+    extra = sorted(ev_names - ran_names)
+    if missing or extra:
+        return {"ok": False, "rc": 2, "reason": "evidence_suite_mismatch",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": abs_path,
+                           "declared": sorted(ran_names),
+                           "evidence_suites": sorted(ev_names),
+                           "missing": missing, "extra": extra,
+                           "hint": "实测证据的套件集合必须与 --regression 名单**完全一致**"
+                                   "（少一项 = 有声明无实测；多一项 = 张冠李戴）"}}
+
+    # ── 情形 B-2：证据可用但某项 rc≠0 ⇒ rc=1 拒绝收批（点名哪项失败）──
+    fails = _evidence_failures(suites)
+    if fails:
+        return {"ok": False, "rc": 1, "reason": "evidence_rc_nonzero",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": abs_path,
+                           "failed": [{"suite": s["suite"], "rc": s["rc"],
+                                       "duration_s": s["duration_s"]} for s in fails],
+                           "hint": "实测证据显示回归失败 ⇒ 不得收批"}}
+
+    # ── 情形 B-3：证据齐备且全绿 ⇒ confirmed=true（正常收批）───────────
+    return {"ok": True, "rc": 0, "reason": "evidence_ok",
+            "confirmed": True, "verified": suites,
+            "detail": {"evidence": abs_path,
+                       "suites": sorted(ev_names)}}
+
+
 def _loop_batch(args, cfg, w, actor=""):
     """Loop A 批次门：batch-open / batch-close / batch-status。
 
@@ -5700,9 +5910,7 @@ def _loop_batch(args, cfg, w, actor=""):
         plan = {"archive": to_archive, "drop_open": drop_ids,
                 "keep": keep, "dry_run": dry,
                 "before_batches": len(batches),
-                "before_open": sum(1 for v in batches.values()
-                                   if isinstance(v, dict) and not v.get("closed")
-                                   and not v.get("abandoned"))}
+                "before_open": len(_open_batches(batches))}
         # 误开批次显式废弃：只允许废弃**未闭合**批次，且必须给出理由级参数（显式列出 id）
         for did in drop_ids:
             if did not in batches:
@@ -5820,8 +6028,10 @@ def _loop_batch(args, cfg, w, actor=""):
     # ── batch-close：确认 → 回归 → 最小补丁 → 收批 ──────────────────────
     bid = (getattr(args, "batch", "") or "").strip()
     if not bid:
-        opened = [k for k, v in batches.items()
-                  if isinstance(v, dict) and not v.get("closed")]
+        # ⚠ 2026-11-04（任务F·病灶⑤）：同口径收敛到 `_open_batches()`——
+        #   已废弃（abandoned）的批次**不算**「未关闭批次」，
+        #   否则误开废弃批次会让本批误报「有 N 个未关闭批次」而拒绝收批。
+        opened = _open_batches(batches)
         if len(opened) == 1:
             bid = opened[0]
         elif not opened:
@@ -5894,8 +6104,11 @@ def _loop_batch(args, cfg, w, actor=""):
     #   （b1793532390）——任意已开批次可被后续任意一次 batch-close 闭合。
     # 判据：不带 --batch 时若存在多个未闭合批次，**只允许闭合最近开的一个**
     #   （误开批次应显式走 batch-gc 清理，而不是被顺手闭合）。
-    opened_ids = [k for k, v in batches.items()
-                  if isinstance(v, dict) and not v.get("closed")]
+    # ⚠ 2026-11-04（任务F·病灶⑤）：口径改走 `_open_batches()` 单一真源——
+    #   **已废弃（abandoned）的批次不计入**候选集。原实现只判 `closed`，
+    #   与 `batch-gc --drop-open` 的 `before_open` 口径漂移 ⇒
+    #   「显式废弃」在 batch-close 侧无效 ⇒ 真正的最新批次被已废弃批次误拦。
+    opened_ids = _open_batches(batches)
     if opened_ids and bid in opened_ids and bid != max(opened_ids, key=_batch_seq):
         newest = max(opened_ids, key=_batch_seq)
         _trace(w, cfg, "batch_close", actor,
@@ -5937,19 +6150,76 @@ def _loop_batch(args, cfg, w, actor=""):
               f"{bcfg['patch_discipline']}）：{[d for _k, d in problems]}", file=sys.stderr)
         return 1
 
+    # ── ④ 任务F·病灶②：回归**实测证据**裁决（声明 vs 实测分列）────────────
+    # 病灶：regression_ran 记的是 --regression 传入的**名字列表**（纯声明），
+    #   B19 只验「名字真实存在」不验「真跑过」⇒ 纯声明即可收批。
+    # 判据：--regression-evidence 提供实测证据（rc 逐项）。
+    #   有证据且全绿 ⇒ confirmed=true；某项 rc≠0 ⇒ rc=1；名对不上 ⇒ rc=2；
+    #   无证据 ⇒ 放行但 confirmed 降级为 false（向后兼容，漏洞不留后门）。
+    _ev = _regression_evidence_verdict(args, ran)
+    if not _ev["ok"]:
+        _trace(w, cfg, "batch_close", actor,
+               {"batch": bid, "loop": "a", "ok": False,
+                "reason": _ev["reason"], "regression": ran,
+                "evidence": _ev["detail"].get("evidence")})
+        print(json.dumps({"ok": False, "batch": bid, "reason": _ev["reason"],
+                          "regression_ran": ran,
+                          "regression_verified": [],
+                          "confirmed": False,
+                          "detail": _ev["detail"], "notes": notes_all},
+                         ensure_ascii=False, indent=2))
+        if _ev["reason"] == "evidence_rc_nonzero":
+            _failed = _ev["detail"].get("failed") or []
+            _failed_txt = ", ".join(
+                "{}(rc={})".format(f.get("suite"), f.get("rc")) for f in _failed)
+            print(f"⛔ 回归实测证据显示失败（{len(_failed)} 项 rc≠0）：{_failed_txt}——"
+                  f"不得收批；批次保持 open", file=sys.stderr)
+        elif _ev["reason"] == "evidence_suite_mismatch":
+            print(f"⛔ 实测证据与 --regression 名单不一致："
+                  f"缺 {len(_ev['detail'].get('missing') or [])} 项 "
+                  f"{_ev['detail'].get('missing')}；"
+                  f"多 {len(_ev['detail'].get('extra') or [])} 项 "
+                  f"{_ev['detail'].get('extra')}——"
+                  f"实测证据必须与声明清单**完全一致**（防张冠李戴）；批次保持 open",
+                  file=sys.stderr)
+        else:
+            print(f"⛔ 回归实测证据不可用：{_ev['detail'].get('error')}——"
+                  f"批次保持 open（证据不可得时不按 0 处理）", file=sys.stderr)
+        return int(_ev["rc"])
+
+    verified = _ev["verified"]
+    confirmed = bool(_ev["confirmed"])
+    confirmed_reason = _ev["reason"]
+    if not confirmed:
+        # 无实测证据 ⇒ 放行但**必须显式告警**（不得静默降级：
+        # 静默降级会让「没验证过」看起来像「验证过」——同型病复发）
+        print("⚠ 本次收批未提供实测证据 ⇒ 账本只能记录「声明」，不能记录「已验证」"
+              "（regression_ran=声明，regression_verified=[]，confirmed=false）",
+              file=sys.stderr)
+        notes_all.append("未提供回归实测证据（--regression-evidence）——"
+                         "本批只记录「声明」，不记录「已验证」；confirmed 降级为 false")
+
     b["closed"] = True
-    b["confirmed"] = True
+    b["confirmed"] = confirmed
+    b["confirmed_reason"] = confirmed_reason
     b["closed_at"] = now_iso()
     b["regression_ran"] = ran
+    b["regression_verified"] = verified
     b["actual_files"] = actual
     _loop_mark_writer(st, actor)
     _loop_hist(st, "batch_close", {"batch": bid, "regression": ran,
+                                   "regression_verified": verified,
+                                   "confirmed": confirmed,
+                                   "confirmed_reason": confirmed_reason,
                                    "actual": actual, "declared": declared})
     # ── B13：batch_close 入 trace（同 batch_open，统一账本可回放）────────
     _trace(w, cfg, "batch_close", actor,
            {"batch": bid, "loop": getattr(args, "loop", "a"),
             "confirmed": bool(getattr(args, "confirmed", False)),
             "regression": ran,
+            "regression_verified": verified,
+            "batch_confirmed": confirmed,
+            "confirmed_reason": confirmed_reason,
             "actual_files": [str(f) for f in (actual or [])]})
     # ── B21③：spawn-信封对账（第四轮诊断 F2）────────────────────────────
     # 收批时列 warning：本批期间登记的 spawn 若无回传信封落盘，逐条点名
@@ -7869,10 +8139,11 @@ LOOP_ACTION_DOC = [
     ("batch-open", "A", "开批次（声明改动文件 + 越界校验 + 记起始 commit）",
      "--files [--batch --note]", "loop_a.scope/forbidden_paths + patch_discipline/regression_required",
      "0 开成 / 1 声明文件越界 / 2 缺 --files"),
-    ("batch-close", "A", "收批次（确认→回归→最小补丁）",
-     "[--batch] --confirmed --regression a,b,c",
+    ("batch-close", "A", "收批次（确认→回归→最小补丁→实测证据裁决）",
+     "[--batch] --confirmed --regression a,b,c [--regression-evidence <json>]",
      "loop_a.confirm_before_each_batch / regression_required / patch_discipline",
-     "0 收批 / 1 未确认或回归缺或改动超范围 / 2 用法错或未知套件或旧批次"),
+     "0 收批 / 1 未确认或回归缺或改动超范围或实测证据 rc≠0 / "
+     "2 用法错或未知套件或旧批次或证据不可用或套件名对不上"),
     ("batch-status", "A", "批次与判据来源（取自 yaml / 回落内置值）", "[--batch]", "loop_a.*", "0"),
     ("batch-gc", "A", "批次历史压缩（closed 超保留数压入 archived 摘要区；误开批次显式废弃）",
      "[--keep N] [--drop-open <id,...>] [--dry-run]",
@@ -8979,6 +9250,14 @@ def main():
     p.add_argument("--regression", default="",
                    help="batch-close：已跑回归项（逗号分隔；缺一即不收批，"
                         "取自 harness.yaml#loop_a.regression_required）")
+    # ── 任务F·病灶②：回归实测证据（声明 vs 实测分列）─────────────────────
+    p.add_argument("--regression-evidence", dest="regression_evidence", default="",
+                   help="batch-close：**实测**回归证据 JSON 路径（{\"suites\": "
+                        "[{\"suite\": ..., \"rc\": 0, \"duration_s\": ...}]}）——"
+                        "与 --regression（**声明**）分列落账：证据齐备且全绿 ⇒ "
+                        "confirmed=true；某项 rc≠0 ⇒ exit 1；套件名对不上 ⇒ exit 2；"
+                        "未提供 ⇒ 放行但 confirmed 降级为 false（confirmed_reason="
+                        "no_regression_evidence）")
     # ── B20：batch-gc 参数（批次历史压缩，显式触发）───────────────────────
     p.add_argument("--keep", type=int, default=0,
                    help="batch-gc：closed 批次保留数（默认取 yaml#loop_a.batch_history_keep，缺省 20）")

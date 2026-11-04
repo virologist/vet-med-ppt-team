@@ -67,11 +67,12 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 > harness.py loop batch-open  --loop a --note <本批主题> --files scripts/<目标脚本>.py,config/<目标配置>.yaml
 > harness.py loop batch-status --loop a [--batch <id>]
 > harness.py loop batch-close --loop a --batch <id> --confirmed \
->            --regression <yaml#loop_a.regression_required 现值（B20 后 7 项，勿硬编码）>
+>            --regression <yaml#loop_a.regression_required 现值（B20 后 7 项，勿硬编码）> \
+>            [--regression-evidence <实测证据.json>]
 > harness.py loop batch-gc    --loop a [--keep N] [--drop-open <id,...>] [--dry-run]
 > ```
 > · `batch-open`：声明文件须先过白名单（`loop_a.scope` / `forbidden_paths`），越界即拒
-> · `batch-close` 五条判据（均读 `config/harness.yaml#loop_a`）：
+> · `batch-close` 六条判据（均读 `config/harness.yaml#loop_a`）：
 >   ① `confirm_before_each_batch=true` 且未带 `--confirmed` → **exit 1**（第 4 步）
 >   ② `regression_required` 列出的项没跑齐 → exit 1 并列出缺哪几项（第 6 步）
 >   ③ `patch_discipline=minimal` → 用 `git status` 比对**实际改动集合 ⊆ 声明集合**（第 3 步）
@@ -81,6 +82,43 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 >      曾被静默接受且 ok:true）
 >   ⑤ **B19 闭合归属**：存在更新的未闭合批次时闭合旧批次 → **exit 2**
 >      （旧批次曾被诊断探针用假套件名顺手闭合——跨批污染状态机）
+>   ⑥ **任务F·病灶② 回归实测证据**（`--regression-evidence`，六条判据的最后一条）：
+>      `--regression` 是**声明**（名字列表），B19 只验「名字像真的」⇒ **纯声明即可收批**
+>      （实测 `b1793794707` 在 1 秒内完成 open→close，却记录了 7 项从未执行的回归）。
+>      ⇒ 落账时**声明与实测分列两个字段**：
+>        · `regression_ran`      —— **声明**（`--regression` 的名字列表，字段名不变）
+>        · `regression_verified` —— **实测**（`--regression-evidence` 的证据清单）
+>        · `confirmed`           —— 账本里**唯一**代表「这批验收过」的标记
+>      证据文件格式：`{"suites": [{"suite": ..., "rc": 0, "duration_s": ...}]}`
+>      降级规则（fail-closed，但不过度阻断）：
+>        · 证据齐备且全 rc=0 → `confirmed=true`（`confirmed_reason=evidence_ok`）
+>        · 某项 rc≠0         → **exit 1** 拒绝收批，批次保持 open（点名哪项失败）
+>        · 套件名与 `--regression` 名单不一致（少一项或多一项）→ **exit 2** 拒绝
+>          （防张冠李戴；少一项 = 有声明无实测）
+>        · 证据文件不存在 / JSON 非法 / 结构非法 → **exit 2** 拒绝
+>          （证据不可得**不按 0 处理**——静默取 0 会造出「回归全绿」的假象）
+>        · **未提供证据** → 放行（向后兼容，历史批次命令不失效）但
+>          `confirmed=false`、`confirmed_reason=no_regression_evidence`、
+>          `regression_verified=[]`，并在 stderr 打 ⚠ 警告
+>          ⇒ 「没验证过」在账本里**不得**看起来像「验证过」
+> · **任务F·病灶⑤（v3.28.8）：「废弃」口径两处一致** ——
+>   `batch-gc --drop-open` 的 `before_open` 与 `batch-close` 的归属校验
+>   **必须用同一口径**：未闭合 ∧ **未废弃**。
+>   背景（实测）：此前 `batch-gc` 认 `abandoned` 而 `batch-close` 不认
+>   ⇒ **标记废弃 ≠ 判定废弃** ⇒ ① 真正的最新批次可能因一个**已废弃**的
+>   更晚批次被 stale 误拦（收不掉）；② `batch-gc` 报告的 open 数与
+>   `batch-close` 实际认定的 open 数对不上 ⇒ **操作成功、效果为零**。
+>   ⇒ 根治：抽 `_open_batches()` 单一真源（`harness.py`），三处调用同一函数：
+>     `batch-gc` 的 `before_open` / `batch-close` 的归属校验 / `batch-close` 的
+>     `--batch` 缺省推断。⇒ 口径不可能再漂移。
+> · **R18-续（v3.28.8）：体检第 7 项的超时第三态 `REG_TIMEOUT`** ——
+>   套件在阈值内**没跑完** ⇒ 既非失败、也非环境受限 ⇒
+>   **不阻断**（rc 仍为 0）但**必须**进「未验证」累加器
+>   ⇒ 结论区降级为「⚠️ 存在未验证项」，**绝不**写「✅ 全部通过」（假绿）。
+>   阈值真源：`config/harness.yaml#loop_a.regression_timeout_s`（禁硬编码；
+>   改动该键须连带刷新 `references/inspection-zones.yaml` 的机算字段）。
+>   ⚠ 五态对照：`REG_FAIL`（阻断）/ `REG_PASS_WITH_SKIPS`（⚠·未验证）/
+>     `REG_ENV_LIMITED`（⚠·未验证）/ `REG_TIMEOUT`（⚠·未验证）/ `REG_PASS`（真通过）。
 > · `batch-gc`（**B20 · 第三轮 P2-1**）：批次历史压缩，**显式触发不自动**——
 >   closed 超保留数（`loop_a.batch_history_keep`，缺省 20）压入
 >   `archived_batches` 摘要区（id/theme/closed_at 三元组，可溯不可展开）；

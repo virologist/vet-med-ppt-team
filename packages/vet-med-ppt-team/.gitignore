@@ -98,3 +98,11 @@ packages/.mirror_backups/
 #   若不隔离 ⇒ 下次 `git add -A` 会把它连同本包一起提交 ⇒ 污染分发包。
 # ⇒ 整体忽略（不删文件，保留并行 agent 的工作产物）。
 02-design/
+
+# `03-code/` 同理（Agent Harness 专家团的**改动说明**落点目录）
+#   实测：并行 agent 在本包根建 `03-code/C1b_R18_改动说明.md`，
+#   与 `02-design/` 同型 ⇒ 若不隔离 ⇒ `git add -A` 会把工作说明混进分发包。
+# ⇒ 整体忽略（保留工作产物，不删文件）。
+# ⚠ 与 `scripts/mirror_sync.py` 的 `EXCLUDE_PATTERNS` 口径**必须一致**
+#   （两边都排 ⇒ 不会「git 收了但镜像没有」或「镜像有但 git 没有」的漂移）。
+03-code/

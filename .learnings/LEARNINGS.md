@@ -584,3 +584,375 @@ $ python3 scripts/sync_zone_registry.py          # 官方刷新器，dry-run
 - Tags: 免检区登记表, 连带刷新, keys_sha256, key_count, leaf_weak, 声明集缺口, patch_discipline, 零遗漏第7次
 
 ---
+## [LRN-20261104-006] gotcha/high · 解耦「工作区洁净度」时，过滤粒度过粗会吃掉最小补丁纪律
+
+### 现象
+v3.28.7 修 R9b 的半程缺陷：`batch-close` 的「实际改动集」原取**未过滤**的全量 git status，
+与守卫侧「已按 scope 过滤的声明集」口径不对称 ⇒ `actual − declared` 恒含全部 scope 外改动
+⇒ `patch_discipline_check` 恒判 `undeclared_changes` ⇒ 收批被拒 ⇒ `batch_close` 事件不落账
+⇒ 守卫报「缺产出：['batch_close']」（而失败文案却写「与工作区改动状态无关」——**文案说谎**）。
+
+修复（`harness.py:5451` `_git_changed_files(scope=None)` + `:5922` 传 `_scope_abs`）：
+对 `actual` 也按 scope 过滤 ⇒ 解耦成立（实测：scope 外有未跟踪文件时守卫 42/0 绿）。
+
+### ⚠️ 但引入了新缺陷（本次实测发现）
+过滤粒度过粗 ⇒ **scope 内的未声明改动同样不再被检出**。
+实测：包内 `scripts/` 下放一个未声明文件，`test_trace_events.py` 仍 **42/0 绿**
+⇒ **`patch_discipline=minimal`（最小补丁纪律）实质失效**。
+
+### 正确修法（两态区分，而非一刀切过滤）
+```
+actual 不过滤（保持全量）
+  ↓ 比对时分类：
+  ├ scope 内未声明  ⇒ 硬拒（undeclared_changes）← 保住最小补丁纪律
+  └ scope 外          ⇒ 降级为 note（不阻断，只提示）← 保住「解耦」
+```
+⇒ **既不把工作区洁净度当生产判据，又不放弃最小补丁纪律。**
+
+### 元教训 ⭐
+**「解耦 A 与 B」的修复，若 A 恰好是 B 的检测手段，会连带削弱 B。**
+解耦本身正确，但**必须同时验证另一条纪律没被削弱** —— 只验「A 解耦成功」是半个验收。
+⇒ 验收判据必须成对写：「解耦成功」+「另一纪律仍有效」，两者都要跑。
+
+### Suggested Fix
+1. 修 `patch_discipline_check`：`actual` 不过滤，比对时区分 scope 内/外两类超出。
+2. scope 内未声明 ⇒ 硬拒；scope 外 ⇒ note 不阻断。
+3. 配套加守卫：造「scope 内未声明改动」场景，断言收批**必须**被拒（回归固化）。
+4. 失败文案必须与行为一致 —— 文案说谎比红本身更危险（会把排障方向指向错误的层面）。
+
+### Metadata
+- Source: gotcha
+- Related Files: scripts/harness.py, scripts/loop_contract.py, scripts/test_trace_events.py, scripts/test_batch_gate_b19.py
+- Tags: 最小补丁纪律, patch_discipline, scope过滤, 解耦副作用, 文案说谎, 过度放宽
+
+---
+## [LRN-20261104-007] correction/high · 收批必须在提交之前；已提交后发现遗漏走「补开批次+补提交+补镜像」三步
+
+### 现象
+C0 批次 `b1793786650` 至今 `closed: false / confirmed: false`，
+但其改动**已被 `62dce76` 提交并推送到 origin/main** ⇒ **改动已发布、批次未收批**（流程脱节）。
+且 `62dce76` 遗漏了 `_git_changed_files` 加 `scope` 参数后的**配套测试适配**
+⇒ `main` 分支当前是**红的**（`TypeError: lambda() got an unexpected keyword argument 'scope'`）。
+
+### 根因
+「收批（batch-close）」与「提交（commit/push）」两个动作被当成独立的，
+**没有强制先后关系** ⇒ 提交可以在未收批时发生 ⇒ 遗漏无处暴露。
+
+### 处置（三步，缺一不可）
+1. **补开批次**（`batch-open`，声明集 = 遗漏文件，`start_commit` = 已提交的 commit）
+   —— 让改动集重新进入 Loop A 纪律覆盖
+2. **补提交**（commit + push）
+3. **补镜像**（`mirror_sync.py --confirm`）⇒ 消除体检第 26 项「根与镜像漂移」告警
+
+### 元教训 ⭐
+**「发布」不是终点，「收批」才是。** 提交到远端只说明代码在远端，
+不说明它**通过了 Loop A 纪律的最小补丁检查与回归检查**。
+⇒ 固化纪律：**收批 → 再提交**；已违反时走上述三步补救，**不得**手工改 state 假装收批。
+
+### Suggested Fix
+1. 流程固化：先 batch-close，再 commit/push。
+2. 若已提交后才发现遗漏 ⇒ 补开批次 + 补提交 + 补镜像（本次已执行，批次 `b1793794546`）。
+3. 「签名变更类」改动必须连带 grep 出所有 mock/覆写点（本次是 `test_batch_gate_b19` / `test_batch_gate_b21`
+   两处 `harness._git_changed_files = lambda: ...`）⇒ 提交前跑全量回归是唯一兜底。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/harness.py, scripts/test_batch_gate_b19.py, scripts/test_batch_gate_b21.py, scripts/mirror_sync.py
+- Tags: 收批纪律, 提交顺序, 流程脱节, 签名变更, mock适配, 镜像同步
+
+---
+## [LRN-20261104-008] correction/high · 契约测试写真包账本 + `regression_ran` 只记名字不验证真跑
+
+### 现象（2026-11-04 20:15–20:18 实测）
+1. 契约测试 `scripts/test_trace_events.py:281` 与 `scripts/test_trace_failures.py:107`
+   调**真包 CLI**（`scripts/harness.py`）执行 `loop batch-open` / `loop batch-close`，
+   虽传 `--workspace <临时目录>`，但 Loop A 的 `state_file` 配成
+   `"<包>/.workbuddy/loopA_state.json"`（**不含 `<工作区>` 占位符**）
+   ⇒ 临时工作区**照样写真包账本**。
+   实测污染：真包账本新增 62 个 open 批次，其中 30+ 个 `theme=T4`/`契约测试批次`/`测试批次`，
+   全部由测试产生；`b1793794708`（theme=T4，声明 `scripts/harness.py`）至今仍 open。
+2. `b1793794707` 在 **1 秒内**完成 open→close，且 `regression_ran` 记录了 7 项回归清单
+   —— 但这 7 项**从未真正执行**。根因：`harness.py:5945` 的 `b["regression_ran"] = ran`
+   里的 `ran` 就是 `--regression` **命令行传入的名字列表**，
+   `batch-close` 只校验「套件名真实存在」（B19 真实性校验），**从不验证套件是否真跑过**。
+   ⇒ 「跑过回归」可以是一句纯粹的声明（幻觉声明）。
+3. 连带后果：契约测试若用 `--regression` 传满 `loop_a.regression_required`，
+   就能**凭空闭合真包账本里任意一个最新的 open 批次**
+   （`stale_batch_close` 只拦「非最新」的旧批次）⇒ 真实批次被测试顺手闭合。
+
+### 根因（两条独立病灶）
+- **病灶 1（写入面）**：Loop A `state_file` 写死 `<包>/`，测试无法隔离 ⇒
+  「测试用临时 workspace」这一隔离手段**对 Loop A 账本完全失效**。
+- **病灶 2（校验面）**：`regression_ran` 语义是「声明」，代码却当作「已验证的事实」记入账本。
+  两者混淆 ⇒ 账本里的 `confirmed: true` 不代表任何回归真跑过。
+
+### 处置
+1. 契约测试改为**在隔离克隆里跑**（`/tmp/c0_t3_clone` 已验证过该手法：md5 比对证明等价）。
+2. 真实批次收批前，必须**独立跑完**回归并把 rc 记录在批次 notes，
+   不接受「用 `--regression` 传名字来闭合」。
+3. 收批命令使用**新开批次 ID**，且声明集必须**逐字等于** scope 内实际改动集。
+
+### 元教训 ⭐
+**「声明」与「已验证」在账本里必须用不同字段承载。**
+当一个字段同时被用作「我打算跑什么」和「我跑过了什么」，
+它就退化成纯声明——**回归纪律、审批纪律、验收纪律全部随之失效**，
+而且失效时账本看起来是**绿的**（最危险的失效方式）。
+⇒ 验收判据必须成对写：「声明齐了」+「实测跑过了」，且两者在**不同字段**里。
+
+### Suggested Fix
+1. `loop_a.state_file` 增加可选的 workspace 覆盖机制（如 `state_file_override` 或
+   环境变量 `VETMED_LOOP_STATE_FILE`），供测试隔离；**不得**让测试写真包账本。
+2. `batch-close` 增「实测证据」通道：新增 `--regression-evidence <json>`，
+   要求逐套件附 `{suite, rc, duration_s}`；`regression_ran`（声明）与
+   `regression_verified`（实测）**分列两个字段**，后者缺失时 `confirmed` 降级为 `partial`。
+3. 契约测试改在隔离克隆执行；或统一走 `batch-gc --drop-open` 清理测试残留批次。
+4. 回归固化：造「`--regression` 传名字但不真跑」的场景，断言收批**不得**置 `confirmed: true`。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/harness.py, scripts/loop_contract.py, scripts/test_trace_events.py, scripts/test_trace_failures.py, config/harness.yaml
+- Tags: 账本污染, 契约测试, 回归声明, 幻觉声明, state_file隔离, regression_ran
+
+---
+## [LRN-20261104-009] insight/high · 「超时」不是失败：阈值硬编码会把真绿判成红
+
+### 现象（2026-11-04 20:41–20:45 实测）
+全量回归跑完，`ensure_settings` rc=1，**唯一红项 = 第 7 项**：
+```
+[7/27] 🔴 回归测试失败：1/56 个套件不通过
+     test_dead_config_disposition.py  → 超时 >180s
+```
+主理人单独重跑该套件：
+```
+Ran 36 tests in 186.907s
+OK
+rc=0        # 真实耗时 3:07.06
+```
+⇒ **36/36 全绿、rc=0**，仅因耗时 **186.9 秒** 撞上 `scripts/ensure_settings.py:624` 的
+**硬编码 `timeout=180`** ⇒ 被误判为「失败」。
+
+### 根因
+`ensure_settings.py:624` 的 `timeout=180` 是**裸数字硬编码**，
+`config/harness.yaml` **没有** timeout 配置项 ⇒
+① 想放宽阈值**必须改代码**（配置层无入口）；
+② 阈值 180 是某一天按当时套件耗时定的，此后套件变慢（36 个用例、含 3 个反向对照
+   各自 copytree 到临时目录）⇒ **阈值与现实脱钩**，但没人复核过。
+⇒ 结果：**真绿被当成红**，且这个红**掩盖**了体检真正的信号（此时第 26 项镜像漂移已修复，
+体检本该全绿）。
+
+### 元教训 ⭐
+**「超时」是第三类状态，不能塞进「失败」桶里。**
+- 「失败」= 套件**跑了**，并判定**有缺陷** ⇒ 该阻断。
+- 「超时」= 套件**没跑完** ⇒ 我们**不知道**它有没有缺陷 ⇒ 既不能判通过（假绿），
+  也不该判失败（假红）⇒ 应判**未验证**，并把「阈值本身可配置」与「超时进未验证累加器」两件事一起做。
+
+⚠ 危险的方向性偏差：**假红比假绿安全，但假红会训练人忽略体检**——
+本包已因「恒红」导致告警疲劳（`REGRESSION_SKIP_BLOCKS_RELEASE=False` 的 docstring 明确写过
+「某些会话里宿主 broker 会持续拦截 ⇒ 若阻断，体检恒红 ⇒ 用户学会忽略体检输出 ⇒ 后续真告警全部失效」）。
+⇒ **阈值硬编码是这个陷阱的另一个入口。**
+
+### Suggested Fix
+1. 超时阈值**外提到配置**（新增 `regression_timeout_s`，默认给余量），
+   且**优先加到未被免检区登记表登记的段**（省掉连带刷新）。
+2. 超时记为**独立状态** `REG_TIMEOUT`：不阻断、**必须**进未验证累加器（不假绿）。
+3. **定期复核阈值**：把「各套件实测耗时」纳入体检输出（哪怕只打印），
+   让阈值与现实脱钩这件事**在体检里可见**，而不是等某天偶然撞上。
+4. 任何「按当前耗时定的常量」都应有注释说明**依据的实测值与日期**，
+   否则半年后没人知道它是按什么定的。
+
+### Metadata
+- Source: insight
+- Related Files: scripts/ensure_settings.py, config/harness.yaml, scripts/test_regression_skip_report.py
+- Tags: 超时阈值, 硬编码, 假红, 未验证, 告警疲劳, 阈值脱钩
+
+---
+## [LRN-20261104-010] correction/high · `batch-gc --drop-open` 标记了 abandoned 但**不解除**收批阻塞
+
+### 现象（2026-11-04 20:52 实测）
+为清理契约测试污染的 57 个 open 批次，跑：
+```
+python3 scripts/harness.py loop batch-gc --loop a --actor team-lead --drop-open "<57 个 id>"
+```
+⇒ `{"ok": true, "dropped_open": 57, "batches_now": 84, "archived_total": 63}` —— **执行成功**。
+
+但随后实测：**61 个批次 `abandoned=true`，却仍全部计入 `opened_ids`** ⇒
+`stale_batch_close` 判定的「最新 open 批次」仍是那批 **已废弃**的 `b1793795972`（theme=T4）
+⇒ 想收真实批次 `b1793786650` 仍会 **rc=2 拒绝**。
+
+### 根因：两处判据口径不一致
+| 位置 | 判据 |
+|---|---|
+| `harness.py:5706-5708`（`batch-gc` 的 `before_open` 统计） | `not closed` **and** `not abandoned` ⇒ **认 abandoned** |
+| `harness.py:5900-5901`（`stale_batch_close` 的 `opened_ids`） | 只判 `not closed` ⇒ **不认 abandoned** |
+
+⇒ 「清理」动作写了 `abandoned: true`，但**判阻塞的那一处不读这个字段** ⇒
+清理对阻塞**零效果**，而调用方（按 hint 去 batch-gc 清理）**以为已经清干净了**。
+⇒ **提示语与行为不一致**：「确要关闭请先用 loop batch-gc 清理误开批次」——照做没用。
+
+### 元教训 ⭐
+**「标记废弃」与「判定废弃」必须是同一个口径。**
+凡是写了「废弃」语义的字段，必须**同时**被所有读取该语义的判据消费；
+否则就会出现「操作成功、效果为零」——比操作失败更坏，因为它让人以为问题解决了。
+
+⚠ 通用检查法：**每加一个状态字段，就去 grep 谁在读它**；
+若读取方少于写入方 ⇒ 这个字段是**装饰**。
+（与本包既有病灶同型：`REGRESSION_UNVERIFIED` 曾「被填充却不被读取」。）
+
+### Suggested Fix
+1. `opened_ids` 判据改为 `not closed and not abandoned`（与 `batch-gc` 的 `before_open` 对齐）。
+2. **一致性守卫**：加回归断言 —— 对同一批批次，`batch-gc` 的 `before_open` 计数
+   与 `stale_batch_close` 的 `opened_ids` 长度**必须相等**。
+3. 修 `batch-gc` 的 hint 文案：清理后若仍阻塞，须明确说「清理只标记不解除」，
+   或直接修 ① 让文案成立。
+4. 顺带：`abandoned` 批次应当从「未闭合」视图（`loop batch-status`）里区分出来显示，
+   否则「未闭合 = 在途」的信号被污染稀释（这正是 B20③ 引入 batch-gc 的初衷）。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/harness.py, scripts/loop_contract.py, scripts/test_batch_gate_b19.py
+- Tags: batch-gc, abandoned, stale_batch_close, 口径不一致, 装饰字段, 操作成功效果为零
+
+---
+## [LRN-20261104-011] gotcha/high · BSD grep 不支持 `\|` 交替 —— 「零命中」可能是工具假象而非代码缺失
+
+### 现象（2026-11-04 21:20 实测）
+核查同事的实现进度时，用 Bash 里的 `grep -n "regression_evidence\|regression-evidence\|confirmed_reason"` 查 `scripts/harness.py`，
+⇒ **零命中**。据此判定「evidence 通道完全没做」，并给同事派了一份「补齐 6 项闭环」的清单。
+
+同事的改动其实**早已完整落地**（CLI 参数 `:9226`、调用点 `:6131`、落账 `:6164-6194`）——
+只是我的 grep 语法在本机 macOS 的 **BSD grep** 下**不生效**：BSD grep 用的是 POSIX 基本正则（BRE），
+**不支持 `\|` 交替语法**（那是 GNU grep 的 BRE 扩展）。⇒ 整个 pattern 被当成**字面量字符串**匹配 ⇒ 必然零命中。
+
+### 根因
+| 场景 | 正确语法 | 后果 |
+|---|---|---|
+| macOS BSD grep（默认） | `grep -E "a\|b"` 或 `grep -e "a" -e "b"` | `\|` 被当字面量 ⇒ **假零命中** |
+| GNU grep（Linux） | `grep "a\|b"` 可用 | 无此坑 |
+
+⚠ 同一轮我还因为 `grep -n "if not bid\|bid = \|bid="` 再次零命中，
+连续两次同类误判 ⇒ **这不是偶然，是系统性工具盲区**。
+
+### 元教训 ⭐
+**「查不到」是取证失败的信号，不是「不存在」的证据。**
+在把「零命中」当作结论（尤其是要据此给同事派活、判生死）之前，必须先做**反向自证**：
+
+1. **正向对照**：换一个已知必有的串再 grep 一次 ⇒ 若也是零命中 ⇒ 是**工具坏了**，不是代码缺失。
+   （例：`grep -n "def " scripts/harness.py` 有命中 ⇒ 文件可读；再试 `grep -n "regression" scripts/harness.py`）
+2. **语法降级**：`\|` → 用 `-E` 或多个 `-e`。
+3. **工具换道**：优先用 Grep 工具（ripgrep，支持 PCRE），不依赖 shell grep。
+4. ⚠ **最危险的一环是「据此派活」**：错误结论一旦写成指令派给同事，
+   同事会重复实现 ⇒ 重复定义覆盖既有实现 ⇒ **制造新回归**。
+   ⇒ 派活前的取证必须过「正向对照」这一关。
+
+### Suggested Fix
+1. 本机核查一律用 Grep 工具（ripgrep）；必须用 shell 时加 `-E` 或 `-e`。
+2. 涉及 `\|` 的 pattern，禁止用于「零命中 ⇒ 判定不存在」的结论。
+3. 派活前对每个「零命中」结论跑一次**正向对照**（找一个必有的串验证工具本身可用）。
+4. 已因此误派过一次活（2026-11-04 21:20 给 coder-ev2 派「补齐 evidence 通道」），
+   已当场发消息撤回并改派「验证与加固」⇒ 未造成代码损坏。
+
+### Metadata
+- Source: gotcha
+- Related Files: scripts/harness.py, scripts/ensure_settings.py
+- Tags: BSD grep, BRE, 正则交替, 假零命中, 正向对照, 取证纪律, 派活前自证
+
+---
+
+
+## [LRN-20261104-012] gotcha/high · 已登记的教训**不会自动生效** —— 同型错误在同一轮内二次复发
+
+### 现象（2026-11-05 06:30 实测）
+LRN-20261104-011（**上一轮刚登记**）明确写了「BSD grep 不支持 `\|` 交替 ⇒ 假零命中」。
+同一轮（下一会话）里，主理人**再次**用 Bash `grep -n "import yaml\|safe_load"` 查 `ensure_settings.py`，
+⇒ **零命中** ⇒ 得出「该文件从不读 yaml」的结论 ⇒ 差点走「阈值只能硬编码」的错路。
+
+⚠ **同一条教训在登记后的下一个会话立刻复发** ⇒ 说明「登记经验」与「行为改变」之间
+**没有强制连接**。
+
+### 根因
+| 环节 | 状态 |
+|---|---|
+| 经验是否已登记 | ✅ LRN-20261104-011 在册 |
+| 登记内容是否指向具体动作 | ✅ 有（用 Grep 工具 / `-E` / 正向对照） |
+| 执行时是否回查该条 | ❌ **未回查** ⇒ 相同命令照用 |
+
+⇒ **LRN 是知识，不是约束**。知识写在文件里，执行时不会自动被想起。
+
+### 元教训 ⭐
+**经验登记 ≠ 行为约束。** 若一条教训在登记后的下一轮就复发，
+那么它的落地形态必然只停留在「文档」层，而非「机制」层。
+
+**判据（自查用）**：当同一型错误**再次**发生时，
+不要只补一条新 LRN（那是第 N 次重复登记）⇒ 必须问：
+**这条经验能不能变成一道自动执行的关卡？**
+
+本轮的落地选择：
+1. **取证纪律**⇒ 无自动关卡可加（取证发生在 shell 层）⇒
+   改法只能是**操作规程**：核查一律走 **Grep 工具**（ripgrep/PCRE），
+   shell grep 仅用于 `-E` / 多 `-e` 形态 ⇒ 已写进断点文档 §4.2b。
+2. **能机算的**⇒ 一律落成**代码 + 守卫测试**（本轮 R18 / 病灶⑤ 即如此）⇒
+   判据进 `scripts/`，变异对照进 `scripts/test_*.py` ⇒ **机器强制，不依赖记性**。
+
+### Suggested Fix
+1. 同型错误第二次发生时，**禁止只补 LRN** ⇒ 必须给出「机制化落点」（哪个脚本、哪条判据、哪个测试）。
+2. 本包纪律分层（已确立并沿用）：
+   · **可机算的** → 落成代码 + 守卫测试（机器强制）
+   · **不可机算的**（取证/沟通/评审）→ 落成操作规程（写进断点文档/派活模板）
+3. 断点文档与盘点报告是**每会话必读**的载体 ⇒ 新增的操作规程必须同时写进这两处，
+   否则下一会话仍看不到。
+
+### Metadata
+- Source: gotcha
+- Related Files: .learnings/LEARNINGS.md, scripts/ensure_settings.py
+- Tags: 教训复发, 知识非约束, 机制化落点, 操作规程, Grep工具, 纪律分层
+
+---
+
+## [LRN-20261104-013] correction/high · 反向对照必须落在「真被读到的那一处」—— 覆写共享常量会让对照失真
+
+### 现象（2026-11-05 06:45 实测）
+为 `REG_TIMEOUT` 写反向对照 V6b 时，设计为「覆写模块级常量 `REG_TIMEOUT`，
+让超时套件不被计入未验证集合 ⇒ 断言必须翻红」。
+实际执行：**断言没有按预期翻红**（34 tests 中本条报红，但方向反了）——
+因为 `REG_TIMEOUT` 这个常量**同时**被两处读取：
+① `analyze_timeout_suite`（返回状态）② `collect_unverified`（未验证并集条件）。
+⇒ 覆写常量 ⇒ 两处**同步**变化 ⇒ 未验证集合里**仍**含它 ⇒ 对照**根本没改坏判据**。
+
+### 根因
+反向对照要成立，必须满足：**只改一处，且那一处正是被测判据的读取点**。
+| 反例 | 覆写点 | 被测判据读的是 | 结果 |
+|---|---|---|---|
+| 首版（失真） | 常量 `REG_TIMEOUT` | 同一个常量 | 两处同步变 ⇒ 判据没坏 |
+| 修正版（真对照） | **源码里 `collect_unverified` 的并集条件** | 该并集条件本身 | 判据真被改坏 ⇒ 断言真翻红 |
+
+⇒ 判据「读了某个常量」与「判据读了某个**具体位置**」是两回事。
+⇒ **覆写常量 ≠ 改坏判据**：当常量被多处共享时，覆写是**联动**而非**定点爆破**。
+
+### 元教训 ⭐
+**反向对照的价值在于「证明判据真的在读那处」**——
+若对照没有真的把那处改坏，绿色的断言是**假绿**，
+比没有对照更危险（它给出「已验证」的错觉）。
+
+**落法**：优先**源码级 mutator**（隔离副本里精确替换那一行），
+而不是运行时覆写属性；只有在「该常量**唯一**被该判据读取」时，
+运行时覆写才是有效对照。
+
+本轮两处修正：
+- R18 V6b：改为隔离副本 + 精确替换 `collect_unverified` 的并集条件
+  （并额外断言「变异体确实写出『✅ 全部通过』」⇒ 坐实假绿路径真实存在）。
+- 病灶⑤ T9d：同样走隔离副本 mutator，复现旧口径（只认 `closed`）
+  ⇒ 断言「正常批次确实被 stale 拦」⇒ 证明对照有效。
+
+### Suggested Fix
+1. 写反向对照前，先问：**被测判据读的是常量，还是常量所在的表达式？**
+   - 读常量且**唯一读取** ⇒ 可覆写属性。
+   - 读表达式 / 常量被**多处共享** ⇒ **必须**走源码级 mutator（隔离副本）。
+2. 对照必须**双向闭合**：改坏 ⇒ 断言翻红；恢复 ⇒ 断言复绿 ⇒ 证明对照可逆。
+3. 对照**不得污染真包**：隔离副本 + `finally` 恢复，两端都要验。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/test_regression_skip_report.py, scripts/test_batch_gate_b19.py, scripts/ensure_settings.py
+- Tags: 反向对照, 变异对照, 常量覆写, 源码级mutator, 假绿, 隔离副本, 对照可逆
+
+---
