@@ -6,6 +6,93 @@
 
 ---
 
+## [v3.28.6] - 2026-11-03（Loop A 第五轮生产实证诊断：B23+B24+B25 全做）
+
+> 依据：第五轮裁定「B23+B24+B25 全做」。诊断报告落盘
+> `outputs/LoopA5_诊断报告_20261103.md`。
+> 基线：v3.28.5（B21+B22 终态，HEAD `6e74f31`）。
+> **本轮性质：与前四轮不同 —— 问题第一次全部有真实生产数据佐证**
+> （Loop B 首跑 `T-xuexue-20261103`：58 条可归因 trace + 课件 delta 战报）。
+> ⇒ 诊断对象从「机制是否存在」升级为「生产实证暴露了什么」。
+
+### B23（P1×2 · 首过率与质量真实性）
+
+- **① verify-tier 接线（治 N7）**：`loop continue` 的质量数**必须**来自机器复算
+  （`--verify-json` 指向 `verify_deck --json` 报告）⇒ 手工自报 `--p0/--p1/--p2`
+  一律 **rc=1 硬拦**（首轮即拦，不再等到"已有手工历史"）。
+  - 新增配置键 `loop_b.budgets.quality_source_required: "verify"`（**唯一合法值**）——
+    配成别的值 ⇒ rc=2 显式报错，**不得静默回落**（"配了不生效"是本包反复吃亏的老坑）。
+  - 逃生口 `--allow-unverified` 保留：放行但登记 `blocker(unverified_quality_source)`
+    + 快照标 `source=manual_unverified` + `make-gate` 阻断（纯文档轮确无报告时可用）。
+  - 病灶证据：首跑 `quality_history[0].source = "manual"`，自报数一路走到制作门，
+    verify-tier 产物全程零消费。
+  - SOP 双文件同步：`references/dual-loop-governance.md` §4.1、
+    `references/harness-engine.md` §4.2。
+- **② 结构判据前置（治 N3）**：闸2 蓝图交付新增「gate 结构项预检清单」5 项
+  （题页 / 目录页 / 随堂测 / 课时-页数区间 / 口径标注）——有则标页号，无则列入施工项。
+  - 落点：`references/sop-stages.md` §6.2 + `references/course-profile-defaults.md` §4.6。
+  - **新增镜像守卫** `test_arch_drift.py::TestGateChecklistMirror`（C1–C3）：
+    两份 md 的 `GATE_CHECKLIST_MIRROR` 哨兵块**逐字相等**（去空白后），
+    单边增删改任一结构项即判红（已做变异测试验证）。
+    ⚠ 此前两份文档都写着「由 test_arch_drift 镜像机制守住」，而该机制**并不覆盖它们**
+    —— 本次补上，让那句话成立。
+
+### B24（P2×3 · 边界与护栏）
+
+- **③ `ai_unfixable` 缺陷类别（治 N2）**：缺陷可修复性升级为一等公民 ——
+  `config/visual-rules.yaml#fix_class`（唯一源，逐条登记"为什么 AI 修不了"）
+  → `verify_deck` 给每条 issue 打 `fix_class` + `fix_class_reason`
+  → `loop_contract.fix_class_split()` 分流
+  → `harness.py loop worklist --verify-json <报告>` 产出
+  **ai / human / ai_unfixable 三张清单**。
+  - `ai_unfixable` **不进 AI 施工清单**，进人工挂账区（首跑实证：几何版式修复三轮证伪，
+    重叠 4→16→19，白烧 3 轮还引入过自引入缺陷）。
+  - 缺省 `ai` ⇒ **不影响任何存量判据**；`loop add-item --fix-class` 可逐条标注，
+    `loop status` 新增 `fix_class_counts` 挂账计数（摘要面可观测）。
+- **④ spawn 前置通道探测（治 N4）**：`preflight --probe-members` ——
+  逐成员比对平台 `agentType` 与 members 表，不一致 ⇒ `member_channel_mismatch`
+  + 逐成员降级预案（装配注入路径）。**不阻断**（通道回落是平台行为，不是主理人的错）。
+  ⇒ degrade 从"事后记录"变"事前可知"（首跑 5 条 degrade 全是事后记录且同因）。
+- **⑤ 成员配额护栏（治 N6）**：`loop_b.budgets.member_call_minutes`（默认 15）——
+  `spawn` 登记 `member_call_started_at` + 预算 → `member-return --elapsed-minutes`
+  （或 `--started-at` 差算）回填耗时 → 超预算落 trace warning + **建议拆分任务**。
+  **不阻断**（撞限的正式处置仍是 `spawn-failed --reason quota`，两处不重复执法）。
+
+### B25（P3×3 · 沉淀与判据）
+
+- **⑥ 通用手术工具沉淀（治 N1）**：新建 `scripts/deck_surgery.py` ——
+  修复项参数化 `--fix superscript|normid|font|note|color|density|blank|geometry`，
+  默认 **dry-run**、改前强制备份、空白页只报告不删、配色只报告不自创、
+  几何复用 `surgery_deck.py` 内核。阈值一律只读 `config/visual-rules.yaml`。
+- **⑦ insights 分片模板（治 N5）**：新建 `references/insight-part-template.json` ——
+  九必填 + R6 id 格式 + R3 evidence 示例，附**可直接照抄的真实示例分片**
+  （已实测通过 `validate_part`）。装配时由联邦 `resolve_shared_refs()` 自动收录
+  ⇒ **无需改动联邦件**（避免跨包漂移）。
+- **⑧ spawn 决策判据（治 N9）**：`agents/vet-med-ppt-team-team-lead.md`
+  新增「何时值得拉成员」节 —— 必拉（证据核验 / 独立验证 / 版式设计）、
+  不拉（纯确定性施工）、一句话测（结论需要领域判断吗）。
+
+### 守卫与同步
+
+- 新增 `scripts/test_batch_gate_b23.py`（T1–T13）：诊断报告「验证标准」全部条目机器化。
+  写守卫时**抓出 3 个实现缺陷**并已修：
+  ① `preflight --probe-members` 因 `members.*.fallback` 是**字符串**而非对象
+     （`.get('channel')` 抛 `AttributeError` ⇒ rc=4 崩溃）；
+  ② `--fix` 枚举缺 `note` / `density`（诊断报告明文要求）；
+  ③ `member_channel_mismatch` 判据字面量未出现在 stderr（下游无法 grep）。
+- 存量断言同步：`scripts/test_loop_state.py`（场景 ⑤⑧⑩⑪ 四处）、
+  `scripts/test_interrupt_resume_continuity.py`（C6）——
+  B23① 是**行为收紧**，旧断言按新纪律重写而非删改。
+- 版本号 13 处升至 v3.28.6；`packages/vet-med-ppt-team/` 镜像同步
+  （178 个受管文件逐字节零差异）。
+- **免检区登记表**：① 刷新 `harness.yaml#loop_b` 指纹（`quality_source_required`
+  + `member_call_minutes` 两键新增 ⇒ key_count 38→40）；② **新登记段**
+  `visual-rules.yaml#fix_class`（key_count 15 / leaf_weak 15）—— 段内新增键
+  而未登记 ⇒ R5 判红（这是登记表守卫的**正常拦截**，不是缺陷）；
+  ⇒ 现 57 段全部对齐，R1–R8 判据全绿。
+
+---
+
 ## [v3.28.5] - 2026-11-03（Loop A 第四轮从零诊断：B21+B22 双修）
 
 > 依据：第四轮总控指令（与前两轮同文）。诊断报告落盘

@@ -62,6 +62,28 @@ $H budget check --kind spawn            # 剩余额度查询
 
 超限时命令**返回非 0 并写 trace**，主理人必须上报用户或切降级，不得硬冲。
 
+### 4.1 成员调用分钟预算（B24⑤ · 新增维度）
+
+`harness.yaml#loop_b.budgets.member_call_minutes`（默认 **15** 分钟）——
+单次成员调用的时长上限。这是 `budgets` 里此前**完全缺失**的维度：原先只有
+`max_rounds` / `max_items_per_round` / `retrieval_budget_per_round` / `no_progress_threshold` /
+`max_rework_per_item`，**没有任何一项管"单次调用花了多久"** ⇒ 撞限（429）撞到脸上
+才知道超了。
+
+```bash
+$H spawn --agent <id> --task-id <tid>          # 登记起始时间戳
+$H member-return --agent <id> --elapsed-minutes 18   # 回填耗时
+```
+
+超预算 ⇒ **trace warning + 建议拆分任务**（不阻断；撞限的正式处置是
+`spawn-failed --reason quota`）。
+
+### 4.2 质量数来源硬约束（B23① · 与 §4 平行）
+
+`loop continue` 的质量数**必须**来自机器复算（`--verify-json`）；
+手工 `--p0/--p1/--p2` ⇒ **exit 1**（判据源 = `loop_b.budgets.quality_source_required`）。
+理由与完整流程见 `references/dual-loop-governance.md#4.1`。
+
 ## 5. 上下文隔离
 
 - 成员产出**只回传路径 + ≤800 字摘要**（`context.handoff_mode=path_only`），全文落盘不进对话

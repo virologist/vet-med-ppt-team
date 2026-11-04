@@ -179,6 +179,10 @@ def _load_threshold():
             "checks": {k: dict(v) for k, v in _FALLBACK["checks"].items()},
             # v3.22.0 G2：图表布局规范（**独立顶层段**，不进 checks ⇒ 不进第 19 项核对清单）
             "chart": dict(rules.get("chart") or {}) if isinstance(rules.get("chart"), dict) else {},
+            # ── B24③（第五轮诊断 N2）：缺陷可修复性分类 ─────────────────────
+            # 缺省 "ai" ⇒ **不影响任何存量判据**（未登记类型按 AI 可修处理）。
+            "fix_class": dict(rules.get("fix_class") or {}) if isinstance(
+                rules.get("fix_class"), dict) else {},
         }
         gate = rules.get("gate") or {}
         if "p2_note_coverage" in gate:
@@ -279,6 +283,39 @@ for _lv in ("P0", "P1", "P2"):
 # 未知类型不会静默消失：计入 gate["p3"]（明示）并在 stats["unknown_red_keys"] 列出，
 #   由体检第 19 项 + 单测双保险推动"要么登记、要么删除"。
 _UNKNOWN_LEVEL = None
+
+# ── B24③（第五轮诊断 N2）：问题类型 → 可修复性分类 ──────────────────────
+# 用途：闸3 施工清单生成时按 fix_class 分流——
+#   ai            → 进 AI 施工清单（确定性可修）
+#   human         → 进「人工确认区」（AI 可出方案，须人拍板）
+#   ai_unfixable  → 进「人工挂账区」（AI 修不了，**不进 AI 清单**）
+# 病灶（首跑实证）：几何版式修复三轮证伪（重叠 4→16→19），AI 不可修复的缺陷
+#   与可修复缺陷混在同一张施工清单里 ⇒ 白烧 3 轮还引入过自引入缺陷。
+# 数据源：config/visual-rules.yaml#fix_class（唯一源，登记面含逐条理由）。
+_FIX_CLASS_DEFAULT = "ai"
+_FIX_CLASS_TABLE = {}
+
+
+def _build_fix_class_table():
+    """从 THRESHOLD.fix_class 建「问题类型 → fix_class」查表（唯一源 = yaml）。"""
+    fc = THRESHOLD.get("fix_class") or {}
+    tbl = {}
+    for klass in ("ai_unfixable", "human"):
+        for ent in (fc.get(klass) or []):
+            if isinstance(ent, dict) and ent.get("type"):
+                tbl[str(ent["type"])] = (klass, ent.get("reason", ""))
+            elif isinstance(ent, str):
+                tbl[str(ent)] = (klass, "")
+    return tbl
+
+
+def fix_class_of(issue_type):
+    """返回 (fix_class, reason)；未登记类型落默认 ai（保持存量行为不变）。"""
+    _t = str(issue_type or "")
+    if _t in _FIX_CLASS_TABLE:
+        return _FIX_CLASS_TABLE[_t]
+    return (_FIX_CLASS_DEFAULT, "")
+
 
 EMU_PER_INCH = 914400
 
@@ -1439,6 +1476,19 @@ def verify(path, hours=3, strict=False, caliber=None):
     stats["has_quiz"] = has_quiz
     stats["hours_ok"] = hours_ok
 
+    # ── B24③（第五轮诊断 N2）：给每条 issue 打上**可修复性分类** ──────────
+    # 缺省 ai ⇒ 不改变任何存量判定（分级仍按 severity 走）。
+    # 作用：闸3 施工清单据此分流——ai_unfixable 的条目**不进 AI 施工清单**，
+    #   进「人工挂账区」（AI 修不了，白烧轮次；首跑实证：几何修复三轮证伪）。
+    _fix_tbl = _build_fix_class_table()
+    global _FIX_CLASS_TABLE
+    _FIX_CLASS_TABLE = _fix_tbl
+    for _iss in issues:
+        _fc, _rsn = fix_class_of(_iss.get("type"))
+        _iss["fix_class"] = _fc
+        if _rsn:
+            _iss["fix_class_reason"] = _rsn
+
     # ---------- 分级计数（v2.0.0）----------
     red = {
         "字号过小(正文)": stats["small_body"],
@@ -1487,7 +1537,22 @@ def verify(path, hours=3, strict=False, caliber=None):
     stats["machine_note_pages"] = stats["machine_notes"]
     stats["machine_note_ratio"] = machine_ratio
 
+    # ── B24③：fix_class 汇总（供施工清单分流与人工挂账统计）───────────────
+    _fc_counts = {}
+    for _iss in issues:
+        _k = _iss.get("fix_class") or _FIX_CLASS_DEFAULT
+        _fc_counts[_k] = _fc_counts.get(_k, 0) + 1
+    _fc_unfixable = [{"slide": i.get("slide"), "type": i.get("type"),
+                      "detail": i.get("detail"),
+                      "reason": i.get("fix_class_reason", "")}
+                     for i in issues if i.get("fix_class") == "ai_unfixable"]
     return {"stats": stats, "red": red, "issues": issues, "rubric": rubric,
+            "fix_class": {"default": _FIX_CLASS_DEFAULT,
+                          "counts": _fc_counts,
+                          "ai_unfixable": _fc_unfixable,
+                          "policy": ("ai_unfixable 条目**不进 AI 施工清单**，"
+                                     "进人工挂账区；分类唯一源 = "
+                                     "config/visual-rules.yaml#fix_class")},
             "gate": {"p0": p0, "p1": p1, "note_coverage": note_cov,
                      "p2_threshold": THRESHOLD["p2_note_coverage"],
                      "p2_block": p2_block, "p3": p3,

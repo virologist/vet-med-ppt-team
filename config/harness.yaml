@@ -11,7 +11,7 @@
 # ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
 #   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
 #   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.28.5"
+version: "3.28.6"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -446,6 +446,25 @@ loop_b:
     #   连续 N 轮 P0+P1 合计未下降即触发终止建议（exit 1 + trace 事件 no_progress）。
     no_progress_threshold: 2
     max_rework_per_item: 2
+    # ── B23①（第五轮诊断 N7）：质量来源硬约束 ────────────────────────────────
+    # 病灶（真实首跑证据）：Loop B 首跑 T-xuexue-20261103 的 quality_history[0].source
+    #   = "manual"（主理人手填），state 里如实标了 unverified —— 但**调度面无人接线**：
+    #   B16 建好的 verify-tier 机制（风险分级/跨任务趋势/沉淀）在 doctor 表里、SOP 里没有
+    #   「continue 前必须出机器数」这一步 ⇒ 自报数一路走到制作门。
+    # 处置（治 N7，与 round_review.silent_is_not_approval 同源纪律）：
+    #   · continue 的质量数**必须**来自机器复算（--verify-json）；手工自报 ⇒ rc=1 硬拦；
+    #   · 唯一逃生口 --allow-unverified 保留，但登记 blocker + trace + 快照标 unverified，
+    #     且 make-gate 阻断（既有机制已具备，本键只是把它从"仅后续轮次"提到"首轮也拦"）。
+    # 逃生口留而不废的理由：真没有 verify_deck 报告的场合（如无课件的纯文档轮），
+    #   完全堵死会让流水线无法推进；但**默认路径必须走机器复算**。
+    quality_source_required: "verify"   # continue 质量数的合法来源枚举（当前仅 verify）
+    # ── B24⑤（第五轮诊断 N6）：成员调用分钟预算护栏 ─────────────────────────
+    # 病灶：首跑严真奥撞 429 中断，**撞限前无任何预警**，且成员调用时长全程无记录
+    #   ⇒ 无法回答"这次调用是不是已经超了合理预算"。
+    # 处置：spawn 登记起始时间 → member-return 回填耗时 → 超时落 trace warning
+    #   并建议拆任务（**不阻断**：撞限协议由 spawn-failed --reason quota 兜底，
+    #   此处只做**事前可见**，不重复执法）。
+    member_call_minutes: 15
   # v3.16.0：补质量维度终止原因（原五类全是工作量/交互维度，机器检不出"缺陷数已不再下降"）
   termination: ["成功完成", "等待用户", "能力或证据阻塞", "达到预算但未完成",
                 "用户取消", "连续 N 轮无质量进展"]

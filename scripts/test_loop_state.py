@@ -307,6 +307,7 @@ def main():
         # v3.17.0 B2-2：手工 --p0/--p1/--p2 在"已有手工历史"后被**强制**要求
         #   --verify-json（治递减假数序列绕过）——本用例用手工值，故显式声明
         #   --allow-unverified（逃生口，须留痕）以继续验证 streak 逻辑本身。
+        # v3.28.6（B23①）：纪律提到**首轮就拦** ⇒ 第 1 轮也要显式声明逃生口。
         with tempfile.TemporaryDirectory() as w4:
             deck4 = os.path.join(w4, "d.pptx")
             make_deck(deck4)
@@ -315,7 +316,8 @@ def main():
             # v3.20.0：每轮进位前都必须有**本轮**轮报（round_review.required）
             round_review(w4, "rr1")
             r1, _, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
-                            "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w4])
+                            "--p0", "3", "--p1", "2", "--p2", "5",
+                            "--allow-unverified", "--workspace", w4])
             round_review(w4, "rr2")
             r2, so2, _ = run(["loop", "continue", "--decision", "accept", "--confirmed",
                               "--p0", "3", "--p1", "2", "--p2", "5",
@@ -349,7 +351,8 @@ def main():
             run(["loop", "start", "--deck", deck5, "--workspace", w5])
             round_review(w5, "rr1")                          # v3.20.0：本轮轮报
             run(["loop", "continue", "--decision", "accept", "--confirmed",
-                 "--p0", "3", "--p1", "2", "--p2", "5", "--workspace", w5])   # 5
+                 "--p0", "3", "--p1", "2", "--p2", "5",
+                 "--allow-unverified", "--workspace", w5])   # 5
             round_review(w5, "rr2")
             run(["loop", "continue", "--decision", "accept", "--confirmed",
                  "--p0", "1", "--p1", "2", "--p2", "5",
@@ -425,17 +428,40 @@ def main():
             check("报告不存在 → exit 3（依赖缺失，不静默取 0）", rv4 == 3 and "报告不存在" in (sev4 or ""),
                   f"got {rv4} {sev4[:160]}")
 
-            # ⑤ 仅手工（无报告）→ source=manual 且标记未核验
-            #    ⚠ v3.17.0 B2-2：本轮 history 里已有 verify_json 来源（无手工条目），
-            #    故手工值仍可作为"首次自报"进入（source=manual）。
+            # ⑤ 仅手工（无报告）→ **B23① 起被硬拦**（rc=1）
+            #    v3.17.0 B2-2 时是"首次自报可进入（source=manual）"；
+            #    v3.28.6（B23①·第五轮诊断 N7）把纪律提到首轮就拦：
+            #    自报数一路走到 make-gate 全程无机器交叉核验 ⇒ 一律 rc=1。
+            #    逃生口 --allow-unverified 保留（登记 blocker + 标 manual_unverified）。
             round_review(w8, "rr5")
             rv5, sov5, sev5 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                    "--p0", "2", "--p1", "1", "--p2", "3", "--workspace", w8])
             s5 = jout(sov5)
-            check("仅手工值 → source=manual 且标注未经 --verify-json 交叉核验",
-                  rv5 == 0 and s5.get("quality_source") == "manual"
-                  and s5.get("quality_snapshot", {}).get("unverified")
-                  and "source=manual" in (sev5 or ""), f"got {sov5[:200]} se={sev5[:120]}")
+            check("仅手工值 → 硬拦进位（rc=1，B23①：质量数必须来自机器复算）",
+                  rv5 == 1 and "拒绝进位" in (sev5 or "")
+                  and "quality_source_required" in (sev5 or ""),
+                  f"got {rv5} {sov5[:200]} se={sev5[:160]}")
+            # 被拦的轮次不得进位（quality_history 不新增）
+            # 本场景 8 轮里：①带 verify-json 进位、②带报告+冲突手工值进位（取报告值）、
+            #   ③④⑤（报告错误/手工无报告）全部被拒 ⇒ 进位数 = 2。
+            s5b = jout(run(["loop", "status", "--workspace", w8])[1])
+            check("被拦的轮次未进位（quality_history 不含本轮）",
+                  len(s5b.get("quality_history") or []) == 2,
+                  f"got {len(s5b.get('quality_history') or [])}")
+            # 逃生口：显式 --allow-unverified ⇒ 放行但留痕
+            round_review(w8, "rr5b")
+            rv5b, sov5b, sev5b = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                      "--p0", "2", "--p1", "1", "--p2", "3",
+                                      "--allow-unverified", "--workspace", w8])
+            s5c = jout(sov5b)
+            check("逃生口 --allow-unverified → 放行且标 manual_unverified + 登记 blocker",
+                  rv5b == 0 and s5c.get("quality_source") == "manual_unverified"
+                  and s5c.get("quality_snapshot", {}).get("unverified"),
+                  f"got {rv5b} {sov5b[:200]} se={sev5b[:160]}")
+            s5d = jout(run(["loop", "status", "--workspace", w8])[1])
+            kinds = [b.get("kind") for b in (s5d.get("blockers") or [])]
+            check("逃生口留痕：blockers 含 unverified_quality_source",
+                  "unverified_quality_source" in kinds, f"got {kinds}")
 
             # ⑥ 报告不可解析 → 显式报错（不取 0、不退回手工值）
             badjson = os.path.join(w8, "broken.json")
@@ -469,9 +495,12 @@ def main():
                   rv8 == 2 and "stats" in (sev8 or ""),
                   f"got {rv8} {sev8[:200]}")
 
-        # ── 场景 10（v3.17.0 B2-2）：手工填数被"强制 verify-json"规则拦下 ─────
+        # ── 场景 10（v3.17.0 B2-2 → v3.28.6 B23①）：手工填数被"强制 verify-json"规则拦下 ─────
         # 攻击实测：手工 --p0 逐轮递减（9→7→5→3）能让每轮都判"有进展"，
         #   而真实情况该课件 P0 恒为 3、从未变好 → 收敛判据永不触发。
+        # v3.28.6（B23①·第五轮诊断 N7）：纪律从"第 2 轮起拦"提到**首轮就拦**
+        #   ——首跑实证 quality_history[0].source="manual"，自报数一路走到制作门。
+        #   ⇒ 第 1 轮即 rc=1；第 2 轮 rc=2（历史已污染）。
         with tempfile.TemporaryDirectory() as w9:
             deck9 = os.path.join(w9, "h.pptx")
             make_deck(deck9)
@@ -479,12 +508,20 @@ def main():
             round_review(w9, "rr1")              # v3.20.0：进位前须有本轮轮报
             ra1, _, sea1 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "9", "--p1", "0", "--p2", "0", "--workspace", w9])
-            check("递减假数序列：第 1 轮手工自报放行（exit 0，source=manual）",
-                  ra1 == 0, f"got {ra1} {sea1[:160]}")
+            check("递减假数序列：第 1 轮手工自报即被拦下（exit 1，B23① 首轮就拦）",
+                  ra1 == 1 and "拒绝进位" in (sea1 or ""),
+                  f"got {ra1} {sea1[:200]}")
+            # 逃生口放行第 1 轮（留痕）→ 制造"历史污染"以触发第 2 轮的 rc=2
+            round_review(w9, "rr1b")
+            ra1b, _, sea1b = run(["loop", "continue", "--decision", "accept", "--confirmed",
+                                 "--p0", "9", "--p1", "0", "--p2", "0",
+                                 "--allow-unverified", "--workspace", w9])
+            check("递减假数序列：逃生口放行第 1 轮（exit 0，留痕）",
+                  ra1b == 0, f"got {ra1b} {sea1b[:200]}")
             round_review(w9, "rr2")
             ra2, _, sea2 = run(["loop", "continue", "--decision", "accept", "--confirmed",
                                 "--p0", "7", "--p1", "0", "--p2", "0", "--workspace", w9])
-            check("递减假数序列：第 2 轮手工自报被拦下（exit 2，明示须用 --verify-json）",
+            check("递减假数序列：第 2 轮手工自报被拦下（exit 2，历史已污染）",
                   ra2 == 2 and "拒绝进位" in (sea2 or "") and "--verify-json" in (sea2 or ""),
                   f"got {ra2} {sea2[:200]}")
             sa9 = jout(run(["loop", "status", "--workspace", w9])[1])
@@ -512,8 +549,11 @@ def main():
             make_deck(deck10)
             run(["loop", "start", "--deck", deck10, "--workspace", w10])
             round_review(w10, "rr1")
+            # v3.28.6（B23①）：手工自报首轮即被拦 ⇒ 要造出"手工来源的历史快照"
+            #   必须走逃生口 --allow-unverified（放行但留痕，source=manual_unverified）。
             run(["loop", "continue", "--decision", "accept", "--confirmed",
-                 "--p0", "3", "--p1", "1", "--p2", "0", "--workspace", w10])
+                 "--p0", "3", "--p1", "1", "--p2", "0",
+                 "--allow-unverified", "--workspace", w10])
             rm1, som1, _ = run(["loop", "make-gate", "--workspace", w10])
             reasons = " ".join(jout(som1).get("reasons", []))
             check("make-gate：quality_history 含手工来源 → 阻断并指明（exit≠0）",
@@ -760,12 +800,19 @@ class TestLoopStatePytestBridge(unittest.TestCase):
       · `test_every_check_individually` —— 逐条断言：失败时**指名道姓**是哪条
     """
 
-    #: 期望的断言条数（74 条，**成功路径**下的值）。写死是**刻意的**：
+    #: 期望的断言条数（78 条，**成功路径**下的值）。写死是**刻意的**：
     #: 若将来有人删掉断言，本文件会判红 ⇒ 防止「悄悄少测几条」。
-    #: ⚠ 74 只在「场景全部成功」时成立：L181 的 `check(f"add-item {iid}", False)`
+    #: ⚠ 78 只在「场景全部成功」时成立：L181 的 `check(f"add-item {iid}", False)`
     #:   位于 `if rc9 != 0:` 内（成功路径跑 0 次），add-item 真失败时会跑 5 次
-    #:   ⇒ 条数变 78 ⇒ 本断言会以「条数不符」报出（属**多测**，非漏判）。
-    EXPECTED_CHECKS = 74
+    #:   ⇒ 条数变 83 ⇒ 本断言会以「条数不符」报出（属**多测**，非漏判）。
+    #: v3.28.6（B23①）：74 → 78，新增 4 条断言——
+    #:   ① 仅手工值 → 硬拦进位（rc=1）
+    #:   ② 被拦的轮次未进位（quality_history 不含本轮）
+    #:   ③ 逃生口 --allow-unverified → 放行且标 manual_unverified + 登记 blocker
+    #:   ④ 逃生口留痕：blockers 含 unverified_quality_source
+    #:   （另 2 条为场景 10 的「递减假数序列」改写：原「首轮放行」拆成
+    #:     「首轮被拦」+「逃生口放行」，条数净 +2）
+    EXPECTED_CHECKS = 78
 
     @classmethod
     def setUpClass(cls):

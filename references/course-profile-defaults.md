@@ -277,6 +277,38 @@ python3 scripts/ooxml_lint.py <新版.pptx> --geo-baseline <模板.pptx>
 
 ---
 
+### 4.6 gate 结构项预检清单（B23② · 第五轮诊断 N3）
+
+**与 `references/sop-stages.md` §6.2 同一张清单**（两处内容一致，由
+`scripts/test_arch_drift.py` 镜像机制守住；改一处必须同步另一处）。
+
+**为什么要有**：结构判据此前全部在闸4 才首判 ⇒ 首跑首过率（M2）= 0/1，
+且白烧一整轮施工才发现缺题页。蓝图阶段把这 5 项**前置**打勾。
+
+<!-- GATE_CHECKLIST_MIRROR_BEGIN -->
+| # | 结构项 | 判据来源（gate 判它） | 蓝图里须写明 |
+|---|---|---|---|
+| 1 | **题页** | `verify_deck` 的 `has_quiz`（缺 ⇒ P0「缺题页」） | 有/无 + 页号；无 ⇒ 施工项 |
+| 2 | **目录页** | `verify_deck` 的 `has_toc`（缺 ⇒ P0「缺目录页」） | 有/无 + 页号；无 ⇒ 施工项 |
+| 3 | **随堂测/形成性评价页** | 蓝图 §2「案例与形成性评价」 | 有/无 + 页号；无 ⇒ 施工项 |
+| 4 | **课时-页数区间** | `visual-rules.yaml#hours_page_range`（course 口径） | 本课件落在哪一档 + 可见页数 |
+| 5 | **口径标注**（单次 PPT / 整套课程） | `verify_deck` 的 `caliber` 字段 | 明确写死本课件用哪张表 |
+<!-- GATE_CHECKLIST_MIRROR_END -->
+
+**格式**（写进闸2 蓝图正文）：
+
+```
+## gate 结构项预检
+- 题页：有 / 无（页号 s___）
+- 目录页：有 / 无（页号 s___）
+- 随堂测：有 / 无（页号 s___）
+- 课时-页数区间：__ 课时档（可见 N 页，须在 a–b 区间）
+- 口径标注：single-ppt / course
+```
+
+⚠ 「无 ⇒ 列入施工项」是合法结果；本清单强制的是「**必须写清楚**」，
+不是「**必须已具备**」。最终裁判权仍在闸4 的 `verify_deck`。
+
 ## 5. 交付三件套
 
 见 `references/delivery-spec.md`（成品 PPTX + 逐页修改说明 + 验收自检清单的 schema 与模板）。

@@ -829,6 +829,75 @@ def caption_check(cfg, elements, notes=None):
             "base_elements": base, "source": src, "executed": True}
 
 
+def fix_class_table(notes=None):
+    """缺陷可修复性分类表（唯一源 = config/visual-rules.yaml#fix_class）。
+
+    B24③（第五轮诊断 N2）。病灶：闸3 施工清单没有「AI 能不能修」这个维度 ——
+    几何版式修复连续三轮证伪（重叠 4→16→19），AI 不可修复的缺陷与可修复缺陷
+    混在同一张清单里 ⇒ 白烧 3 轮还引入过自引入缺陷。
+
+    返回 {问题类型: (fix_class, reason)}；未登记类型不在表中（调用方落缺省 ai）。
+    ⚠ 分类**不改变任何存量判据**（分级仍按 severity 走）——它只决定条目进哪张清单。
+    """
+    notes = notes if notes is not None else []
+    path = os.path.join(PKG, "config", "visual-rules.yaml")
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            v = yaml.safe_load(f) or {}
+    except Exception as e:
+        notes.append(f"visual-rules.yaml 读取失败（{e}）——fix_class 分类不可得，"
+                     f"全部条目落缺省 ai（等价于不做分流）")
+        return {}, path
+    fc = v.get("fix_class") or {}
+    tbl = {}
+    for klass in ("ai_unfixable", "human"):
+        for ent in (fc.get(klass) or []):
+            if isinstance(ent, dict) and ent.get("type"):
+                tbl[str(ent["type"])] = (klass, ent.get("reason", ""))
+            elif isinstance(ent, str):
+                tbl[str(ent)] = (klass, "")
+    if not tbl:
+        notes.append("visual-rules.yaml#fix_class 缺失或为空 —— 分类表为空，"
+                     "条目落缺省 ai（等价于不做分流）")
+    return tbl, path
+
+
+def fix_class_default(notes=None):
+    """未登记类型的缺省可修复性（缺省 ai ⇒ 不影响存量行为）。"""
+    notes = notes if notes is not None else []
+    path = os.path.join(PKG, "config", "visual-rules.yaml")
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            v = yaml.safe_load(f) or {}
+    except Exception:
+        return "ai"
+    return str((v.get("fix_class") or {}).get("default") or "ai")
+
+
+def fix_class_split(issues, notes=None):
+    """把 verify_deck 的 issues 分流成三张清单。
+
+    返回 {"ai": [...], "human": [...], "ai_unfixable": [...], "default": "ai"}。
+    ⚠ 诚实边界：分类依据是**问题类型登记**，不是语义判断——代码不判断
+    "这一条具体能不能修"，只按登记面分流；登记面缺失的类型落缺省 ai。
+    """
+    notes = notes if notes is not None else []
+    tbl, _src = fix_class_table(notes)
+    dflt = fix_class_default(notes)
+    out = {"ai": [], "human": [], "ai_unfixable": [], "default": dflt}
+    for iss in (issues or []):
+        t = str(iss.get("type") or "")
+        klass, reason = tbl.get(t, (dflt, ""))
+        item = dict(iss)
+        item["fix_class"] = klass
+        if reason:
+            item["fix_class_reason"] = reason
+        out.setdefault(klass, []).append(item)
+    return out
+
+
 def image_caption_requires_reading(cfg, notes=None):
     """图像类图注是否必须附判读记录（delta_gate.image_caption_requires_reading）。
 

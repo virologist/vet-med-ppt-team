@@ -129,12 +129,81 @@ harness.py loop reflow --loop a --file <台账路径>   # 显式指定（默认�
 | 指令 | 触发 | 主理人动作 | 禁止 |
 |---|---|---|---|
 | **启动** | 用户点名某份已有 PPT + 范围 | 建 `loopB_state.json`；原件算 sha256/mtime 存档；建工作副本 `<name>_wip/`；跑 §2 转换层（markitdown + extract_assets + 渲染） | 未拿到范围就开工；动原件 |
-| **继续** | 上一轮获"接受"或"部分接受" | `round += 1`；按下一条小批（≤ `max_items_per_round`）出轮报六项 | 把"沉默"当批准；一次塞满多轮条目 |
+| **继续** | 上一轮获"接受"或"部分接受" | **先出机器数**（`verify_deck --json` → `loop continue --verify-json`，见下方「质量数来源纪律」）；再 `round += 1`；按下一条小批（≤ `max_items_per_round`）出轮报六项 | 把"沉默"当批准；一次塞满多轮条目；**用手填 `--p0/--p1/--p2` 顶替机器复算** |
 | **返修** | 用户说方向对、执行不对 | **round 不变**；生成返工单回灌本轮；计入 `max_rework_per_item` | 进位；改已冻结条目 |
 | **恢复** | 断线/换会话 | 读状态最小集（task_id / source_ppt{sha256,mtime} / wip_dir / current_round / frozen / pending / budgets / blockers）；**先报"恢复到第 R 轮，已冻结 N 条，待办 M 条"，等用户确认再继续** | 重跑已确认条目；覆盖 `_draft` |
 | **制作** | 全部条目冻结 + §8 制作前置门全过 | 冻结包 → ppt-producer 制作 → verifier 独立验收（打开/渲染/可编辑性三项） | 制作期遇内容问题自行改写（须退回内容轮） |
 
-> **v3.9.0：五条指令已代码化**，状态推进一律走 `scripts/harness.py loop <动作>`
+> ### 4.1 质量数来源纪律（B23① · 第五轮诊断 N7 · **行为收紧**）
+>
+> **病灶（真实首跑证据，非推测）**：Loop B 首跑 `T-xuexue-20261103` 的
+> `quality_history[0].source = "manual"`（主理人手填），state 里虽如实标了
+> `unverified: 自报值`——但**调度面无人接线**：B16 建好的 verify-tier 机制
+> （风险分级 / 跨任务趋势 / 闸5 后沉淀）在 doctor 表里、机制齐全，却**零消费**。
+> 手填的数一路走到制作门，全程没有任何机器交叉核验。
+>
+> **纪律（与 `round_review.silent_is_not_approval` 同源：「沉默不算确认」的孪生条款）**：
+> **「自报数不算验收」。**
+>
+> | 步 | 命令 | 说明 |
+> |---|---|---|
+> | ① 出机器数 | `verify_deck.py <课件> --hours N --level all --json <报告>` | 机器复算的 P0/P1/P2 |
+> | ② 案例风险分级 | `harness.py verify-tier --workspace <工作区>` | 按风险出检验强度计划（高危全检 / 低危登记待办） |
+> | ③ 进位 | `harness.py loop continue --decision accept --confirmed --verify-json <报告>` | 快照 source=`verify_json|<路径>` |
+>
+> **硬拦**：`loop continue` 带手工 `--p0/--p1/--p2` 且无 `--verify-json` ⇒ **exit 1**
+> （判据源 = `harness.yaml#loop_b.budgets.quality_source_required`，当前值 `"verify"`）。
+>
+> **逃生口**：`--allow-unverified` 仍在（登记 blocker 事件 + trace + 快照标
+> `source=manual_unverified`，且 `make-gate` 阻断）——理由：纯文档轮/无课件轮
+> 确实拿不到 verify_deck 报告，完全堵死会让流水线停摆。但**默认路径必须走机器复算**。
+>
+> **回退**：本条是行为收紧，回退 = revert 单 commit（`quality_source_required` 改回
+> 可空即可，其余机制不受影响）。
+>
+> ### 4.2 施工清单分流纪律（B24③ · 第五轮诊断 N2）
+>
+> **病灶（首跑实证）**：几何版式修复连续**三轮证伪**（重叠 4→16→19），
+> AI 不可修复的缺陷（文字墙要拆页 / 课时不达标要增删页 / 缺题页要真实字段）
+> 与可修缺陷混在同一张施工清单里 ⇒ 白烧 3 轮，且中途引入过自引入缺陷。
+>
+> **纪律**：闸3 施工前先分流，**AI 修不了的条目不进 AI 施工清单**。
+>
+> ```bash
+> harness.py loop worklist --verify-json <报告> --out <清单.json>
+> ```
+>
+> 分流三张清单（分类唯一源 = `config/visual-rules.yaml#fix_class`，逐条带理由）：
+> - `ai` → AI 施工清单（确定性可修，派工对象）
+> - `human` → 人工确认区（AI 可出方案，须人拍板）
+> - `ai_unfixable` → **人工挂账区**（AI 修不了；理由逐条在 `fix_class_reason`）
+>
+> ⚠ 诚实边界：分类依据是**问题类型登记**，不是语义判断——代码不判断
+> 「这一条具体能不能修」，只按登记面分流。
+>
+> ### 4.3 成员调用预算护栏（B24⑤ · 第五轮诊断 N6）
+>
+> **病灶（首跑实证）**：严真奥撞 429 中断，**撞限前无任何预警**，且成员调用
+> 时长全程无记录 ⇒ 事后无法回答「这次调用是不是已经超了合理预算」。
+>
+> **纪律**：成员单次调用预算 = `harness.yaml#loop_b.budgets.member_call_minutes`
+> （默认 **15** 分钟）。
+> - `harness.py spawn` 登记起始时间戳；
+> - `harness.py member-return --elapsed-minutes N`（或 `--started-at`）回填耗时；
+> - 超预算 ⇒ **trace warning + 建议拆分任务**（**不阻断**：撞限的正式处置是
+>   `spawn-failed --reason quota`，此处只做事前可见，不重复执法）。
+>
+> ### 4.4 spawn 前成员通道探测（B24④ · 第五轮诊断 N4）
+>
+> **病灶（首跑实证）**：degrade 5 条**全部同因**（平台把成员回落成
+> `general-purpose` ≠ 成员 id），且**全是事后记录**——`preflight` 此前只探
+> 外部工具通道，**不探成员通道本身**。
+>
+> **纪律**：开工前跑 `harness.py preflight --probe-members`，
+> 不一致 ⇒ 报 `member_channel_mismatch` 并给降级预案（装配注入成员 MD 全文）。
+> degrade 从**事后**变**事前**。
+>
+> > **v3.9.0：五条指令已代码化**，状态推进一律走 `scripts/harness.py loop <动作>`
 > （`start/intake/add-item/status/resume/continue/rework/freeze/verify/make-gate/block/terminate/check-path`），
 > **不得靠口头记账**。命令表见 `agents/vet-med-ppt-team-team-lead.md#双 Loop 路由`；
 > 机器背书 `scripts/test_loop_state.py`（33 例）。

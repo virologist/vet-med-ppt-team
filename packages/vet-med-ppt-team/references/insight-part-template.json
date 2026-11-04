@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "purpose": "洞察分片模板（B25⑦ · 第五轮诊断 N5）——成员写自己的分片时的**照抄模板**",
+    "why": "病灶（真实首跑证据）：首跑闸2 的 insights 分片**连续踩 schema 3 次**（E_REQUIRED 必填字段缺、insight_id 大小写不符 R6 格式、deferred 缺裁决留痕 R4）。根因不是成员不守规矩，而是**包内没有一份可直接照抄的样例**——判据全在 references/insight-carrier.yaml（人读的规则表），而成员要的是一个「填好的形状」。",
+    "how_to_use": "复制本文件的 _part 部分 → 改成你的 task_id / member / axis / round → entries 逐条照 _entry_template 填 → 落盘到 <RUN_DIR>/_insights/parts/<member>__<axis>.json → `harness.py insights add --part <该文件>`",
+    "schema_source": "references/insight-carrier.yaml（唯一数据源；本文件是它的**样例化投影**，改判据改那边）",
+    "injection": "本文件在 references/ 下 → 联邦装配器 resolve_shared_refs() 自动收录 → spawn prompt 的【专家包资源绝对路径】里出现 → 成员 Read 即可",
+    "checked_by": "scripts/test_insight_carrier.py（B25⑦ 新增断言：模板必须能被 validate_part 通过）"
+  },
+
+  "_rules_quickref": {
+    "R1": "同一 target 上有 ≥2 个不同 axis 的 proposed 条目 ⇒ 标 needs_adjudication（脚本只检出「多轴并存」这个结构事实，不判是否互斥——互斥归人）",
+    "R2": "insight_id 在全载体唯一（重复 ⇒ merge 记 error 且不静默覆盖）",
+    "R3": "axis=content 时 evidence 必填",
+    "R4": "status != proposed 时 decided_by / decided_at 必填",
+    "R5": "target_kind=module 时 target_id 必须是模块/章节级标识（非空、非纯数字）",
+    "R6": "insight_id 格式 = <target_id>-<轴首字母>-<两位序号>，如 s12-C-01",
+    "axis_letters": "content→C / pedagogy→P / visual→V"
+  },
+
+  "_fill_in": "照抄 _part_template 后**只改这三处**：① task_id 换成你这次的任务 id；② member 换成你的成员 id；③ entries 里每条的 target_id / target_kind / axis / expert / proposal / rationale / evidence 按你的实际产出改。axis 是 content 就把分片顶层 axis 与所有条目 axis 全改成 content（**必须全部一致**，否则 E_PART_AXIS_MISMATCH）。",
+
+  "_part_template": {
+    "task_id": "T-20261103-EXAMPLE",
+    "member": "dvm-content-expert",
+    "axis": "content",
+    "round": 1,
+    "entries": [
+      {
+        "insight_id": "s12-C-01",
+        "target_id": "s12",
+        "target_kind": "page",
+        "axis": "content",
+        "expert": "dvm-content-expert",
+        "proposal": "把本页第 3 条诊断改为「实验室确诊需配合 HI 试验滴度≥1:80，单凭 PCR 阳性不足以判定保护性免疫应答」，并补一句判定阈值来源。",
+        "rationale": "现表述「PCR 阳性即确诊」与国家标准的免疫学判定口径不符，会让高职学生把分子诊断当成免疫学诊断；阈值缺失也会导致不同教师给出不同判定。",
+        "severity": "P0",
+        "status": "proposed",
+        "evidence": [
+          {
+            "kind": "pmid",
+            "value": "00000000",
+            "note": "核验方式：PubMed esearch 实查命中（**换成你的真实 PMID 后必须实查，不得凭印象填**）"
+          }
+        ],
+        "judge_mode": "人",
+        "round": 1,
+        "notes": "此条为格式样例——proposal/rationale 是示例文本，落地前必须替换为你的实际产出。"
+      }
+    ]
+  },
+
+  "_entry_field_guide": {
+    "insight_id": "必填。格式 <target_id>-<轴首字母>-<两位序号>（R6）。序号两位起：s12-C-01 ✓ / s12-C-1 ✗",
+    "target_id": "必填。page 形态 = 稳定页面 ID（如 s12）；module 形态 = 教学模块/章节标识（如 病毒表面抗原与宿主适应），**禁纯数字**（R5）",
+    "target_kind": "必填。page | module",
+    "axis": "必填。content | pedagogy | visual——须与分片顶层 axis 一致",
+    "expert": "必填。提出该洞察的成员 id",
+    "proposal": "必填。**要做什么**",
+    "rationale": "必填。**为什么**（与 proposal 分列）",
+    "severity": "必填。P0 硬阻断 | P1 交付前清零 | P2 建议",
+    "status": "必填。proposed | accepted | rejected | deferred",
+    "evidence": "选填，但 **axis=content 时必填**（R3）。每条给 kind / value / note（核验方式）",
+    "decided_by": "status != proposed 时**必填**（R4）",
+    "decided_at": "status != proposed 时**必填**（R4），ISO8601",
+    "round": "选填。产出该洞察的轮次",
+    "related_insights": "选填。关联洞察 id 列表（跨 target 引用）",
+    "notes": "选填。补充说明",
+    "judge_mode": "选填。机 | 人 | 机+人（缺失时轮报显式标「缺失（待补）」，不静默补默认值）"
+  },
+
+  "_common_mistakes": [
+    "insight_id 序号写成一位（s12-C-1）⇒ R6 判错",
+    "axis 首字母大小写混用（s12-c-01）⇒ R6 判错",
+    "content 轴不填 evidence ⇒ R3 判错",
+    "status 填 accepted/rejected/deferred 但不填 decided_by + decided_at ⇒ R4 判错",
+    "分片顶层 axis 与 entries[].axis 不一致 ⇒ E_PART_AXIS_MISMATCH（分片被串了）",
+    "entries 写成空数组 ⇒ E_REQUIRED（分片必须有至少一条）",
+    "target_kind=module 却给纯数字 target_id（如 12）⇒ R5 判错"
+  ]
+}

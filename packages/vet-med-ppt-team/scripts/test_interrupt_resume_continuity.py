@@ -190,7 +190,9 @@ class TestInterruptResumeContinuity(unittest.TestCase):
             self.assertEqual(rc, 0, f"轮报登记失败：{se[:300]}")
             rc, so, se = _run(["loop", "continue", "--decision", "accept",
                                "--confirmed", "--p0", "6", "--p1", "2", "--p2", "4",
-                               "--workspace", w])
+                               # v3.28.6（B23①）：质量数必须来自机器复算 ⇒ 手工填数
+                               #   须显式声明逃生口（放行但留痕），否则 rc=1 被拦。
+                               "--allow-unverified", "--workspace", w])
             self.assertEqual(rc, 0, f"C6 恢复后无法进位：rc={rc}\n{se[:400]}")
             st2 = _state(w)
             self.assertEqual(int(st2.get("current_round") or 0), int(base["round"]) + 1,

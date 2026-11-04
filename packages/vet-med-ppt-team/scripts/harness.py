@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.5
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.28.6
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -641,6 +641,80 @@ def cmd_preflight(args):
             report["verdict"] = "degraded"
             print(f"⚠ 外部通道探针异常（{e}）——按降级路径处置，不得静默",
                   file=sys.stderr)
+
+    # ── B24④（第五轮诊断 N4）：spawn **前**成员通道探测 ────────────────────
+    # 病灶（首跑实证）：degrade 5 条**全部同因**（agentType='general-purpose' ≠ 成员 id），
+    #   且**全是事后记录**——平台把成员回落成通用子代理这件事，只有在 spawn 之后
+    #   看到 trace 才知道。preflight 此前只查「工具可用性」（--probe-channels），
+    #   **不查成员通道本身** ⇒ 降级从事后变不了事前。
+    # 本探测做的事（轻量、无副作用、不真 spawn）：
+    #   ① 读团队登记（~/.workbuddy/teams/<team>/config.json）的 agentType；
+    #   ② 与 members 表逐一对照 ⇒ 不一致即判定 member_channel_mismatch；
+    #   ③ 未 spawn 过（无登记）≠ 缺陷（判 not_spawned_yet），但**明确列出**，
+    #      因为"拉起后才知道被回落"正是本轮的代价；
+    #   ④ 对每个不匹配成员给出**降级预案**（装配脚本注入成员 MD 全文，
+    #      取 harness.yaml#fallback.degrade_modes 的通道名）。
+    # ⚠ 本探测**不阻断**（返回码仍由既有 missing_md/degraded 决定）——
+    #   通道回落是平台行为，不是主理人的错误；拦住开工会误伤。
+    if getattr(args, "probe_members", False):
+        members_probe = {}
+        mismatch = []
+        for mid, spec in members.items():
+            entry = {"registered": mid in reg,
+                     "agent_type": reg.get(mid, {}).get("agentType"),
+                     "expected_agent_type": mid,
+                     "md_exists": os.path.exists(os.path.join(AGENTS_DIR, f"{mid}.md"))}
+            if not entry["md_exists"]:
+                entry["status"] = "missing_md"
+            elif not entry["registered"]:
+                entry["status"] = "not_spawned_yet"
+                entry["note"] = ("尚未建队登记（无 agentType）——**不是缺陷**，"
+                                 "但拉起后须复核：平台可能回落成 general-purpose")
+            elif entry["agent_type"] != mid:
+                entry["status"] = "member_channel_mismatch"
+                # ⚠ members.<id>.fallback 在 harness.yaml 里是**字符串**（通道名），
+                #   不是对象——早前按 dict 取 .get('channel') 会抛 AttributeError，
+                #   直接把 preflight 打成 rc=4（守卫测试实证）。此处按两种形态都兼容。
+                _fb_spec = spec.get("fallback")
+                if isinstance(_fb_spec, dict):
+                    _fb_ch = _fb_spec.get("channel") or ""
+                else:
+                    _fb_ch = str(_fb_spec or "")
+                entry["degrade_plan"] = (
+                    f"按 fallback.degrade_modes 走装配注入：spawn 通用子代理，"
+                    f"并在任务包开头注入 {AGENTS_DIR}/{mid}.md 全文"
+                    f"（通道 = {_fb_ch or '见 harness.yaml#fallback'}）")
+                mismatch.append(mid)
+            else:
+                entry["status"] = "ok"
+            members_probe[mid] = entry
+        report["member_probe"] = {
+            "status": "ran",
+            "members": {k: v.get("status") for k, v in members_probe.items()},
+            "mismatches": mismatch,
+            "policy": ("平台把成员回落成 general-purpose ⇒ 成员人格/红线未注入 = 静默降级。"
+                       "degrade 通道见 harness.yaml#fallback；装配注入是兜底，"
+                       "不得当作正常路径。"),
+        }
+        if mismatch:
+            report["verdict"] = "degraded"
+            report["advice"] = (report.get("advice", "") + " " if report.get("advice") else "") + (
+                f"spawn **前**通道探测发现 {len(mismatch)} 名成员通道不一致：{mismatch}"
+                f"——按 member_probe.members[*].degrade_plan 预置降级预案，"
+                f"或先修通道再开工。")
+            print(f"⚠ spawn 前成员通道探测：{len(mismatch)} 名不一致 → {mismatch}"
+                  f"（降级预案见 JSON member_probe）", file=sys.stderr)
+            # ⚠ 判据字面量必须出现在 stderr：诊断报告的验收标准是
+            #   「preflight 报 member_channel_mismatch」——下游脚本要能 grep 到
+            #   这个码。只给中文描述 = 机器判不出，等于没报。
+            print(f"  [member_channel_mismatch] {mismatch}", file=sys.stderr)
+        else:
+            print(f"✅ spawn 前成员通道探测：{len(members_probe)} 名成员，"
+                  f"无不匹配（未登记者记 not_spawned_yet，非缺陷）", file=sys.stderr)
+        _trace(w, cfg, "preflight", "team-lead",
+               {"team": args.team, "probe": "members",
+                "mismatches": mismatch,
+                "member_status": {k: v.get("status") for k, v in members_probe.items()}})
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if bad else 0
@@ -2636,6 +2710,29 @@ def cmd_member_return(args):
         detail["issues"] = args.issues
     if args.warnings:
         detail["warnings"] = args.warnings
+    # ── B24⑤（第五轮诊断 N6）：回填成员调用耗时；超预算 ⇒ warning + 建议拆任务 ──
+    # 耗时来源：优先 --elapsed-minutes（主理人显式给出，如平台返回了运行时长），
+    #   否则由本命令的 --started-at 与当前时间差算（spawn 侧已登记起始时间戳）。
+    # ⚠ **不阻断**：撞限的正式处置是 spawn-failed --reason quota（可重试→降级→上报），
+    #   这里只做「事前可见 + 事后可归因」，避免两个执法点重复执法产生矛盾结论。
+    _mb = int((cfg.get("loop_b", {}).get("budgets", {}) or {}).get("member_call_minutes", 15) or 15)
+    _elapsed = getattr(args, "elapsed_minutes", None)
+    _started = getattr(args, "started_at", "") or ""
+    if _elapsed is None and _started:
+        try:
+            _t0 = datetime.strptime(_started, "%Y-%m-%dT%H:%M:%S")
+            _elapsed = round((datetime.now() - _t0).total_seconds() / 60.0, 2)
+        except Exception:
+            _elapsed = None
+    if _elapsed is not None:
+        detail["elapsed_minutes"] = float(_elapsed)
+        detail["member_call_budget_minutes"] = _mb
+        if float(_elapsed) > _mb:
+            detail["over_member_call_budget"] = True
+            print(f"⚠ 成员调用耗时 {float(_elapsed):.1f} 分钟 > 预算 {_mb} 分钟"
+                  f"（harness.yaml#loop_b.budgets.member_call_minutes）——"
+                  f"建议**拆分任务**（一次调用只做一件事），或按 fallback 协议走降级通道。"
+                  f"不阻断，但已落 trace 供事后归因。", file=sys.stderr)
     rec = _trace(w, cfg, "member_return", args.agent, detail)
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
@@ -5264,6 +5361,26 @@ def _loop_counts(st):
     return {"frozen": frozen, "invalidated": invalid, "pending": pending}
 
 
+def _loop_fix_class_counts(st):
+    """按 fix_class 统计条目数（B24③ 的挂账可观测面）。
+
+    分类三值：ai（AI 可修）/ human（须人拍板）/ ai_unfixable（AI 修不了）。
+    缺省 ai —— 与 config/visual-rules.yaml#fix_class.default 一致，
+    且保证**不传 --fix-class 的存量条目行为不变**。
+    ⚠ 只做计数（集合/计数是确定性判定）；"这条具体能不能修"是语义判断，归人。
+    """
+    out = {"ai": 0, "human": 0, "ai_unfixable": 0}
+    for _k, _v in (st.get("items") or {}).items():
+        if not isinstance(_v, dict):
+            continue
+        _fc = str(_v.get("fix_class") or "ai")
+        if _fc not in out:
+            _fc = "ai"          # 未知分类不静默丢弃，落缺省（与登记面缺省一致）
+        out[_fc] += 1
+    out["total"] = sum(out[k] for k in ("ai", "human", "ai_unfixable"))
+    return out
+
+
 def _resolve_placeholders(p, w):
     """把 harness.yaml 里的 <包> / <工作区> 占位符解析成真实绝对路径。
 
@@ -6849,7 +6966,17 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "status": "pending", "round": st.get("current_round", 1),
             "decision": None, "decided_at": None, "rework_count": 0,
             "severity": args.severity or "", "owner": args.owner or "",
+            # ── B24③：条目的可修复性分类（ai / human / ai_unfixable）──
+            # 缺省 ai（不传即按 AI 可修处理，**不影响存量行为**）；
+            # ai_unfixable ⇒ 该条**不进 AI 施工清单**，进人工挂账区。
+            "fix_class": (getattr(args, "fix_class", "") or "ai"),
         }
+        # 分类合法性校验（枚举外即拒，避免"拼错的分类"静默混入）
+        _fc = items[args.item].get("fix_class")
+        if _fc not in ("ai", "human", "ai_unfixable"):
+            print(f"⛔ --fix-class 取值非法：{_fc!r}——允许：ai / human / ai_unfixable",
+                  file=sys.stderr)
+            return 2
         if cap is not None:
             items[args.item].update({
                 "caption": True,
@@ -6926,6 +7053,12 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             "no_progress_streak": _loop_no_progress_streak(st.get("quality_history") or []),
             "no_progress_threshold": (st.get("budgets") or {}).get(
                 "no_progress_threshold", (lb.get("budgets") or {}).get("no_progress_threshold", 2)),
+            # ── B24③：缺陷可修复性的**挂账计数**（机器可读的摘要面）──────
+            # 为什么加这一段：status 是摘要视图（不吐 items 明细），而"人工挂账区
+            # 里压着几条 AI 修不了的缺陷"是**必须随时可见**的经营指标——
+            # 不可观测 = 不知道有没有生效（v3.20.0 D7 的同源教训）。
+            # 明细仍在 loopB_state.json#items[*].fix_class 与 worklist 报告里。
+            "fix_class_counts": _loop_fix_class_counts(st),
         }, ensure_ascii=False, indent=2))
         return 0 if orig_ok is not False else 1
 
@@ -7037,13 +7170,52 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         prior_hist = st.get("quality_history") or []
         prior_manual = [(h.get("round"), h.get("source")) for h in prior_hist
                         if not str(h.get("source") or "").startswith("verify_json|")]
-        if manual_given and not vjson and prior_manual and not allow_unverified:
-            print(f"⛔ 拒绝进位：quality_history 已存在**非机器复算来源**的质量快照 "
-                  f"{prior_manual[:5]}——手工 --p0/--p1/--p2 理论可注水，"
-                  f"历史轮已用手工值则后续轮次必须改用 --verify-json <verify_deck 报告>。\n"
-                  f"   确无报告可显式声明 --allow-unverified（会登记 blocker 事件、"
-                  f"快照标 source=manual_unverified，且 make-gate 会阻断）。", file=sys.stderr)
+        # ── B23①（第五轮诊断 N7·最重 P1）：质量来源硬约束 ────────────────────
+        # 病灶（真实首跑实证）：T-xuexue-20261103 首跑 quality_history[0].source
+        #   = "manual"（主理人手填）—— B16 把 verify-tier 机制建好了（命令在 doctor 表里、
+        #   风险分级/跨任务趋势/沉淀三件套齐全），但**调度面无人接线**：
+        #   continue 走的是"手填 --p0/--p1/--p2"这条没有任何交叉核验的路，
+        #   自报数一路走到 make-gate，verify-tier 的产物全程零消费。
+        # 处置（与 round_review.silent_is_not_approval 同源纪律——「自报数不算验收」）：
+        #   质量数来源必须满足 harness.yaml#loop_b.budgets.quality_source_required
+        #   （当前唯一合法值 = "verify"）⇒ 手工 --p0/--p1/--p2 一律 rc=1 硬拦。
+        # 逃生口 --allow-unverified 保留（登记 blocker + trace + 快照标 unverified，
+        #   make-gate 阻断）——理由：纯文档轮/无课件轮确实拿不到 verify_deck 报告，
+        #   完全堵死会让流水线停摆；但**默认路径必须走机器复算**。
+        _qsrc_req = str((beff.get("quality_source_required") or "verify")).strip()
+        # ⚠ 配置键必须**真的参与判定**（v3.20.0「配了不生效」的血泪教训）：
+        #   合法来源枚举 = {"verify"}（机器复算）。若被改成别的值 ⇒ 显式报错退出，
+        #   **不得**静默回落成"照样拦"或"照样放行"——否则改配置形同虚设。
+        _QSR_ALLOWED = ("verify",)
+        if _qsrc_req not in _QSR_ALLOWED:
+            print(f"⛔ 配置非法：harness.yaml#loop_b.budgets.quality_source_required="
+                  f"{_qsrc_req!r} 不在允许枚举 {_QSR_ALLOWED}——"
+                  f"合法来源仅机器复算（verify_deck --json）。拒绝执行，"
+                  f"请先修配置（不得以「配了不生效」的方式绕过质量来源纪律）。",
+                  file=sys.stderr)
             return 2
+        if manual_given and not vjson and not allow_unverified:
+            # 两个退出码各司其职（合并为一段判定，避免 rc=2 分支变成死代码）：
+            #   rc=1 → 首轮就用自报数（无历史污染）⇒ 违反「质量来源」纪律；
+            #   rc=2 → 历史里已有非机器复算来源的快照 ⇒ 属**历史污染**，须先清账。
+            if prior_manual:
+                print(f"⛔ 拒绝进位：quality_history 已存在**非机器复算来源**的质量快照 "
+                      f"{prior_manual[:5]}——手工 --p0/--p1/--p2 理论可注水，"
+                      f"历史轮已用手工值则后续轮次必须改用 --verify-json <verify_deck 报告>。\n"
+                      f"   确无报告可显式声明 --allow-unverified（会登记 blocker 事件、"
+                      f"快照标 source=manual_unverified，且 make-gate 会阻断）。", file=sys.stderr)
+                return 2
+            print(f"⛔ 拒绝进位：本轮质量数来自**手工自报**（--p0/--p1/--p2），"
+                  f"而 harness.yaml#loop_b.budgets.quality_source_required={_qsrc_req!r}"
+                  f" 要求来源为机器复算（verify_deck --json 报告）。\n"
+                  f"   理由：自报数理论上可注水，且第五轮生产实证显示——手工自报一路走到"
+                  f"制作门，全程无任何机器交叉核验（verify-tier 的产物零消费）。\n"
+                  f"   正确做法：\n"
+                  f"     ① `verify_deck.py <课件> --hours N --level all --json <报告>` 出报告；\n"
+                  f"     ② `loop continue --decision accept --confirmed --verify-json <报告>`；\n"
+                  f"   确无报告（如纯文档轮）须显式声明 --allow-unverified：会登记 blocker 事件、"
+                  f"快照标 source=manual_unverified，且 make-gate 会阻断。", file=sys.stderr)
+            return 1
 
         if vjson:
             # 报告优先：verify_deck 机器复算 > 手工自报（自报理论可注水）
@@ -7149,6 +7321,84 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
                           "note": f"每轮最多处理 {budgets.get('max_items_per_round', 5)} 条"
                                   f"（loop_b.budgets.max_items_per_round）"},
                          ensure_ascii=False, indent=2))
+        return 0
+
+    # ── worklist：施工清单生成器（B24③ · 治 N2「AI 不可修复缺陷混入施工清单」）──
+    # 病灶（首跑实证）：几何版式修复连续三轮证伪（重叠 4→16→19），AI 修不了的
+    #   缺陷（文字墙要拆页、课时不达标要增删页、缺题页要真实字段）与可修缺陷
+    #   混在同一张施工清单里 ⇒ 白烧 3 轮，且中途引入过自引入缺陷。
+    # 处置：本动作把 issues 按 fix_class 分流成三张清单并落盘：
+    #   ai           → AI 施工清单（确定性可修，主理人派工对象）
+    #   human        → 人工确认区（AI 可出方案，须人拍板）
+    #   ai_unfixable → 人工挂账区（AI 修不了，**不进 AI 清单**）
+    # ⚠ 诚实边界：分流依据是**问题类型登记**（visual-rules.yaml#fix_class），
+    #   不是语义判断——代码不判断"这一条具体能不能修"。
+    if args.action == "worklist":
+        src_json = (getattr(args, "verify_json", "") or "").strip()
+        if not src_json:
+            print("用法错误：worklist 必须带 --verify-json <verify_deck --json 报告路径>",
+                  file=sys.stderr)
+            return 2
+        try:
+            with open(os.path.abspath(src_json), encoding="utf-8") as f:
+                rep = json.load(f)
+        except FileNotFoundError:
+            print(f"⛔ 报告不存在：{src_json}", file=sys.stderr)
+            return 3
+        except Exception as e:
+            print(f"⛔ 报告不可解析：{src_json}（{e}）", file=sys.stderr)
+            return 2
+        if not isinstance(rep, dict):
+            print(f"⛔ 报告顶层不是对象：{src_json}", file=sys.stderr)
+            return 2
+        issues = rep.get("issues")
+        if not isinstance(issues, list):
+            print(f"⛔ 报告缺 issues 段：{src_json}（顶层键 {sorted(rep)}）", file=sys.stderr)
+            return 2
+        notes = []
+        if lc is None:
+            print("⚠ loop_contract 不可用 → fix_class 分流**未判定**"
+                  "（全部落缺省 ai）", file=sys.stderr)
+            split = {"ai": list(issues), "human": [], "ai_unfixable": [],
+                     "default": "ai"}
+        else:
+            split = lc.fix_class_split(issues, notes)
+            _lc_note(notes)
+        wl = {
+            "ts": now_iso(),
+            "task_id": st.get("task_id", ""),
+            "round": st.get("current_round", 1),
+            "source_report": os.path.abspath(src_json),
+            "default_fix_class": split.get("default", "ai"),
+            "ai": split.get("ai", []),
+            "human": split.get("human", []),
+            "ai_unfixable": split.get("ai_unfixable", []),
+            "counts": {k: len(split.get(k, [])) for k in ("ai", "human", "ai_unfixable")},
+            "policy": ("ai_unfixable 条目**不进 AI 施工清单**，进人工挂账区——"
+                       "AI 修不了，白烧轮次（首跑实证：三轮证伪）。"
+                       "分类唯一源 = config/visual-rules.yaml#fix_class"),
+        }
+        out_path = (getattr(args, "out", "") or "").strip()
+        if out_path:
+            op = os.path.abspath(out_path)
+            os.makedirs(os.path.dirname(op), exist_ok=True)
+            with open(op, "w", encoding="utf-8") as f:
+                json.dump(wl, f, ensure_ascii=False, indent=2)
+            wl["written_to"] = op
+        st.setdefault("worklists", {})[str(st.get("current_round", 1))] = {
+            "source_report": wl["source_report"],
+            "counts": wl["counts"],
+            "written_to": wl.get("written_to", ""),
+            "ts": wl["ts"],
+        }
+        _loop_hist(st, "worklist", {"counts": wl["counts"],
+                                     "source_report": wl["source_report"]})
+        _write_loop_state(w, "b", st)
+        print(json.dumps(wl, ensure_ascii=False, indent=2))
+        if wl["counts"]["ai_unfixable"]:
+            print(f"⚠ {wl['counts']['ai_unfixable']} 条缺陷**AI 不可修复**（"
+                  f"已分流到人工挂账区，不进 AI 施工清单）——"
+                  f"理由逐条见 ai_unfixable[].fix_class_reason。", file=sys.stderr)
         return 0
 
     # ── rework：返修（仍属当前轮，不进位；超单条目上限即挂阻塞）
@@ -7679,7 +7929,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.28.5", "executable": __file__,
+    out = {"version": "v3.28.6", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -7771,6 +8021,16 @@ def cmd_spawn(args):
             return 2
         detail["envelope_sha256"] = _sha256_file(ep)
         detail["envelope_path"] = str(ep)
+    # ── B24⑤（第五轮诊断 N6）：成员调用分钟预算护栏——登记**起始时间戳**──
+    # 病灶（首跑实证）：严真奥撞 429 中断，撞限前无任何预警；且成员调用**时长全程
+    #   无记录** ⇒ 事后无法回答"这次调用是不是已经超了合理预算"。
+    # 处置：spawn 时记 started_at + budget（取 harness.yaml#loop_b.budgets.
+    #   member_call_minutes，默认 15）→ member-return 回填 elapsed_minutes →
+    #   超时落 trace warning + 建议拆任务（**不阻断**，撞限协议由 spawn-failed
+    #   --reason quota 兜底；此处只做事前可见，不重复执法）。
+    _mb = int((cfg.get("loop_b", {}).get("budgets", {}) or {}).get("member_call_minutes", 15) or 15)
+    detail["member_call_started_at"] = now_iso()
+    detail["member_call_budget_minutes"] = _mb
     rec = _trace(w, cfg, "spawn", args.agent, detail)
     _trace(w, cfg, "agent_spawn", args.agent, detail)      # 兼容既有文档/既有 trace
     print(json.dumps(rec, ensure_ascii=False, indent=2))
@@ -8328,7 +8588,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.5")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.28.6")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -8349,6 +8609,10 @@ def main():
                         "结果落 task_state.json#tool_probe_results，并输出**主动更换提醒**")
     p.add_argument("--domain", default="",
                    help="配合 --probe-channels：当前任务域 id（用于知识库归属核对）")
+    # ── B24④：spawn 前成员通道探测（治「degrade 从事后变事前」）──────────────
+    p.add_argument("--probe-members", dest="probe_members", action="store_true",
+                   help="spawn **前**逐成员探测通道（平台 agentType 对照 members 表）；"
+                        "不一致 ⇒ member_channel_mismatch 并给降级预案（不阻断）")
     _ws(p)
     p.set_defaults(func=cmd_preflight)
 
@@ -8474,6 +8738,14 @@ def main():
     p.add_argument("--phase", default="", help="阶段标识")
     p.add_argument("--issues", default="", help="阻塞/缺口摘要")
     p.add_argument("--warnings", default="", help="警告摘要")
+    # ── B24⑤：成员调用耗时回填（预算护栏）────────────────────────────────
+    p.add_argument("--elapsed-minutes", dest="elapsed_minutes", type=float, default=None,
+                   help="member-return：本次成员调用耗时（分钟）。超 "
+                        "harness.yaml#loop_b.budgets.member_call_minutes 落 warning "
+                        "（不阻断），建议拆分任务")
+    p.add_argument("--started-at", dest="started_at", default="",
+                   help="member-return：spawn 时刻（ISO 'YYYY-MM-DDTHH:MM:SS'）——"
+                        "不给 --elapsed-minutes 时按它与当前时间差算耗时")
     _ws(p)
     p.set_defaults(func=cmd_member_return)
 
@@ -8631,6 +8903,8 @@ def main():
     p.add_argument("action", choices=["start", "intake", "add-item", "status", "resume",
                                       "continue", "rework", "freeze", "verify",
                                       "make-gate", "block", "terminate", "check-path",
+                                      # B24③：施工清单生成器（按 fix_class 分流三张清单）
+                                      "worklist",
                                       # v3.20.0 B：Loop A 批次门（仅 --loop a）
                                       "batch-open", "batch-close", "batch-status",
                                       # B20（第三轮 P2-1）：批次历史压缩（显式触发，不自动）
@@ -8658,6 +8932,12 @@ def main():
     p.add_argument("--item", help="rework：条目 ID")
     p.add_argument("--page", help="add-item：稳定页面 ID（如 s12）")
     p.add_argument("--severity", default="", help="add-item：P0/P1/P2")
+    # ── B24③：条目可修复性分类 ────────────────────────────────────────────
+    p.add_argument("--fix-class", dest="fix_class", default="ai",
+                   choices=["ai", "human", "ai_unfixable"],
+                   help="add-item：本条的可修复性（缺省 ai）。"
+                        "ai_unfixable ⇒ 不进 AI 施工清单，进人工挂账区"
+                        "（治「AI 修不了的缺陷混进施工清单」——首跑实证三轮证伪）")
     p.add_argument("--owner", default="", help="add-item：dvm/pedagogy/visual")
     p.add_argument("--decision", choices=["accept", "partial_accept", "rework", "pause"],
                    help="continue/freeze：用户裁决（不传即拒绝进位——沉默不构成确认）")

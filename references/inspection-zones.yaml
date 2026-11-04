@@ -1,5 +1,5 @@
 digest_scheme: indexed-set-v2
-version: 3.28.5
+version: 3.28.6
 segments:
 - id: domain-profiles.yaml#domain_pack_exemptions
   file: domain-profiles.yaml
@@ -247,10 +247,10 @@ segments:
 - id: harness.yaml#loop_b
   file: harness.yaml
   prefix: loop_b
-  key_count: 38
-  keys_sha256: a0bdc7099262b3a075d6e7f885719e4a13637859
+  key_count: 40
+  keys_sha256: 7360c39fb45f594eef87d81a585e7dd453d121f4
   leaf_unused: 0
-  leaf_weak: 37
+  leaf_weak: 39
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（B 环：原件只读/单写者/共存）。loop_contract.py 逐键取值器承接。
@@ -573,3 +573,13 @@ segments:
   consumer: 会话层+主理人
   disposition: 新增键须登记
   note: Delta 门禁判据。多数键已接线；`insert_font_at_creation` 属**结构性不可判定**（写入时行为，成品无痕迹）。
+- id: visual-rules.yaml#fix_class
+  file: visual-rules.yaml
+  prefix: fix_class
+  key_count: 15
+  keys_sha256: b974fd4a5441704fc670ae931d301539d4792771
+  leaf_unused: 0
+  leaf_weak: 15
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 缺陷可修复性三分类（ai/human/ai_unfixable），v3.28.6（B24③）新增。loop_contract.fix_class_table **整块取走**（一次读 fix_class.default + ai_unfixable[] + human[]）⇒ 属块级消费段。`leaf_weak=15` 是因末段键名 type/reason/default 在代码中 0 出现（值被整块取走，路径级证据不可判定）—— 与 `visual-rules.yaml#density` 同款。**新增问题类型必须落到 ai_unfixable 或 human 之一**，否则落缺省 ai（等价于"AI 可修"，会误进 AI 施工清单）。

@@ -217,6 +217,22 @@ def cleanup_isolated_pkg(pkg: Path) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
+#: 【v3.28.6】`make_isolated_pkg` 的**原始函数对象**锚点。
+#:
+#: ⚠ **为什么需要它（实测踩到）**：
+#:   `test_arch_drift.py` 的反例类改成了「**类级共享副本** + 逐用例还原
+#:   MUTATED_FILES」（省掉 10 次全包 copytree：单次 16–19s ⇒ 整套 205s
+#:   ⇒ 突破体检第 7 项 180s 上限）。
+#:   但 `TestAntiExampleSkipSemantics`（T1/T2/T4）**故意**把本模块的
+#:   `make_isolated_pkg` mock 掉，用来验证「副本构造失败 ⇒ skip」。
+#:   ⇒ 若 setUp 不识别「构造器已被替换」，就会复用已建好的共享副本
+#:     ⇒ mock 完全失效 ⇒ T2 判红 + 真实反例被全 skip。
+#:   ⇒ 本锚点让调用方能判断「当前模块属性是否还是原函数」。
+#:
+#: ⚠ **不要改这个变量的语义**：它是「未被 mock 的原函数」的**唯一真源**。
+_ORIGIN_MAKE_ISOLATED_PKG = make_isolated_pkg
+
+
 # ───────────────────────────────────────────────────── AST 静态守卫
 #: 「包根」的内部标记（不是真实路径段）——用于识别「相对包根」的路径表达式。
 _ROOT = "<PKG>"

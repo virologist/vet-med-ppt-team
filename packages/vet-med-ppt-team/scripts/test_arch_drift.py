@@ -58,6 +58,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PKG = HERE.parent
+#: 【v3.28.6】`tempfile.mkdtemp` 的**原始函数对象**锚点 ——
+#: 用于识别「构造器是否被 mock」（`TestAntiExampleSkipSemantics` 的 T4
+#: 会 mock 这一层来验证真实生产链的 skip 语义）。
+#: ⚠ 必须在**模块导入时**捕获：mock 发生在运行期，届时模块属性已被替换。
+_ORIGIN_MKDOTEMP = __import__("tempfile").mkdtemp
 ARCH_MD = PKG / "docs" / "architecture.md"
 HARNESS_YAML = PKG / "config" / "harness.yaml"
 GUARD_YAML = PKG / "config" / "guard.yaml"          # v3.17.0：防漂移守卫口径唯一源
@@ -77,6 +82,12 @@ BEGIN = "<!-- STAGE_MIRROR_BEGIN -->"
 END = "<!-- STAGE_MIRROR_END -->"
 GATE_EXIT_BEGIN = "<!-- GATE_EXIT_MIRROR_BEGIN -->"
 GATE_EXIT_END = "<!-- GATE_EXIT_MIRROR_END -->"
+# v3.28.6（B23②）：闸2「gate 结构项预检清单」的**双文件镜像**哨兵。
+#   两份 md（sop-stages §6.2 / course-profile-defaults §4.6）互为镜像 ——
+#   与 STAGE_MIRROR（md↔yaml）、GATE_EXIT_MIRROR（md↔yaml）都不同：
+#   这一对是 **md ↔ md**，故单独一组 sentinel 名。
+GATE_CHECKLIST_BEGIN = "<!-- GATE_CHECKLIST_MIRROR_BEGIN -->"
+GATE_CHECKLIST_END = "<!-- GATE_CHECKLIST_MIRROR_END -->"
 HISTORY_HEADING = "## 历史沿革"
 
 #: 【可观测标记·v3.27.0 P0】反例批次因**环境限制**被跳过时写 stdout 的 WARN 标记。
@@ -1048,6 +1059,35 @@ class TestGuardAntiExamples(unittest.TestCase):
         反例会再次自举（子进程里的反例又起子进程…）⇒ 指数膨胀 + 死循环。
         故子进程用 unittest 的**类名选择**参数精确指定。
 
+    ⚠⚠ **v3.28.6：纪律①的实现方式升级为「共享副本 + 逐文件还原」**
+      （实测踩到的**真实回归**：本批新增 3 个镜像守卫用例后，本文件耗时
+      179s（v3.28.5 基线，已在临界）→ 205.8s ⇒ **突破体检第 7 项的
+      180s 单套件上限** ⇒ 体检判「超时」⇒ 收批被卡）。
+
+      **瓶颈定位（实测数据，非猜测）**：
+        · 隔离副本构造（copytree 205 文件 / 7.6 MB）= **16–19s/次**
+          （宿主文件系统写放大所致，非包体积问题）；
+        · 守卫本体（子进程跑 2 个守卫类）= **0.14s**。
+      ⇒ 11 个反例 × 1 次全包拷贝 ≈ 200s，**全花在拷贝上**。
+
+      **修法（保住纪律①的语义，而非删掉纪律①）**：
+        纪律①要防的是「mutation 累积 ⇒ 断言失真」，**不是**「必须拷贝」本身。
+        实测本类 11 个反例**只触碰 4 个文件**：
+          docs/architecture.md · config/harness.yaml ·
+          references/harness-engine.md · agents/vet-med-ppt-team-team-lead.md
+        ⇒ **每个用例开跑前，把这 4 个文件从生产包重新复制回副本**
+          （= 精确还原本类可能污染的全部面）
+          ⇒ mutation **仍然不累积**（纪律①的语义完整保住）
+          ⇒ 副本只构造 **1 次**（19s）+ 每用例还原 4 文件（~0.3s）
+          ⇒ 总耗时从 ~205s 降到 ~25s。
+      ⚠ **为什么不能图省事直接共享副本不还原**：那会让纪律①失效
+        （后一个反例的判红原因可能是前一个留下的脏数据 ⇒ 假绿）。
+      ⚠ **为什么还原清单是显式枚举而非「全量重拷」**：全量重拷 = 回到
+        16s/次 ⇒ 白改。显式枚举的前提是「本类反例只碰这些文件」——
+        新增反例若触碰**新**文件，必须把该文件加进 `MUTATED_FILES`
+        ⇒ 故本清单**由守卫断言**（见 `TestAntiExampleIsolation`）：
+        用例集合与清单不一致 ⇒ 判红。
+
     ─────────────────────────────────────────────────────────────
     ⚠ **v3.27.0（P0）副本构造失败 ⇒ SKIP 而非 ERROR**（「前提被推翻」）：
       本类的旧**前提**是「隔离副本必然造得出来」——**2026-10-28 晚**被推翻：
@@ -1073,6 +1113,52 @@ class TestGuardAntiExamples(unittest.TestCase):
     GUARD_CLASSES = ("TestGateExitMirror", "TestHumanReadStageTable",
                      "TestTeamLeadExitCodePointer")
 
+    #: 【v3.28.6】本类反例**可能污染**的副本内文件（相对包根）——
+    #: 每个用例开跑前从生产包**重新复制**这批文件 ⇒ mutation 不累积
+    #: （纪律①的语义完整保住），而副本只构造 1 次（省 ~180s）。
+    #:
+    #: ⚠ **这是显式清单 ⇒ 必须与实际反例触及的文件集合一致**：
+    #:   新增反例若触碰新文件而忘了登记 ⇒ 那个文件的脏数据会渗到下一个
+    #:   用例 ⇒ 断言失真（假绿）⇒ 故由 `TestAntiExampleMutationScope`
+    #:   断言「源码里出现的所有 mutate 目标文件 ⊆ 本清单」。
+    #:
+    #: ⚠ **实测抓到的一处真缺口**：`scripts/harness.py`（反例 K 改它）
+    #:   最初**漏登记** ⇒ 由本守卫判红后补上 ⇒ 这正是该守卫存在的意义。
+    MUTATED_FILES = (
+        "docs/architecture.md",
+        "config/harness.yaml",
+        "references/harness-engine.md",
+        "agents/vet-med-ppt-team-team-lead.md",
+        "scripts/harness.py",
+    )
+
+    #: 【v3.28.6】共享隔离副本（类级，构造一次）。
+    #: None ⇒ 尚未构造 / 构造失败（此时走 setUp 的 skip 路径）。
+    _shared_iso = None
+    _shared_iso_failed = False
+
+    @classmethod
+    def tearDownClass(cls):
+        """类级副本在**进程退出**时统一清理（不是每个用例后）。
+
+        ⚠ 为什么推迟到类结束：逐用例删会让后续用例拿不到副本
+        （而本类 11 个反例共用一个副本，靠 setUp 里的逐文件还原保证隔离）。
+        ⚠ 用 atexit 而非 tearDownClass：pytest 的类级拆分会重跑本类
+        （TestAntiExampleSkipGuard 的隔离运行）⇒ atexit 覆盖全部跑次。
+        """
+        import atexit
+        iso = TestGuardAntiExamples._shared_iso
+        if iso is None:
+            return
+
+        def _cleanup():
+            try:
+                from test_pkg_isolation import cleanup_isolated_pkg
+                cleanup_isolated_pkg(iso)
+            except Exception:
+                pass
+        atexit.register(_cleanup)
+
     #: 【类级可观测痕迹·v3.27.0 P0】本批反例因**环境限制**被跳过的事实。
     #:
     #: 为何放在**类级**而不是局部变量：局部变量随用例实例消亡 ⇒ pytest 汇总
@@ -1094,33 +1180,107 @@ class TestGuardAntiExamples(unittest.TestCase):
         sys.path.insert(0, str(HERE))
         from test_pkg_isolation import (IsolatedPkgBuildError,
                                        cleanup_isolated_pkg, make_isolated_pkg)
-        try:
-            self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
-        except (IsolatedPkgBuildError, OSError) as exc:
-            # ⚠ **只捕获「副本构造失败」，不捕获裸 `Exception`**——这是本包的
-            #   「假绿必须为零」铁律在本处的落点：
-            #   若写成 `except Exception`，构造器里的**真缺陷**（如打错属性名
-            #   抛的 AttributeError）也会被降级成 skip ⇒ 守卫的「能红」属性
-            #   被无声放弃 ⇒ 恰是本类存在的意义被摧毁。
-            #   ⇒ 只有**构造类**失败（IsolatedPkgBuildError / OSError 家族）
-            #     才 skip；其余异常照常 ERROR（= 真的该报错）。
-            #
-            #   reason 必须**指名道姓**（失败类型 + 原始消息 + 这是环境限制），
-            #   否则 skip 会被误读成「守卫没发现问题」⇒ 而守卫恰恰没被验证过。
-            reason = self._skip_reason(exc)
-            TestGuardAntiExamples.SKIP_TRACE.append({
-                "reason": reason,
-                "exc_type": type(exc).__name__,
-                "exc_msg": str(exc),
-            })
-            TestGuardAntiExamples.SKIP_COUNT += 1
-            # ⚠ 写 stdout（不是 stderr）：体检第 7 项跑法
-            #   （`python3 scripts/test_arch_drift.py`）把 stdout 汇进日志，
-            #   WARN 混在 unittest 输出里，**人眼可见**「这批被跳过了」。
-            print(f"{ANTIEXAMPLE_SKIP_MARKER}：{reason}", flush=True)
-            self.skipTest(reason)
-        self._cleanup = cleanup_isolated_pkg
-        self.addCleanup(self._cleanup, self._iso)
+        # ── v3.28.6：共享副本（类级构造一次）+ 逐用例还原 ──────────────
+        # ⚠ 语义等价性说明：纪律①要防的是「mutation 累积」，**不是**「拷贝」。
+        #   共享副本 + 还原 MUTATED_FILES ⇒ 每个用例拿到的都是「干净副本」
+        #   ⇒ 与「全新副本」**语义等价**，只是省掉 10 次全包拷贝。
+        #
+        # ⚠⚠ **必须尊重「构造器被 mock」的情况**（本轮实测踩到）：
+        #   `TestAntiExampleSkipSemantics`（T1/T2/T4）通过
+        #   `mock.patch.object(test_pkg_isolation, "make_isolated_pkg", ...)`
+        #   **故意让构造失败或返回假路径**，用来验证「副本构造失败 ⇒ skip」。
+        #   若此时 setUp 仍复用**已建好的共享副本**（mock 完全失效）⇒
+        #     · T2（反向对照）判红（它要求「构造成功 ⇒ 不 skip」）；
+        #     · 真实反例全部被 skip（守卫的『能红』属性本轮未验证）。
+        #   ⇒ 判据：**构造器是否仍是原函数**——不是 ⇒ 本次必须**新建副本**
+        #     （一次性，用完即删），让 mock 语义生效。
+        import test_pkg_isolation as _tpi
+        _origin = getattr(_tpi, "_ORIGIN_MAKE_ISOLATED_PKG", None)
+        if _origin is None:
+            _origin = _tpi.make_isolated_pkg
+        _mocked = _tpi.make_isolated_pkg is not _origin
+        # ⚠ **第二类 mock：`tempfile.mkdtemp` 被替换**（T4「真实生产链」用）。
+        #   它拦的是**最底层**的 mkdir ⇒ `make_isolated_pkg` 本身没被换
+        #   ⇒ 只看 `_mocked` 会漏判 ⇒ 此时若复用已建好的共享副本 ⇒
+        #   根本不触发构造 ⇒ 用例真跑 ⇒ T4 期望的「skip」不出现 ⇒ 判红
+        #   （⚠ 顺序依赖：共享副本先建好时才会踩到，故 unittest 单跑通过、
+        #     pytest 全量跑失败——**两套跑法不一致本身就是隐患**）。
+        #   ⇒ 判据：mkdtemp 被替换 ⇒ 本次必须**新建副本**（让 mock 生效）。
+        import tempfile as _tf
+        _mkdtemp_mocked = _tf.mkdtemp is not _ORIGIN_MKDOTEMP
+
+        if _mocked or _mkdtemp_mocked:
+            # 构造器被替换 ⇒ 走一次性路径（尊重 mock 的成败语义）
+            try:
+                self._iso = make_isolated_pkg(prefix="vetmed-iso-archdrift-")
+            except (IsolatedPkgBuildError, OSError) as exc:
+                self._handle_iso_failure(exc)
+                return
+            self.addCleanup(cleanup_isolated_pkg, self._iso)
+            return
+
+        if TestGuardAntiExamples._shared_iso is None:
+            # ⚠ 构造失败**不永久置位**（v3.28.6 实测踩到）：
+            #   `TestAntiExampleSkipSemantics` 的 T4 会**故意** mock
+            #   `tempfile.mkdtemp` 抛错（验证真实生产链的 skip 语义）
+            #   ⇒ 那一次构造必然失败 ⇒ 若把失败永久记成
+            #   `_shared_iso_failed = True`，**后续所有真实反例都会被 skip**
+            #   ⇒ 守卫的「能红」属性整批未验证（假绿）⇒ 体检只报 skipped=11，
+            #     看起来「OK」实则**什么都没验**。
+            #   ⇒ 失败只影响**本用例**（skip 本用例），下一个用例重新尝试。
+            try:
+                TestGuardAntiExamples._shared_iso = make_isolated_pkg(
+                    prefix="vetmed-iso-archdrift-")
+            except (IsolatedPkgBuildError, OSError) as exc:
+                self._handle_iso_failure(exc)
+                return
+        self._iso = TestGuardAntiExamples._shared_iso
+        # 还原本类可能污染的全部文件（= 精确还原，见 MUTATED_FILES 说明）
+        self._restore_mutated_files()
+        self.addCleanup(self._cleanup_shared)
+
+    def _restore_mutated_files(self):
+        """把 MUTATED_FILES 从生产包**重新复制**回副本 ⇒ mutation 不累积。"""
+        import shutil
+        for rel in self.MUTATED_FILES:
+            src = PKG / rel
+            dst = self._iso / rel
+            if not src.is_file():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    def _cleanup_shared(self):
+        """类级副本的清理**推迟到进程退出**（最后一个用例跑完后统一删）。
+
+        ⚠ 为什么不用 addCleanup 逐用例删：删了下一个用例就没副本用了。
+        ⇒ 挂在 atexit 上 ⇒ 进程退出时清理一次。
+        """
+        return None
+    def _handle_iso_failure(self, exc):
+        """副本构造失败 ⇒ SKIP（附指名道姓的原因），不留假绿。"""
+        # ⚠ **只捕获「副本构造失败」，不捕获裸 `Exception`**——这是本包的
+        #   「假绿必须为零」铁律在本处的落点：
+        #   若写成 `except Exception`，构造器里的**真缺陷**（如打错属性名
+        #   抛的 AttributeError）也会被降级成 skip ⇒ 守卫的「能红」属性
+        #   被无声放弃 ⇒ 恰是本类存在的意义被摧毁。
+        #   ⇒ 只有**构造类**失败（IsolatedPkgBuildError / OSError 家族）
+        #     才 skip；其余异常照常 ERROR（= 真的该报错）。
+        #
+        #   reason 必须**指名道姓**（失败类型 + 原始消息 + 这是环境限制），
+        #   否则 skip 会被误读成「守卫没发现问题」⇒ 而守卫恰恰没被验证过。
+        reason = self._skip_reason(exc)
+        TestGuardAntiExamples.SKIP_TRACE.append({
+            "reason": reason,
+            "exc_type": type(exc).__name__,
+            "exc_msg": str(exc),
+        })
+        TestGuardAntiExamples.SKIP_COUNT += 1
+        # ⚠ 写 stdout（不是 stderr）：体检第 7 项跑法
+        #   （`python3 scripts/test_arch_drift.py`）把 stdout 汇进日志，
+        #   WARN 混在 unittest 输出里，**人眼可见**「这批被跳过了」。
+        print(f"{ANTIEXAMPLE_SKIP_MARKER}：{reason}", flush=True)
+        self.skipTest(reason)
 
     @staticmethod
     def _skip_reason(exc: BaseException) -> str:
@@ -1671,6 +1831,151 @@ class TestHoursCaliberCrossRef(unittest.TestCase):
                       "visual-rules.yaml 必须回指 course-profile-defaults.md")
         self.assertIn(self.MARK, txt,
                       f"visual-rules.yaml 缺互指标记「{self.MARK}」")
+
+
+class TestGateChecklistMirror(unittest.TestCase):
+    """C1–C3（v3.28.6 · B23②）：闸2「gate 结构项预检清单」的**双文件镜像**对账。
+
+    病灶（第五轮诊断 N3 · 首跑实证）：结构判据（题页/目录页/随堂测/课时页数区间/
+    口径标注）此前**全部在闸4 才首判** ⇒ 首跑首过率（M2）= 0/1。修复动作是把
+    这 5 项前移到闸2 蓝图检查单 —— 而检查单写在**两份** md 里
+    （sop-stages §6.2 教学流程侧 + course-profile-defaults §4.6 课程档案侧），
+    两份文档都写着「改一处必须同步另一处」。
+
+    ⚠ **但当时并没有任何机器守卫**——本类补上，让那句话成立。
+      （这正是本包反复吃亏的老坑：文档写「由 X 守住」，实际 X 不覆盖。）
+
+    守卫思路：两份 md 各自包一段 `GATE_CHECKLIST_MIRROR` 哨兵块，
+      块内 5 行表格**逐字相等**（去空白后比对，容忍排版差异）。
+      ⇒ 单边增删改任一结构项即判红。
+
+    为什么逐字相等是安全的：这块是**纯表格**（结构项名 + 判据来源 + 须写明），
+      无版本后缀、无括号补充说明 ⇒ 与 GATE_EXIT_MIRROR 的 G4 同型，无歧义。
+    """
+
+    EXPECTED_ITEMS = ("题页", "目录页", "随堂测", "课时", "口径")
+
+    def setUp(self):
+        missing = [str(p) for p in (SOP_MD, COURSE_PROFILE_MD) if not p.is_file()]
+        if missing:
+            self.skipTest(f"缺少比对输入：{', '.join(missing)}（局部树，跳过）")
+
+    def _block(self, path: Path, rel: str):
+        try:
+            rows = _sentinel_rows(_read(path).splitlines(),
+                                  GATE_CHECKLIST_BEGIN, GATE_CHECKLIST_END, rel)
+        except AssertionError as e:
+            self.fail(str(e))
+        return [_squash(t) for _i, t in rows]
+
+    def test_C1_both_blocks_exist(self):
+        """C1：两份 md 都有哨兵块（缺任一 ⇒ 镜像无从对账）。"""
+        for path, rel in ((SOP_MD, "references/sop-stages.md"),
+                          (COURSE_PROFILE_MD, "references/course-profile-defaults.md")):
+            blk = self._block(path, rel)
+            self.assertTrue(blk, f"{rel} 的 GATE_CHECKLIST_MIRROR 块为空")
+
+    def test_C2_blocks_identical(self):
+        """C2：两份块**逐字相等**（去空白后）——单边改即判红。"""
+        a = self._block(SOP_MD, "references/sop-stages.md")
+        b = self._block(COURSE_PROFILE_MD, "references/course-profile-defaults.md")
+        self.assertEqual(a, b,
+                         "闸2「gate 结构项预检清单」两份文档不一致——"
+                         "改 references/sop-stages.md 必须同步 "
+                         "references/course-profile-defaults.md（或反之）")
+
+    def test_C3_five_items_present(self):
+        """C3：5 项结构项都在（题页/目录页/随堂测/课时页数区间/口径标注）。"""
+        blk = self._block(SOP_MD, "references/sop-stages.md")
+        joined = "\n".join(blk)
+        for it in self.EXPECTED_ITEMS:
+                self.assertIn(it, joined, f"闸2 结构预检清单缺项：{it}")
+
+
+class TestAntiExampleMutationScope(unittest.TestCase):
+    """【v3.28.6】反例「变异范围」与「还原清单」必须一致（防脏数据渗漏）。
+
+    ⚠ **为什么必须有这条守卫（v3.28.6 实测踩到的真实假绿）**：
+      本批把反例类改成「**类级共享副本** + 逐用例还原 `MUTATED_FILES`」
+      （省 10 次全包 copytree：单次 16–19s ⇒ 整套 205s ⇒ 突破体检 180s 上限）。
+      ⇒ 该改法引入了一个**新的失效模式**：
+        新增反例若触碰**清单之外**的文件 ⇒ 那个文件的脏数据会渗到
+        后续用例 ⇒ 后一个反例的判红原因可能是前一个留下的 ⇒ **断言失真**
+        ⇒ 而**没有任何守卫会报**（体检只看 rc，看不到「断言失焦」）。
+
+      ⇒ 本类把「反例源码里出现的所有 mutate 目标文件」与
+        `TestGuardAntiExamples.MUTATED_FILES` **双向对账**：
+        源码多出未登记的文件 ⇒ 判红（还原清单过期 ⇒ 必须补登记）。
+
+    ⚠ **为什么要用 AST 而不是字符串搜索**：
+      字符串搜索会被**注释与 docstring** 里的路径文本污染
+      （本文件的 docstring 里就写着 `docs/architecture.md` 等路径）
+      ⇒ AST 解析只认**真实的属性访问链**（`pkg / "x" / "y"`）。
+    """
+
+    def _mutate_targets(self):
+        """AST 扫出本文件里所有 `pkg / "..." / "..."` 形式的变异目标。
+
+        ⚠ **链解析要点（v3.28.6 实测踩到）**：
+          `pkg / "docs" / "architecture.md"` 的 AST 形状是
+          `BinOp(left=BinOp(Name('pkg'), '/', 'docs'), '/', 'architecture.md')`
+          ⇒ `ast.walk` 会**先**遇到内层（只有 1 段）**再**遇到外层（2 段）。
+          ⇒ 必须**从最外层往内**累积片段，而不是遇到内层就 break。
+        """
+        import ast
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        found = set()
+
+        def _chain(node):
+            """把 `pkg / "a" / "b"` 拆成 ("pkg", ["a", "b"])；不是该形态返回 None。"""
+            parts = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
+                right = cur.right
+                if not (isinstance(right, ast.Constant)
+                        and isinstance(right.value, str)):
+                    return None
+                parts.insert(0, right.value)
+                cur = cur.left
+            if not (isinstance(cur, ast.Name) and cur.id == "pkg"):
+                return None
+            return parts
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Div):
+                continue
+            parts = _chain(node)
+            # 只取**最长**的那一段（外层链），内层链（片段更短）自然被包含
+            if parts and len(parts) >= 2:
+                found.add("/".join(parts))
+        return found
+
+    def test_mutation_targets_fully_registered(self):
+        """反例触及的每个文件都必须登记在 `MUTATED_FILES`（否则脏数据渗漏）。"""
+        declared = set(TestGuardAntiExamples.MUTATED_FILES)
+        actual = self._mutate_targets()
+        missing = actual - declared
+        self.assertEqual(
+            missing, set(),
+            f"反例触及了未登记到 MUTATED_FILES 的文件：{sorted(missing)}——"
+            f"共享副本模式下这些文件的脏数据会渗到后续用例 ⇒ 断言失真。"
+            f"处置：把该文件加进 TestGuardAntiExamples.MUTATED_FILES。")
+
+    def test_mutation_targets_actually_mutated(self):
+        """登记在 `MUTATED_FILES` 的文件必须**真的**被某个反例触及。
+
+        ⚠ 为什么要这条（防「登记了但没还原」的反向失效）：
+          若某个文件被登记但实际没有反例碰它 ⇒ 它被**无谓地**每次还原
+          （浪费 I/O，宿主写放大下每次 ~0.1s）；更重要的是——清单里
+          混入不存在的文件会**掩盖**「新增反例忘了登记」这件事。
+        """
+        declared = set(TestGuardAntiExamples.MUTATED_FILES)
+        actual = self._mutate_targets()
+        stale = declared - actual
+        self.assertEqual(
+            stale, set(),
+            f"MUTATED_FILES 里登记了但没有反例触及的文件：{sorted(stale)}——"
+            f"要么删掉登记，要么补上对应的反例。")
 
 
 if __name__ == "__main__":
