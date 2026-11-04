@@ -125,7 +125,7 @@ class _TmpLoopA(unittest.TestCase):
             b0 = st0.get("batches", {}).get(batch) or {}
             declared = list(b0.get("declared_files") or [])
         orig = harness._git_changed_files
-        harness._git_changed_files = lambda: (declared, "")
+        harness._git_changed_files = lambda scope=None: (declared, "")
         try:
             return _run(_args(action="batch-close", loop="a", workspace=self.w,
                               batch=batch, confirmed=confirmed,

@@ -206,7 +206,7 @@ class TestBatchGateEvents(_TmpLoopA):
                    files=os.path.join(PKG, "scripts", "harness.py"),
                    batch="b9000000002", note="T7"))
         # 隔离 git（patch 层与本测试无关）
-        harness._git_changed_files = lambda: ([os.path.join(PKG, "scripts", "harness.py")], "")
+        harness._git_changed_files = lambda scope=None: ([os.path.join(PKG, "scripts", "harness.py")], "")
         try:
             req = ",".join(_base_cfg()["loop_a"]["regression_required"])
             rc, _so, _se = _run(_args(action="batch-close", loop="a", workspace=self.w,
@@ -284,7 +284,7 @@ class TestSpawnEnvelope(_TmpLoopA):
         _run_spawn(_args(workspace=self.w, agent="pedagogy-architect",
                          task_id="T-B21", stage=2))
         # 收批
-        harness._git_changed_files = lambda: ([os.path.join(PKG, "scripts", "harness.py")], "")
+        harness._git_changed_files = lambda scope=None: ([os.path.join(PKG, "scripts", "harness.py")], "")
         try:
             req = ",".join(_base_cfg()["loop_a"]["regression_required"])
             rc, _so, se = _run(_args(action="batch-close", loop="a", workspace=self.w,
