@@ -8,10 +8,14 @@
 #
 # 消费方：scripts/harness.py（preflight / route / state / budget / trace / gate）
 
-# ⚠ 版本号四处一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
-#   本批（v3.17.0）**不改**本键——版本号统一由主理人在收尾时同步四处，
-#   单改此处会让第 14 项立即判红（本行须保持 `version: "x.y.z"` 独占且行尾无注释）。
-version: "3.28.6"
+# ⚠ 版本号一致性由体检第 14 项守（.codebuddy-plugin/plugin.json 为权威），
+#   实际判据面是 **13 处声明点 / 11 个文件**（含两个 marketplace.json、5 个 yaml 顶层、
+#   scripts/harness.py 内的 3 处）⇒ 提版时必须**一次性同步全部 13 处**。
+#   ⚠ 本行须保持 `version: "x.y.z"` 独占且行尾无注释（第 14 项用
+#     `^version:\s*"?v?([0-9.]+)"?\s*$` 正则匹配，多余字符会匹配失败）。
+#   ⚠ 本键的顶层 `version` 是 yaml 根键，**不在任何已登记 prefix 子树下**
+#     ⇒ 改它**不触发** references/inspection-zones.yaml 的登记段失配。
+version: "3.28.8"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。

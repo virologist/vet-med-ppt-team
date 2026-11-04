@@ -6,7 +6,83 @@
 
 ---
 
-## [Unreleased] - 2026-11-04（settings.json 根因定位到宿主源码 · 删除误判链闭环）
+## [v3.28.8] - 2026-11-05（C0 收口：体检第 7 项失败语义五态化 + 废弃口径单一真源）
+
+> 依据：Loop A 第六轮架构诊断（`outputs/架构诊断与升级设计_v1.md`）的 R18 与任务 F。
+> 性质：**修正式版本** —— 治「体检第 7 项假红」与「废弃口径两处不一致」两个 P0。
+> 收批批次：`b1793831967`（Loop A）。
+> 收批证据：`confirmed=true` / `confirmed_reason=evidence_ok` /
+> `regression_ran=10` / `regression_verified=10`（逐项带 rc + 耗时）。
+
+### Fixed
+
+- **体检第 7 项的超时语义独立成第五态 `REG_TIMEOUT`**（`scripts/ensure_settings.py`）：
+
+  超时既不是「真缺陷」也不是「环境受限」，是第三类「**未验证**」⇒ 三态论证缺一不可：
+
+  | 若判 | 后果 | 判定 |
+  |---|---|---|
+  | `REG_FAIL` | **假红** —— 超时不是包缺陷 | ❌ |
+  | `REG_ENV_LIMITED` | **归因错误** —— 超时 ≠ 宿主 broker 拦 mkdir，真因是「套件太慢/阈值不够」 | ❌ |
+  | `REG_PASS` | **假绿** —— 压根没跑完，写「通过」是硬造假 | ❌ |
+  | **`REG_TIMEOUT`** | **不阻断**（rc 仍 0）但**必须**进未验证累加器 | ✅ |
+
+  ⇒ 现为五态：`REG_PASS` / `REG_PASS_WITH_SKIPS` / `REG_ENV_LIMITED` /
+  **`REG_TIMEOUT`** / `REG_FAIL`。
+- **超时阈值外提**：`config/harness.yaml#loop_a.regression_timeout_s: 300`（原 `ensure_settings.py` 裸写
+  `timeout=180` ⇒ 实测 `test_dead_config_disposition` 需 **186.9s** 被误杀 ⇒ 体检第 7 项**恒红**）。
+  阈值真源改由 `load_regression_timeout_s()` 读 yaml（读不到回落兜底 + **显式告警**，不静默）。
+- **`batch-gc` 标记废弃与收批判定废弃口径一致**（病灶⑤，根治）：
+
+  根因 = 「**同一语义多点消费**」⇒ 根治必须抽 helper，**不能逐点打补丁**。
+  `scripts/harness.py` 新增 `_open_batches()` 单一真源（**未闭合 ∧ 未废弃**），
+  **三处**调用同函数：`batch-gc` 的 `before_open` / `batch-close` 归属校验 /
+  `batch-close` 的 `--batch` 缺省推断（★实施时新发现的第 3 处漂移点）。
+  ⇒ 消除「`batch-gc` 标记了 `abandoned` 但收批仍 rc=2」= **操作成功、效果为零**。
+- **回归实测证据通道**（任务 F 病灶②）：`batch-close` 增 `--regression-evidence <json>`，
+  逐套件附 `{suite, rc, duration_s}` ⇒ `regression_ran`（**声明**）与
+  `regression_verified`（**实测**）**分列两字段**（兼任两职即退化成纯声明）。
+  `confirmed_reason` 记 `evidence_ok` / `no_regression_evidence` / `evidence_rc_nonzero` /
+  `evidence_suite_mismatch` / `evidence_invalid`。
+
+### Changed
+
+- **`references/inspection-zones.yaml`**：`harness.yaml#loop_a` 段机算字段刷新
+  （`key_count` 20→21，因新增 `regression_timeout_s`）⇒ 复跑 **57/57 全对齐**（幂等）。
+- **`scripts/mirror_sync.py`**：`EXCLUDE_PATTERNS` 补 `"03-code"`（与 `.gitignore` 双侧口径一致）。
+- **`.gitignore`**：补 `03-code/`（Agent Harness 专家团工作产物目录）。
+
+### 回归固化
+
+| 套件 | 新增 | 结果 |
+|---|---|---|
+| `scripts/test_regression_skip_report.py` | `TestTimeoutSemantics`（T-R18-11~14 + V6/V6b 对照） | 28 → **34 tests OK / rc=0** |
+| `scripts/test_batch_gate_b19.py` | `TestAbandonedConsistency`（T9a~T9d，含隔离副本 mutator 对照） | 19 → **23 tests OK / rc=0** |
+
+**回归实测（10/10 全绿）**：`ensure_settings` 893.18s（结论「✅ 全部通过」）/
+`test_harness` 20.54s / `test_five_gates` 7.33s / `test_dead_config_disposition` 100.44s /
+`test_inspection_zone_registry_red` 93.03s / `test_arch_drift` 22.40s /
+`test_domain_pack` 48.72s / `test_trace_events` 17.15s / `test_batch_gate_b19` 16.82s /
+`test_batch_gate_b21` 2.42s。
+
+### 已知遗留（未闭环）
+
+- **病灶① 契约测试写真包账本**：`loop_a.state_file` 缺 workspace 覆盖机制 ⇒
+  契约测试传 `--workspace 临时目录` 照样写真包账本。
+  ⇒ 本轮收批时实证复现（回归跑批期间生成 `theme=T4` 的污染批次 `b1793832802`，
+  触发 `stale_batch_close` 拦截）⇒ 已按正规路径 `batch-gc --drop-open` 显式废弃留痕。
+  ⇒ **根治方案（workspace 覆盖机制）仍待 C1-a(R9) 批次处理**。
+- **tag `v3.28.7` 不补打**：包内从未升到 3.28.7（见下节）⇒ 补打会造成「空版本」
+  ⇒ 语义变更直接并入 v3.28.8。
+
+---
+
+## [v3.28.7] - 2026-11-04（settings.json 根因定位到宿主源码 · 删除误判链闭环）
+
+> ⚠ **本版为补记**：v3.28.7 的 3 个提交（`62dce76` / `34fdc5e` / `1763fc0`）当时**从未提过任何
+> version 声明、也未打 tag** ⇒ 包内版本号一直停在 `3.28.6`。
+> ⇒ 「tag v3.28.7 未打」的根因**不是遗忘打 tag，而是包内根本没升到 3.28.7**。
+> ⇒ 本版语义变更直接并入 v3.28.8 发布。
 
 > 依据：`app.asar` 字节级源码核对（`ExpertPluginService` 三处方法）。
 > 性质：**订正性版本** —— 把此前 8 次「settings.json 丢失」的责任归属从
