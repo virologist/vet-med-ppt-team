@@ -340,10 +340,10 @@ segments:
 - id: harness.yaml#loop_a
   file: harness.yaml
   prefix: loop_a
-  key_count: 19
-  keys_sha256: 9d37e3527fdf7296d9b59c84de38f01f09c265e8
+  key_count: 20
+  keys_sha256: cfbe9d7c85e1640b60569811454649504daa0808
   leaf_unused: 0
-  leaf_weak: 18
+  leaf_weak: 19
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。
@@ -582,4 +582,7 @@ segments:
   leaf_weak: 15
   consumer: 脚本
   disposition: 新增键须登记
-  note: 缺陷可修复性三分类（ai/human/ai_unfixable），v3.28.6（B24③）新增。loop_contract.fix_class_table **整块取走**（一次读 fix_class.default + ai_unfixable[] + human[]）⇒ 属块级消费段。`leaf_weak=15` 是因末段键名 type/reason/default 在代码中 0 出现（值被整块取走，路径级证据不可判定）—— 与 `visual-rules.yaml#density` 同款。**新增问题类型必须落到 ai_unfixable 或 human 之一**，否则落缺省 ai（等价于"AI 可修"，会误进 AI 施工清单）。
+  note: 缺陷可修复性三分类（ai/human/ai_unfixable），v3.28.6（B24③）新增。loop_contract.fix_class_table
+    **整块取走**（一次读 fix_class.default + ai_unfixable[] + human[]）⇒ 属块级消费段。`leaf_weak=15`
+    是因末段键名 type/reason/default 在代码中 0 出现（值被整块取走，路径级证据不可判定）—— 与 `visual-rules.yaml#density`
+    同款。**新增问题类型必须落到 ai_unfixable 或 human 之一**，否则落缺省 ai（等价于"AI 可修"，会误进 AI 施工清单）。

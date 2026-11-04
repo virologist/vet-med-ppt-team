@@ -158,7 +158,7 @@ packages/vet-med-ppt-team/
 ├── avatars/                          ← 6 张头像（512×512 PNG, ≤500KB）
 │   ├── team.png                      ← 团队整体头像
 │   ├── <member>.png                  ← 每个成员（含主理人）
-├── settings.json                     ← Team 型必需：{"agent": "<lead-name>"}
+├── (无 settings.json)                ← 宿主 ExpertPluginService 按「单键 agent」判据删除；agent 名由 plugin.json 决定
 ├── README.md                         ← 子包说明（与根 README 不同）
 └── vet-med-ppt-team.zip              ← 一键分发版
 ```
@@ -256,7 +256,7 @@ packages/vet-med-ppt-team/
 
 | 约束 | 原因 | 缓解措施 |
 |------|------|----------|
-| `~/.workbuddy` 目录疑似 OneDrive 同步竞态 | settings.json 已被删过两次 | UPGRADE.md 提供一键恢复命令 |
+| 宿主 `ExpertPluginService` 按「单键 agent」判据删除 settings.json | 已删 8 次 | v3.28.8 起移除该文件，doctor 第 1 项改为反向守卫 |
 | Claude Code 是单 Agent 模式 | TeamCreate/SendMessage 不能在单兵模式生效 | team-lead MD 内嵌"协作机制"指令模拟多角色调度 |
 | Ima 知识库 ID 可能漂移 | mcp 服务端 ID 偶有变更 | 严真奥每次任务开始 ToolSearch 探测 |
 | OneDrive 同名文件覆盖合并 | 备份必须不同前缀而非仅后缀差异 | UPGRADE.md 强调使用 rsync 完整目录同步 |

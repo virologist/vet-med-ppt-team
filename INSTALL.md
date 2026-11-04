@@ -152,7 +152,7 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
     ├── .codebuddy-plugin/plugin.json
     ├── agents/                       ← 5份MD必须都在
     ├── avatars/                      ← 头像可选（仅影响显示）
-    └── settings.json                  ← Team型必需
+    └── （无 settings.json）            ← 宿主会删，勿手工添加（见下方 FAQ）
 ```
 
 ### 步骤
@@ -333,13 +333,21 @@ TMPDIR="$PWD/.tmpprobe" python3 -m pytest scripts/ -q
 
 ### Q: settings.json 反复丢失
 
-**A**: 已知的 OneDrive/CloudStorage 同步竞态问题。`settings.json` 是空目录占位必备文件，建议在 `.gitignore` 中**不忽略**该文件，并提供自动恢复脚本：
+**A**: **不是** OneDrive/CloudStorage 同步竞态（此前 8 次误判为此）。2026-11-04 定位到宿主源码：
+宿主 `ExpertPluginService` 的 `removeGeneratedAgentOverrideFile()`（激活专家时）与
+`removePersistedGeneratedAgentOverrides()`（**宿主启动时**遍历
+`{plugins_root}/marketplaces/*/plugins/*/settings.json`）会删该文件，
+判据 = `readGeneratedAgentOverride()`：「JSON **恰有 1 个键** 且 该键为**非空字符串 `agent`**」
+→ 判定为宿主自己的 agent override 缓存 → `unlink`。
 
-```bash
-# 修复命令
-echo '{"agent": "vet-med-ppt-team-team-lead"}' > \
-     ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team/settings.json
-```
+本包原 `{"agent": "vet-med-ppt-team-team-lead"}` **精确命中**该模式 ⇒ 必然被删。
+
+**正确处置**：**不要恢复该文件**。宿主解析 agent 名走 `plugin.json` 的
+`agentName` / `agents[]` + markdown frontmatter，**从不读 `settings.json`** →
+该文件功能上冗余。2026-11-04 起 `ensure_settings.py` 第 1 项改为**反向守卫**
+（存在即告警，正确态 = 文件不存在）。
+
+若在旧版本上看到它被删，属预期行为，直接 `git rm --cached settings.json` 即可。
 
 ---
 

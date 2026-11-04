@@ -338,6 +338,14 @@ loop_a:
     - "<包>/config"
     - "<包>/references"
     - "<包>/agents"
+    # ── v3.28.7：.learnings/ 纳入白名单（目录级，同 B21/B16 先例）──
+    # 缘由：经验登记目录（LEARNINGS/ERRORS/FEATURE_REQUESTS）是包内 **tracked**
+    #   目录，却不在 scope ⇒ 按纪律登记一条经验就会被 batch-open 判越权拒绝
+    #   ⇒ batch_open/batch_close 两个 trace 事件不落账 ⇒ 事件守卫把
+    #   「工作区有未提交改动」误报成「生产事件未产出」（R9b，体检第 7 项假红）。
+    # 边界：只放开 .learnings/（经验登记目录），不放宽 forbidden_paths
+    #   （工作区课件目录仍绝对禁入）。
+    - "<包>/.learnings"
     # ── B21：vendor/shared-core/ 纳入白名单（目录级，同 test_vendor_core 守卫面）──
     # 缘由：联邦共享件「真源（plugins/shared-core/）↔ vendor 副本」的 sha256 一致
     #   由 tests/test_vendor_core.py 强制（防漂移）；但 vendor 副本不在 scope ⇒

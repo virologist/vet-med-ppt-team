@@ -3,9 +3,16 @@
 """
 ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
 
-背景（2026-09-17 → 2026-10-04 实证）：
-  ① 本专家包的 settings.json 已丢失 5 次。规律：每次修改专家包内文件后，WorkBuddy
-     热重载会吞掉 settings.json。故保留自愈。
+背景（2026-09-17 → 2026-10-04 实证 → 2026-11-04 定位真因）：
+  ① 本专家包的 settings.json 已丢失 5 次。**2026-11-04 定位到宿主源码**：
+     宿主 `ExpertPluginService` 的 `removeGeneratedAgentOverrideFile()`（激活专家时）
+     与 `removePersistedGeneratedAgentOverrides()`（**宿主启动时**）会删该文件，
+     判据 = `readGeneratedAgentOverride()`：「JSON 恰有 1 个键且为非空 agent」
+     → 判为宿主私有缓存 → unlink。本包的 `{"agent": "<team-lead>"}` 精确命中。
+     ⇒ 不是「热重载吞掉」，是**宿主按设计接管**该路径。
+     ⇒ 原「自愈重建」是**与宿主对着干**（重建一次被删一次，git 持续显示 D）。
+     ⇒ 2026-11-04 改为**反向守卫**：正确态 = 文件不存在（agent 名由 plugin.json 决定，
+       宿主从不读 settings.json）。
   ② .claude-plugin/plugin.json 版本曾长期落后 .codebuddy-plugin/plugin.json，
      而 validate_expert.py 只校验后者 —— 单靠官方校验发现不了。
   ③ **2026-10-04 新增两项致命体检**（第二轮诊断 B1/B2）：
@@ -16,7 +23,7 @@ ensure_settings.py — vet-med-ppt-team 专家包 体检 + 自愈器（doctor）
      - 同名 verify_deck.py 在包内出现多份 → "唯一裁判"失效，结论不可比。
 
 因此本脚本从 4 项扩到 7 项（v3.1.0），v3.2.0-batch2 再 +3 项治理自检 = 10 项：
-  1 settings.json 存在且 agent 名与清单一致        → 缺失/损坏则重建【自愈】
+  1 settings.json 不得存在（宿主会删单键 agent 型文件）   → 存在则告警【只读·阻断】2026-11-04 改向
   2 两侧清单版本号一致                            → 漂移则告警【只读】
   3 清单声明的 agent 文件全部存在                 → 缺失则告警【只读】
   4 权威门禁 verify_deck.py 存在                 → 缺失则告警【只读】
@@ -239,23 +246,48 @@ def _load(path):
         return json.load(f)
 
 
-# ── 1. settings.json（自愈）────────────────────────────────
-def heal_settings(expert_dir, agent_name):
+# ── 1. settings.json（2026-11-04 反向守卫）────────────────────────────
+def guard_settings(expert_dir, agent_name):
+    """**不得**存在 settings.json。
+
+    背景（2026-11-04 定位到宿主源码，非工作区事故）：
+      宿主 WorkBuddy/CodeBuddy 的 `ExpertPluginService` 有两处会删该文件：
+        ① `removeGeneratedAgentOverrideFile()` —— 激活专家时调用；
+        ② `removePersistedGeneratedAgentOverrides()` —— **宿主启动时**遍历
+           `{plugins_root}/marketplaces/*/plugins/*/settings.json` 逐个删。
+      两者的判据都是 `readGeneratedAgentOverride(path)`：
+        JSON **恰有 1 个键** 且 该键为**非空字符串 `agent`** → 判定为
+        「宿主自己生成的 agent override 缓存」→ unlink。
+      本包 `{"agent": "<team-lead>"}` **精确命中**该模式 → 必然被删。
+      这解释了本脚本开头记录的「settings.json 已丢失 5 次、每次改包后热重载吞掉」
+      —— 根因是宿主把它当私有缓存，与本包无关。
+
+      宿主解析 agent 名走 `plugin.json` 的 `agentName` / `agents[]` +
+      markdown frontmatter，**从不读 settings.json** → 该文件功能上冗余。
+
+    ⇒ 正确态 = **文件不存在**。存在反而是错（会被宿主删、且 git 持续显示 D
+      → 有被误提交成「删除」的风险）。
+    """
     target = os.path.join(expert_dir, "settings.json")
-    want = {"agent": agent_name}
-    if os.path.exists(target):
-        try:
-            with open(target, encoding="utf-8") as f:
-                if json.load(f) == want:
-                    print(f"[1/{N}] ✓ settings.json 已正确存在（agent={agent_name}）")
-                    return 0
-        except Exception:
-            pass  # 内容损坏 → 重建
-    with open(target, "w", encoding="utf-8") as f:
-        json.dump(want, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    print(f"[1/{N}] ✚ settings.json 已恢复（agent={agent_name}）—— 第 N 次丢失，宿主热重载所致")
-    return 0
+    if not os.path.exists(target):
+        print(f"[1/{N}] ✓ 无 settings.json（正确态：宿主会删单键 agent 型文件）")
+        return 0
+    # 存在 → 判是否命中宿主删除模式
+    reason = ""
+    try:
+        with open(target, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and len(data) == 1 \
+                and isinstance(data.get("agent"), str) and data["agent"].strip():
+            reason = (f"单键 agent={data['agent']!r} —— 命中宿主 ExpertPluginService "
+                      f"删除模式（激活 + 启动各一次）")
+        else:
+            reason = "存在但未命中宿主删除模式 —— 仍建议移除（宿主按同一路径接管）"
+    except Exception as e:
+        reason = f"无法解析为 JSON（{e}）—— 建议移除"
+    print(f"[1/{N}] ⚠ settings.json 不应存在：{reason}")
+    print(f"       修法：删除 {target}（agent 名由 plugin.json 的 agentName/agents[] 决定）")
+    return 1
 
 
 # ── 2. 两侧清单版本一致 ─────────────────────────────────────
@@ -547,7 +579,7 @@ def format_final_conclusion(rc, unverified):
         return lines
     if rc == 0:
         return ["结论：✅ 全部通过，可发布 / 可运行 validate_expert.py"]
-    return ["结论：⚠️ 存在告警，处理后再发布（settings.json 已自愈）"]
+    return ["结论：⚠️ 存在告警，处理后再发布（详见上方各告警项）"]
 
 
 def check_regression(expert_dir):
@@ -4179,7 +4211,7 @@ def main():
         return 1
 
     rc = 0
-    rc |= heal_settings(path, agent_name)
+    rc |= guard_settings(path, agent_name)
     rc |= check_version_parity(path)
     rc |= check_agents(path)
     rc |= check_judge(path)

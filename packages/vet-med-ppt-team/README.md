@@ -64,7 +64,7 @@ vet-med-ppt-team/
 │       │   ├── ppt-producer.md        ← 制作师
 │       │   └── verifier.md            ← 独立验证（闸4 裁判，v3.17.0 起）
 │       ├── avatars/                   ← 6张头像 PNG (512×512)
-│       ├── settings.json              ← Team型必需
+│       ├── (无 settings.json)          ← 宿主会删，见 INSTALL.md FAQ
 │       ├── README.md                  ← 子包说明
 │       └── vet-med-ppt-team.zip       ← 一键打包分发
 └── docs/

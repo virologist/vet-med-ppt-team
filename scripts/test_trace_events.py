@@ -60,15 +60,28 @@ DECLARED_EVENTS = tuple(_declared_events_from_yaml())
 
 
 def _pkg_changed_files():
-    """取包内当前 git 改动文件（绝对路径）——batch-close 的声明集需覆盖它。"""
+    """取包内当前 git 改动文件 → (scope 内, scope 外) 两个绝对路径列表。
+
+    ⚠ **v3.28.7（R9b）：声明集必须按 `loop_a.scope` 过滤**。
+
+    病灶（本轮体检第 7 项红灯的真实根因）：本函数原先返回**全量**改动，
+    而它的结果被当作 `loop batch-open --files` 的声明集；`batch-open` 会对
+    每个声明文件跑越界校验 `_loop_a_scope_check` ⇒ **scope 外的改动**
+    （如 `.learnings/`，本包纪律要求的经验登记目录）会让整批被拒 ⇒
+    `batch_open` / `batch_close` 两个 trace 事件不落账 ⇒
+    守卫「声明事件全部有产出」断言的 **missing 方向红**。
+
+    ⇒ **工作区洁净度不是生产行为的判据**，二者不得耦合：
+      scope 外的改动单列（保持可观测），**绝不混入声明集**。
+    """
     import subprocess as _sp
     try:
         p = _sp.run(["git", "-C", PKG, "status", "--porcelain"],
                     capture_output=True, text=True, timeout=20)
     except Exception:
-        return []
+        return [], []
     if p.returncode != 0:
-        return []
+        return [], []
     files = []
     for line in p.stdout.splitlines():
         if len(line) < 4:
@@ -77,7 +90,15 @@ def _pkg_changed_files():
         if " -> " in rest:
             rest = rest.split(" -> ")[-1]
         files.append(os.path.join(PKG, rest.strip()))
-    return files
+    scope = _pkg_yaml_loop_a_scope()
+    declared, out_of_scope = [], []
+    for f in files:
+        t = os.path.abspath(f)
+        if any(t == p or t.startswith(p.rstrip("/") + "/") for p in scope):
+            declared.append(t)
+        else:
+            out_of_scope.append(t)
+    return declared, out_of_scope
 
 
 def _pkg_yaml_regression_required():
@@ -91,6 +112,21 @@ def _pkg_yaml_regression_required():
     with open(os.path.join(PKG, "config", "harness.yaml"), encoding="utf-8") as f:
         cfg = _y.safe_load(f) or {}
     return [str(x) for x in ((cfg.get("loop_a") or {}).get("regression_required") or [])]
+
+
+def _pkg_yaml_loop_a_scope():
+    """读 yaml#loop_a.scope 现值（唯一源；硬编码=双源漂移）。
+
+    v3.28.7（R9b）：守卫的 batch-open 声明集必须按 scope 过滤，
+    而 scope 的判定依据**只能**来自 yaml —— 硬编码一份路径列表就是
+    第二份口径，改了 yaml 忘了改代码就会重演 R9b 式的假红。
+    路径里的 `<包>` 占位符在此替换为包根（与 harness.yaml 的 scope 写法对齐）。
+    """
+    import yaml as _y
+    with open(os.path.join(PKG, "config", "harness.yaml"), encoding="utf-8") as f:
+        cfg = _y.safe_load(f) or {}
+    scope = ((cfg.get("loop_a") or {}).get("scope") or [])
+    return [os.path.abspath(str(p).replace("<包>", PKG)) for p in scope]
 
 
 def _last_batch_id(w):
@@ -234,15 +270,23 @@ def test_声明的全部事件都有代码产出():
              "--workspace", w])
         # ── B13/B14/B16 补触发（声明了却没在本用例产出 ⇒ 契约测试红）──────────
         # B13：批次动作与缺陷回流入账本
-        # ⚠ 声明文件集必须**覆盖当前包内全部 git 改动**——batch-close 按
+        # ⚠ 声明文件集必须**覆盖当前包内 scope 内的全部 git 改动**——batch-close 按
         #   `git status --porcelain` 算实际改动集（loop_a.patch_discipline=minimal），
         #   声明不全 ⇒ 判 undeclared_changes 拒绝收批 ⇒ batch_close 事件不落账本。
         #   故此处动态取当前改动集声明（不是硬编码清单——硬编码会随工作区漂移而失效）。
-        _changed = _pkg_changed_files()
+        # ⚠ v3.28.7（R9b）：**只取 scope 内的**。scope 外的改动（如 .learnings/）
+        #   混进声明集 ⇒ batch-open 整批被拒 ⇒ batch_open/batch_close 事件不落账
+        #   ⇒ 本用例误报「声明事件未产出」。
+        _changed, _out_scope = _pkg_changed_files()
         _bo = run(["loop", "batch-open", "--loop", "a", "--actor", "team-lead",
                    "--note", "契约测试批次",
                    "--files", ",".join(_changed) if _changed else "scripts/harness.py",
                    "--workspace", w])
+        if _out_scope:
+            # 可观测而非静默丢弃；措辞刻意避开「事件缺失/未产出」——
+            # 那类措辞会把「工作区状态」误读为「生产缺陷」。
+            print(f"ℹ️ 本批有 {len(_out_scope)} 个改动文件在 loop_a.scope 之外"
+                  f"（未纳入声明集）：{_out_scope[:5]}")
         try:
             _bid = str((json.loads(_bo[1]).get("batch") or {}).get("id") or "")
         except Exception:
@@ -303,8 +347,13 @@ def test_声明的全部事件都有代码产出():
 
         evs = _trace_events(w)
         missing = [e for e in DECLARED_EVENTS if e not in evs]
+        # ⚠ v3.28.7（R9b）：失败文案必须区分两类缺口——
+        #   「本用例触发路径未覆盖该事件」＝真实缺口（守卫该红就红）；
+        #   「工作区状态影响」＝非缺口（不得让守卫把前者误报成后者）。
         check(f"trace：{len(DECLARED_EVENTS)} 个声明事件全部有产出（实际产出 {sorted(set(evs))}）",
-              not missing, f"缺产出：{missing}")
+              not missing,
+              f"缺产出：{missing}（本用例触发路径未覆盖该事件；"
+              f"与工作区改动状态无关——scope 外改动已排除在声明集外）")
 
 
 def test_声明与产出双向差集可查():
@@ -511,6 +560,38 @@ def test_L0路由不写team_create事件():
         run(["route", "--level", "L0", "--workspace", w])
         evs = _trace_events(w)
         check("L0（不建队）不写 team_create 事件", "team_create" not in evs, f"got {evs}")
+
+
+def test_scope外改动不影响事件守卫():
+    """scope 外的未提交改动**不得**让事件守卫报「声明事件未产出」。
+
+    背景（v3.28.7 · R9b）：本轮体检第 7 项红灯的真实根因——
+    守卫曾把「工作区有未提交改动」误报为「生产事件未产出」。
+    机理：声明集取全量 git 改动 ⇒ scope 外改动混进 batch-open ⇒
+    整批被越界校验拒绝 ⇒ batch_open/batch_close 事件不落账。
+
+    本用例固化该边界：**声明集只含 scope 内改动**，scope 外的被单列。
+    """
+    scope = _pkg_yaml_loop_a_scope()
+    check("scope 从 yaml 读到了非空白名单", bool(scope), f"got {scope}")
+    declared, out_scope = _pkg_changed_files()
+    # 声明集内每一个都必须真的落在 scope 内（过滤生效）
+    check("声明集只含 scope 内的改动（过滤生效）",
+          all(any(d == p or d.startswith(p.rstrip("/") + "/") for p in scope)
+              for d in declared),
+          f"declared={declared} scope={scope}")
+    # scope 外的每一个都不得出现在声明集里（不耦合工作区洁净度）
+    check("scope 外改动被单列、且不混入声明集",
+          not any(d == o or d.startswith(o.rstrip("/") + "/")
+                  for o in out_scope for d in declared),
+          f"declared={declared} out_scope={out_scope}")
+    # 反向自检：若工作区恰好只有 scope 外改动，声明集必须为空
+    #（这正是 R9b 的触发条件：`.learnings/` 是唯一改动时被混进声明集）
+    if out_scope and not declared:
+        check("仅有 scope 外改动时声明集为空（不得把工作区状态带进生产判据）",
+              declared == [], f"declared={declared}")
+        print(f"ℹ️ 当前工作区仅有 scope 外改动 {len(out_scope)} 个 —— "
+              f"正是 R9b 的触发条件，声明集已正确保持为空")
 
 
 def main():

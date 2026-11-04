@@ -241,7 +241,7 @@ _ROOT = "<PKG>"
 _WRITE_ATTRS = frozenset({"write_text", "write_bytes", "unlink", "rmdir"})
 
 #: 违规写盘目标：**包内 config/ 下的路径**。
-#: ⚠ 只禁 `config/`：`settings.json`（体检自愈目标）与临时目录不在此列。
+#: ⚠ 只禁 `config/`：`settings.json`（宿主会删，本包已移除）与临时目录不在此列。
 _VIOLATION_ROOT = "config"
 
 

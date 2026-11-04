@@ -6,6 +6,47 @@
 
 ---
 
+## [Unreleased] - 2026-11-04（settings.json 根因定位到宿主源码 · 删除误判链闭环）
+
+> 依据：`app.asar` 字节级源码核对（`ExpertPluginService` 三处方法）。
+> 性质：**订正性版本** —— 把此前 8 次「settings.json 丢失」的责任归属从
+> 「宿主热重载 / OneDrive 同步竞态（误判）」更正为「宿主 `ExpertPluginService` 主动删除」，
+> 并把「事后恢复」策略改为「事前反向守卫」。
+
+### 根因（源码级证据，非推测）
+
+- `readGeneratedAgentOverride(path)` 判据：
+  JSON **恰有 1 个键** 且该键为**非空字符串 `agent`** ⇒ 判定为「宿主私有 agent override 缓存」。
+- `removeGeneratedAgentOverrideFile(path)`：命中即 `unlink` ⇒ **激活专家时**删除。
+- `removePersistedGeneratedAgentOverrides()`：宿主**启动时**遍历
+  `{plugins_root}/marketplaces/*/plugins/*/settings.json` 逐个删除。
+- 宿主**只有删除路径、没有任何写入路径**（全模块唯一 `writeFile` 写的是 `expertBundleMap`）。
+- 宿主解析 agent 名走 `plugin.json` 的 `agentName` / `teamInfo.leadAgent` / `agents[]`
+  + markdown frontmatter ⇒ **从不读** `settings.json`。
+
+### Changed
+
+- **移除包内 `settings.json`（根 + `packages/vet-med-ppt-team/` 嵌套镜像共 2 份）**：
+  该文件对宿主功能上冗余，且是宿主删除判据的唯一命中面 ⇒ 移除即根治。
+- **`scripts/ensure_settings.py` 第 1 项由「自愈重建」改为「反向守卫」**：
+  `heal_settings()` → `guard_settings()`；文件**存在即告警并阻断**（rc=1），
+  缺失为**正确态**（打印 `✓ 无 settings.json`）。原先的自愈器会重建文件 → 被宿主再删 → 无限循环。
+- **`scripts/mirror_sync.py` / `scripts/test_pkg_isolation.py` 注释订正**：
+  删除「体检第 1 项自愈」表述，改为「根因是宿主 `ExpertPluginService` 删除该文件」。
+
+### Fixed（订正此前误判）
+
+- **`INSTALL.md` FAQ「settings.json 反复丢失」**：根因从「OneDrive 同步竞态 / 宿主热重载」
+  更正为「宿主 `ExpertPluginService` 按「单键 agent」判据主动删除」，并明确
+  **不要恢复该文件**（旧版本的 `git checkout -- settings.json` 恢复指令已作废）。
+- **`INSTALL.md` 安装目录树 / `README.md` / `docs/architecture.md`**：
+  `settings.json ← Team型必需` → `（无 settings.json）← 宿主会删`。
+- **`UPGRADE.md` 开头误判段**：原写「OneDrive 同步竞态导致」→ 更正为宿主机制。
+- **`CHANGELOG.md` v1.5.1/v1.5.2 的历史「Fixed」段保留原文**（历史记录不可篡改），
+  但在本文档顶部以「订正性版本」形式给出正确归因。
+
+---
+
 ## [v3.28.6] - 2026-11-03（Loop A 第五轮生产实证诊断：B23+B24+B25 全做）
 
 > 依据：第五轮裁定「B23+B24+B25 全做」。诊断报告落盘

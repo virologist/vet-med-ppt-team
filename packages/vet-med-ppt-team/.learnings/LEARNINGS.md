@@ -304,3 +304,283 @@ v3.25.0 实测：`scripts/*.py` 中**无**对应工具层实现
 **已验证有效性**：v3.25.0 取证中，成员正是靠双工具复核避免了一次误报。
 
 ---
+
+## [LRN-20261104-001] correction
+
+**Logged**: 2026-11-04T11:40:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: config
+
+### Summary
+
+「**守卫断言了错误的事实**」比「没有守卫」更危险——它把一个已知错误焊死成不可证伪的公理。
+本轮实测：`scripts/test_orchestration_v2.py` T2 断言 `harness.yaml#stages.1.parallel` 为真
+（闸2 并行），而 `references/sop-stages.md#闸2 §1` 明确写「**串行**（v3.17.0 批次 B 修正），
+理由是苏学法的二八难点清单依赖严真奥证据包里的『易误解』标注，存在真实数据依赖，
+边界并不互斥」，`agents/vet-med-ppt-team-team-lead.md:198` 也承认「闸 2 实为**串行**」。
+⇒ 真值在 yaml 一侧、事实在一侧、守卫站在了事实的反面。
+
+### Why It Matters
+
+- 守卫的价值来自「它代表事实」；一旦它代表的是**决策**（当时的并行决策），
+  后续修正就必须**同时改代码和守卫**，任何一处漏改都会把修正变成红灯——
+  于是修正被成本阻挡，错误被固化。
+- 本例的后果是**双重伤害**：① 调度指令（并行）与真实数据依赖（串行）相反，
+  必然多一轮往返；② 要改正必须先改 `test_orchestration_v2`，
+  而改测试在「回归必须全绿」的收批门禁下会被误判为「改测试骗绿灯」。
+
+### Suggested Fix
+
+1. **守卫断言须区分两类**：`事实型`（FSOT 类唯一源的值，如版本号、键集合）
+   vs `决策型`（可被裁定推翻的编排选择）。决策型守卫的断言文案须自带来源，
+   如「本断言代表 v3.x 的编排决策，非事实；改决策时**连同本断言一起改**」。
+2. **新增「真值三面一致性」巡检**：对每个带 `parallel` / `order` 的编排字段，
+   同时比对 ① yaml 真源 ② SOP 叙述 ③ 守卫断言方向；
+   三者不一致即判红，并指出**哪一面是孤岛**。
+3. 本例具体修法（C2 批次）：`stages.1.parallel: no` + 新增
+   `depends_on_members: [dvm-content-expert]`（成员级顺序依赖成为一等公民），
+   同时把 T2 断言方向翻转为「闸2 应串行且顺序为 dvm → pedagogy」。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/test_orchestration_v2.py, config/harness.yaml, references/sop-stages.md, agents/vet-med-ppt-team-team-lead.md
+- Tags: 守卫, 断言方向, 真值分裂, 编排决策, 固化错误
+
+---
+
+## [LRN-20261104-002] insight
+
+**Logged**: 2026-11-04T11:45:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: observability
+
+### Summary
+
+「**声明面 ↔ 生产流量**」与「**声明面 ↔ 声明面**」是两件完全不同的事，
+而本包把后者当成了前者。`config/harness.yaml#observability.trace_events`
+↔ `scripts/harness.py#TRACE_EVENTS_DECLARED` 的双向对账（B19）只保证
+**两份手工声明互相对齐**，完全不涉及生产流量是否落在声明面内。
+
+本轮实测（真实课件首跑 `T-xuexue-20261103`，工作区 114 事件 / 22 类）：
+- **4 类生产事件逃逸**：`insight_carrier_init`（×44，占全量 38.6%）、
+  `lint_passed`（×3）、`loop_start`（×1）、`agent_spawn`（×2，兼容别名）。
+- **14 类声明事件工作区零产出**（含 `stage_exit`/`member_return`/`verify_tier`/`sediment`）。
+- `insight_carrier_init` 单类占 38.6% 却**在账本里没有名字**——
+  意味着「载体初始化」这一核心机制在 trace 里完全隐形。
+
+### Why It Matters
+
+- 指标体系（`references/intelligence-metrics.md` M1–M4）全部挂在
+  `observability.trace_events` 声明的事件上。声明面与生产面脱节 ⇒
+  **指标的口径是完备的，但采集管道是断的**。
+- 更隐蔽的一层：本轮还实测到包内 trace 893 条的 `detail.task_id`
+  **687/687 全为空串**（`team_create` 全部为空）⇒
+  M1「GATE 停等总次数 / 任务数」的**分母根本不存在**。
+  工作区较新的一批里 `gate`/`preflight` 的 task_id 是**字符串 `'None'`**
+  而非 null ⇒ 聚合时会污染去重。
+- 结论：**「口径定义层完成」不等于「指标可采」**。中间还隔着
+  ① 事件是否真的落在声明面 ② 事件是否带得起归因键 ③ 聚合实现是否接线。
+
+### Suggested Fix
+
+1. **声明面单一化**：取消 `harness.py#TRACE_EVENTS_DECLARED` 这份
+   **第二份手工同步的常量**，改为从 yaml **单向派生**；
+   守卫反向断言「该常量不存在，或等于派生结果」。
+2. **生产对账常态化**：`trace report` 已输出 `undeclared_events` /
+   `declared_events_missing` 差集——升级为**收尾必检**
+   （`trace report --strict`：工作区有未声明事件 ⇒ rc=1 并列出事件名与次数）。
+3. **归因键 fail-closed**：`--task-id` 在闸内改为必填；
+   `detail.task_id` 为空串 ⇒ 事件写入**拒绝并告警**，
+   不静默落账（静默落账 = 账本有洞）。
+4. **别名显式化**：`agent_spawn` 是 `spawn` 的兼容事件，
+   应登记为 `trace_event_aliases` 而非独立事件；
+   `insight_carrier_init`/`lint_passed`/`loop_start` 应正式入声明面。
+5. **指标就绪判据**：每个 M 指标须补「**采集就绪**」判据
+   （事件出现数 ≥ N 且归因键非空率 ≥ X%），未就绪输出「无数据」——
+   遵 `intelligence-metrics.md` 的「无数据 ≠ 0」红线。
+
+### Metadata
+- Source: insight
+- Related Files: config/harness.yaml, scripts/harness.py, scripts/test_batch_gate_b19.py, references/intelligence-metrics.md
+- Tags: 观测性, 事件声明面, 生产流量, 任务归因, 指标可采性, 静态对账盲区
+
+---
+
+## [LRN-20261104-003] gotcha
+
+**Logged**: 2026-11-04T11:50:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: config
+
+### Summary
+
+「**分流器已实现**」≠「**分流表已完整**」。本轮初判时看到
+`harness.py loop worklist` + `loop_contract.fix_class_split` 已存在，
+差点记成「B24③ 已闭环」。实际实测：
+- `config/visual-rules.yaml#fix_class` 只登记 **7 种** issue type
+  （`文字墙`/`课时不达标`/`缺目录页`/`缺题页`/`空白页` → ai_unfixable；
+  `配色混乱`/`主框密度超标` → human）；
+- 而 `scripts/verify_deck.py` 实产 **18 种** type；
+- 差集 11 种（`字号过小`/`文字越界`/`元素重叠`/`缺备注`/5 种图表类）
+  **全部落缺省 `default: ai`**。
+
+⇒ 几何类缺陷（元素重叠/文字越界）被**系统性地判为「AI 可修」**——
+这正是 N2「几何版式三轮证伪」的机制性根因：
+**不是没接线，而是接了但表不完整 + 缺省策略是「猜」。**
+
+### Why It Matters
+
+- `default` 的语义选择决定了「漏判据」时的行为方向。
+  `default: ai` = 「没登记就交给 AI 干」；在几何问题上已被证伪三轮。
+  正确的默认方向是 **fail-closed**：没登记 ⇒ 落人工挂账区并标 `unclassified`，
+  **宁可不修，不可乱修**。
+- 同型陷阱在本包还有两处：
+  ① 闸1 冻结清单文档写「六项」而 yaml 实为 9 项；
+  ② `TEAMS_TOPOLOGY.md` 写「闸2 串行」而 yaml 写并行，且该文件
+  **不在 `test_arch_drift` 的镜像对账清单内**（本轮 grep 确认零命中）。
+  ⇒ 「查了没接线」与「接了但不全」要分开验，**后者更难发现**。
+
+### Suggested Fix
+
+1. **登记表完备性守卫**：`verify_deck.py` 产出的 type 全集
+   ⊆ `fix_class` 登记表 type 全集——差集非空即判红
+   （防「新增判据时忘记登记」）。
+2. **缺省改 fail-closed**：`default` 从 `ai` 改为「落人工挂账区 + 标
+   `unclassified`」；分流器输出**第 4 类** `unclassified`。
+3. **清单项数守卫**：凡文档里出现「N 项清单」的表述，
+   该 N 必须与 yaml 实际项数一致——纳入 `test_arch_drift` 镜像机制。
+4. **镜像覆盖面盘点**：`references/` 与 `docs/` 下所有含编排事实的文件
+   须逐个确认「在镜像对账清单内 or 明确声明为自由文本」——
+   当前 `TEAMS_TOPOLOGY.md` 属**未声明的第三份编排事实源**。
+
+### Metadata
+- Source: insight
+- Related Files: config/visual-rules.yaml, scripts/verify_deck.py, scripts/loop_contract.py, scripts/harness.py, config/harness.yaml, TEAMS_TOPOLOGY.md
+- Tags: 分流表完备性, fail-closed, 缺省策略, 项数漂移, 第三事实源
+
+---
+
+## [LRN-20261104-004] correction
+
+**Logged**: 2026-11-04T12:20:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: scripts
+
+### Summary
+
+**守卫把「合法操作」误判为「生产缺陷」——比守卫漏判更危险，因为它会训练人忽略守卫。**
+
+本轮体检第 7 项报「9/56 个套件不通过」，`test_trace_events` 首跑绿、
+后续恒红。根因**不是环境问题**（此前误判为 broker 限制），
+而是一条**结构性冲突**：
+
+- `scripts/test_trace_events.py` 用 `_pkg_changed_files()`
+  （= 包内 `git status --porcelain` 全量）当 `loop batch-open` 的
+  **声明文件集**；
+- `batch-open` 对每个声明文件跑 `_loop_a_scope_check`，
+  而 `loop_a.scope` 白名单只有
+  `scripts` / `config` / `references` / `agents` / `vendor/shared-core`
+  + 6 个单文件——**`.learnings/` 不在其中**，
+  尽管它是包内 **tracked 目录**（`git log` 有 3 次提交）；
+- ⇒ 只要 `.learnings/LEARNINGS.md` 有任何未提交改动，
+  `batch-open` 必返 rc=1 ⇒ `batch_open` / `batch_close` 两个事件
+  **不落账** ⇒ 守卫「21 个声明事件全部有产出」断言的
+  **missing 方向红**。
+
+**可复现证据**：
+1. 写入 3 条 `.learnings` 条目后跑守卫 → `通过 38 / 失败 1`；
+2. `git stash` 掉该改动 → `通过 39 / 失败 0`（全绿）；
+3. `git stash pop` → 立刻复红。
+
+### Why It Matters
+
+- **守卫噪声化 = 守卫失效**。登记一条经验是本包**纪律要求**的正常动作，
+  却让体检门禁必红 ⇒ 人会学会「红灯是常态，可以先跳过」⇒
+  守卫的边际价值归零。
+- **淹没效应**：真实生产缺陷若恰好落在 `batch_open` 事件上，
+  也会被这条误报**一起淹没**——**误报比漏报更贵**，
+  因为它消耗的是「相信守卫」这份信用额度。
+- **它把「工作区状态」当成了「生产行为」**：守卫测的应是
+  *生产代码在给定触发路径下是否产出声明事件*，
+  而非 *当前 git 工作区是否干净*。
+  二者本无因果关系，却因共用 `batch-open` 的声明集而耦合到了一起。
+- **与 [LRN-20261104-001] 同型**：「守卫断言了错误的事实比没有守卫更危险」。
+  001 是断言了错误**口径**（伪并行），004 是断言了错误**状态**
+  （工作区洁净度）——**两者都是把「可变量」写成了「守卫前提」**。
+
+### Suggested Fix
+
+1. **`loop_a.scope` 补入 `<包>/.learnings`**：它是包内 tracked 目录，
+   本就在包内容之内，此前漏登记是**配置缺陷**。
+2. **守卫声明集按 scope 过滤**：`test_trace_events` 的 batch-open
+   声明集只取 scope 内的改动；scope 外的改动走
+   「本批未声明/不可声明」独立分支，**不得混进 batch-open**。
+3. **断言方向修正**：从「声明事件必须全部产出」改为
+   「声明事件在**本用例所声明的触发路径**下产出」——
+   不得把「工作区有未提交改动」报成「生产事件缺失」。
+4. **固化回归**：新增用例「`.learnings/LEARNINGS.md` 处于修改态时，
+   守卫仍 `通过 39 / 失败 0`」——**把这次的踩坑变成不可复现**。
+5. **通用巡检**：凡守卫以「工作区/仓库状态」为输入的，
+   一律检查它是否被当成了「生产行为判据」。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/test_trace_events.py, scripts/harness.py, scripts/loop_contract.py, config/harness.yaml, .learnings/LEARNINGS.md
+- Tags: 守卫噪声化, 误报淹没, scope白名单, 工作区状态耦合, 声明集污染, 经验登记冲突
+
+---
+
+## [LRN-20261104-005] gotcha/medium · 改已登记的 config 段，必然触发免检区登记表连带刷新
+
+### 现象
+C0 批次改动 1 往 `config/harness.yaml` 的 `loop_a.scope` 加了一项（`.learnings`），
+回归跑到 `test_dead_config_disposition` 报 **`FAILED (failures=2)`**：
+- `test_T9_registry_segments_match_live` —— 「键集合已变（登记 9d37e352 ≠ 实时 cfbe9d7c）」
+- `test_T39_backward_compatible_old_scheme_registry_still_passes`
+
+### 根因
+`references/inspection-zones.yaml` 的「免检区登记表」对每个已登记段存了**三个机算字段**：
+`keys_sha256`（叶子路径集合摘要）、`key_count`（同口径键数）、`leaf_weak`（弱证据数）。
+⚠ 口径是**叶子路径**（`ensure_settings.segment_key_count` / `segments_digest`），
+**不是顶层键数** —— 所以 `loop_a` 顶层仍是 9 个键，但登记的 `key_count` 从 19 变 20。
+
+⇒ **改 `harness.yaml` 里任何已被登记的段（含其子段），就必须连带刷新这三个字段**，
+否则守卫必红。而这类红**长得像缺陷，其实不是**——是登记表陈旧。
+
+### 实证
+```
+$ python3 scripts/sync_zone_registry.py          # 官方刷新器，dry-run
+段总数 57 | 已对齐 56 | 需刷新 1 | 跳过(无实时对应) 0
+  ↻ harness.yaml#loop_a: keys_sha256 9d37e3527fdf → cfbe9d7c85e1 | key_count 19 → 20
+```
+⇒ **恰好只有这 1 段需刷新**，其余 56 段全对齐 ⇒ 唯一变化源就是本次那一项。
+刷新后复跑 `test_dead_config_disposition.py` → **36/36 OK**。
+
+### 为什么值得单独记一条
+1. **「守卫红了」的第一反应不该是「我改错了」**——也可能是「登记表陈旧」。
+   判别方法：跑 `sync_zone_registry.py`（dry-run），看**需刷新段数**：
+   恰好 1 段且该段正是我改的 ⇒ 连带刷新；多段 ⇒ 真改错了。
+2. **这是「零遗漏」类教训的第 7 次触发**（前 6 次见 2026-11-03 记忆日志）。
+   同一类联动反复出现 ⇒ 必须固化成流程动作，不能靠记忆。
+3. **连带刷新会撑破 Loop A 声明集**：本例实际改动 4 个文件而声明集只有 2 个，
+   按 `patch_discipline=minimal`（`extra = set(actual) - set(declared)`）收批必红。
+   ⇒ **开批时必须把「连带会改的文件」一并写进 `--files`**，
+   或在收批前发现缺口时走 `batch-gc --drop-open` 废弃重开（留痕可溯），
+   **不得手工改 state 绕过纪律**。
+
+### Suggested Fix
+1. 改 `harness.yaml` 已登记段前，先跑 `sync_zone_registry.py`（dry-run）**预估连带范围**。
+2. 把连带会改的文件**提前写进 batch-open 的 `--files`**。
+3. 收批前若发现声明集不全 → `batch-gc --drop-open` 废弃 + 重开，**不手工改 state**。
+4. 「守卫红了」先跑 dry-run 判别「连带刷新」vs「真缺陷」，再决定修哪边。
+
+### Metadata
+- Source: gotcha
+- Related Files: references/inspection-zones.yaml, scripts/sync_zone_registry.py, scripts/test_dead_config_disposition.py, scripts/ensure_settings.py, config/harness.yaml
+- Tags: 免检区登记表, 连带刷新, keys_sha256, key_count, leaf_weak, 声明集缺口, patch_discipline, 零遗漏第7次
+
+---
