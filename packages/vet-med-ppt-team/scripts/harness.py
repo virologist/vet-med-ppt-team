@@ -5455,14 +5455,14 @@ def _git_changed_files(scope=None):
       集合差集把"确实声明过的文件"也算成越界改动（实测即踩到：声明
       scripts/harness.py 却被判 undeclared_changes）——假阳性与漏判同样致命。
 
-    ⚠ v3.28.7（R9b 连带修正·2026-11-04）：**scope 过滤必须在这里做**。
-      病灶：`batch-open` 对声明文件逐个跑 `_loop_a_scope_check`（scope 外 ⇒ 整批被拒），
-      但本函数原先返回**全量**改动（含 scope 外）⇒ 声明集（scope 内）
-      与实际集（全量）口径不对称 ⇒ scope 外的任何工作区改动（如镜像副本
-      `packages/`、`.learnings/`）恒被判 `undeclared_changes` ⇒ `batch_close`
-      事件不落账 ⇒ 事件守卫把「工作区有未提交改动」误报成「生产事件未产出」。
-      ⇒ 三处口径必须一致：`batch-open` 校验、测试侧声明集、本函数实际集。
-      传 `scope`（已解析的绝对路径列表）即启用过滤；None ⇒ 不过滤（保持旧行为）。
+    ⚠ v3.28.7（2026-11-04 两态区分修正 · LRN-20261104-006）：
+      **本函数不过滤 scope**（全量返回），两态区分下移到
+      `loop_contract.patch_discipline_check`：
+        · scope 内未声明 ⇒ 硬拒（保住最小补丁纪律）
+        · scope 外超出   ⇒ note 不阻断（保住「工作区洁净度 ≠ 生产判据」）
+      ⚠ 上一版曾在此处按 scope 过滤 ⇒ scope 内的未声明改动也不再被检出
+        ⇒ `patch_discipline=minimal` 实质失效（实测 42/0 假绿）。
+        保留 `scope` 形参仅为**接口兼容**（调用方仍可传，但不再影响返回集）。
     """
     out, why = _git_pkg(["status", "--porcelain"])
     if out is None:
@@ -5477,10 +5477,7 @@ def _git_changed_files(scope=None):
             changed += [old.strip().strip('"'), new.strip().strip('"')]
         else:
             changed.append(rest.strip().strip('"'))
-    paths = [os.path.abspath(os.path.join(PKG, c)) for c in changed if c]
-    if scope:
-        paths = [p for p in paths if _in_scope_dirs(p, scope)]
-    return paths, ""
+    return [os.path.abspath(os.path.join(PKG, c)) for c in changed if c], ""
 
 
 def _resolve_declared_file(f):
@@ -5915,19 +5912,20 @@ def _loop_batch(args, cfg, w, actor=""):
         return 2
 
     # ③ 最小补丁纪律（patch_discipline）：实际改动集合 ⊆ 声明集合
-    # ⚠ v3.28.7（R9b 连带修正）：实际集与声明集**同口径**——都只取 scope 内。
-    #   声明集在 batch-open 时已被 `_loop_a_scope_check` 按 scope 过滤；
-    #   若实际集不过滤，scope 外的任何工作区改动（镜像副本 packages/ 等）
-    #   恒被判 undeclared_changes ⇒ batch_close 事件不落账（假红）。
+    # ⚠ v3.28.7（2026-11-04 两态区分 · LRN-20261104-006）：
+    #   `actual` 取**全量**（不过滤），两态区分交给 `patch_discipline_check`：
+    #     · scope 内未声明 ⇒ 硬拒（保住最小补丁纪律）
+    #     · scope 外超出   ⇒ note 不阻断（保住「工作区洁净度 ≠ 生产判据」）
+    #   ⚠ 上一版在此处按 scope 过滤 ⇒ scope 内未声明改动漏检 ⇒ 纪律实质失效。
     _scope_abs = [_resolve_placeholders(p, w) for p in ((cfg.get("loop_a", {}) or {}).get("scope") or [])]
-    actual, why = _git_changed_files(scope=_scope_abs)
+    actual, why = _git_changed_files()
     if actual is None:
         print(f"⚠ 实际改动集合不可得：{why}——**未做**改动集合比对，"
               f"不得据此宣称已遵守最小补丁纪律", file=sys.stderr)
         notes_all.append(f"实际改动集合不可得（{why}）——改动集合比对**未执行**")
     notes = []
     okp, problems, declared = lc.patch_discipline_check(
-        cfg, b.get("declared_files"), actual, notes)
+        cfg, b.get("declared_files"), actual, notes, scope=_scope_abs)
     notes_all.extend(notes)
     _lc_note(notes)
     if not okp:

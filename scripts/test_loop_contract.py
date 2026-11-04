@@ -1360,5 +1360,97 @@ class TestYamlUntouched(_Base):
                          "config/harness.yaml 内容被改动——反例必须只改内存副本")
 
 
+# ══════════════ v3.28.7：最小补丁纪律两态区分（LRN-20261104-006）══════════════
+class TestPatchDisciplineTwoState(_Base):
+    """`patch_discipline_check` 的 scope 两态区分必须**同时**成立。
+
+    病灶（2026-11-04 实测）：上一版修法把 `actual` 整体按 scope 过滤
+    ⇒ scope 内的未声明改动**也不再被检出** ⇒ `patch_discipline=minimal`
+    实质失效（放一个未声明文件到 scripts/ 仍 42/0 绿）。
+
+    ⇒ **成对验收**（只验「解耦成功」是半个验收）：
+        · scope 内未声明 ⇒ 硬拒（保住最小补丁纪律）
+        · scope 外超出   ⇒ 不阻断（保住「工作区洁净度 ≠ 生产判据」）
+
+    反向例纪律：必须**双向验证**——破坏实现（把两态区分退化成一刀切过滤）
+    ⇒ 原本会红的断言必须翻转，否则本组断言是恒真的。
+    """
+
+    PKG = "/PKG"
+    SCOPE = ["/PKG/scripts", "/PKG/config"]
+    DECLARED = ["/PKG/scripts/harness.py"]
+
+    def _cfg(self):
+        return {"loop_a": {"patch_discipline": "minimal"}}
+
+    def _check(self, actual, scope=None):
+        notes = []
+        ok, problems, declared = LC.patch_discipline_check(
+            self._cfg(), self.DECLARED, actual, notes, scope=scope)
+        return ok, problems, notes
+
+    def test_T26_in_scope_undeclared_is_rejected(self):
+        """scope 内未声明改动 ⇒ **必须**硬拒（最小补丁纪律的命门）。"""
+        actual = ["/PKG/scripts/harness.py", "/PKG/scripts/undeclared.py"]
+        ok, problems, _ = self._check(actual, scope=self.SCOPE)
+        self.assertFalse(ok, "scope 内未声明改动未被拒 ⇒ 最小补丁纪律失效")
+        self.assertTrue(any(p[0] == "undeclared_changes" for p in problems),
+                        f"应给出 undeclared_changes，实得 {problems}")
+
+    def test_T27_out_of_scope_extra_does_not_block(self):
+        """scope 外超出声明 ⇒ **不阻断**，但必须留 note（可观测≠静默）。"""
+        actual = ["/PKG/scripts/harness.py", "/PKG/packages/mirror/x.py"]
+        ok, problems, notes = self._check(actual, scope=self.SCOPE)
+        self.assertTrue(ok, f"scope 外超出不应阻断本批收批，实得 problems={problems}")
+        self.assertFalse(any(p[0] == "undeclared_changes" for p in problems),
+                         "scope 外超出不应产生硬拒问题")
+        self.assertTrue(any("scope 之外" in n for n in notes),
+                        f"scope 外超出必须留 note（可观测），实得 notes={notes}")
+
+    def test_T28_all_declared_passes(self):
+        """全部已声明 ⇒ 通过（两态区分不得误伤正常批次）。"""
+        ok, problems, _ = self._check(["/PKG/scripts/harness.py"], scope=self.SCOPE)
+        self.assertTrue(ok, f"全声明批次被拒：{problems}")
+
+    def test_T29_scope_none_keeps_legacy_hard_reject(self):
+        """scope=None ⇒ 旧行为（超出即硬拒）——向后兼容不得破。"""
+        actual = ["/PKG/scripts/harness.py", "/PKG/other/x.py"]
+        ok, problems, _ = self._check(actual, scope=None)
+        self.assertFalse(ok, "scope=None 时应回到旧行为（超出即硬拒）")
+        self.assertTrue(any(p[0] == "undeclared_changes" for p in problems),
+                        f"scope=None 应产生 undeclared_changes，实得 {problems}")
+
+    def test_T30_reverse_break_two_state_into_one_size_filter(self):
+        """反向例：把两态区分破坏成「一刀切过滤」⇒ T26 必须翻转（变绿）。
+
+        证明 T26 不是恒真断言——它真的在测「scope 内未声明 ⇒ 硬拒」。
+        """
+        with open(LC_PATH, encoding="utf-8") as f:
+            src = f.read()
+        # 破坏实现：让 scope 内外的超出都一律被过滤掉（退化为上一版的过度放宽）
+        broken = src.replace(
+            "in_scope_extra = [p for p in extra if _in_scope(p, scope)]",
+            "in_scope_extra = []  # BROKEN: 一刀切过滤", 1)
+        self.assertNotEqual(broken, src, "反例构造失败：未命中实现锚点")
+        self.assertIn("in_scope_extra = []  # BROKEN", broken)
+
+        # 在内存副本上验证行为翻转
+        import types
+        broken_mod = types.ModuleType("lc_broken")
+        broken_mod.__dict__["__file__"] = LC_PATH
+        exec(compile(broken, LC_PATH, "exec"), broken_mod.__dict__)
+        notes = []
+        ok, problems, _ = broken_mod.patch_discipline_check(
+            self._cfg(), self.DECLARED,
+            ["/PKG/scripts/harness.py", "/PKG/scripts/undeclared.py"],
+            notes, scope=self.SCOPE)
+        self.assertTrue(ok, "破坏实现后 T26 场景应转为通过（反例翻转）——"
+                            "若仍为红，说明 T26 是恒真断言")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -296,7 +296,7 @@ def regression_check(cfg, ran, notes=None):
     return (not missing), missing, required, extra
 
 
-def patch_discipline_check(cfg, declared, actual, notes=None):
+def patch_discipline_check(cfg, declared, actual, notes=None, scope=None):
     """最小补丁纪律（loop_a.patch_discipline）的可判定部分。
 
     判的是什么：**改动集合 ⊆ 声明集合**（说改 scripts/x.py 就不能顺手改 config/y.yaml）。
@@ -304,6 +304,16 @@ def patch_discipline_check(cfg, declared, actual, notes=None):
 
     actual 为 None 表示"拿不到实际改动集合"（如包目录不是 git 仓库 / 无 git），
     此时**不静默通过**：返回 ok=True 但 notes 里写明未比对，由调用方显式提示用户。
+
+    ⚠ v3.28.7（2026-11-04 两态区分修正 · LRN-20261104-006）：
+      **不做一刀切 scope 过滤**。病灶：上一版修法把 `actual` 整体按 scope 过滤
+      ⇒ scope 内的未声明改动**也不再被检出** ⇒ `patch_discipline=minimal`
+      实质失效（实测：包内 scripts/ 下放一个未声明文件，守卫仍 42/0 绿）。
+      ⇒ 正确修法是**两态区分**：
+        · scope 内未声明 ⇒ **硬拒**（undeclared_changes）——保住最小补丁纪律
+        · scope 外超出   ⇒ **降级为 note**（不阻断，只提示）——保住「工作区洁净度
+          与生产判据解耦」
+      ⇒ `scope` 传已解析的绝对路径列表；None ⇒ 全量超出都算硬拒（旧行为）。
     """
     notes = notes if notes is not None else []
     discipline = loop_a_batch_cfg(cfg, notes)["patch_discipline"]
@@ -324,10 +334,33 @@ def patch_discipline_check(cfg, declared, actual, notes=None):
     extra = sorted(set(actual) - set(declared))
     problems = []
     if extra:
-        problems.append(("undeclared_changes",
-                         f"本批实际改动 {len(actual)} 个文件，其中 {len(extra)} 个超出声明范围："
-                         f"{extra[:10]}——违反最小补丁纪律（loop_a.patch_discipline=minimal）"))
+        if scope:
+            in_scope_extra = [p for p in extra if _in_scope(p, scope)]
+            out_scope_extra = [p for p in extra if not _in_scope(p, scope)]
+            if in_scope_extra:
+                problems.append(("undeclared_changes",
+                                 f"本批实际改动 {len(actual)} 个文件，其中 {len(in_scope_extra)} 个"
+                                 f"**在 loop_a.scope 内**但未声明：{in_scope_extra[:10]}"
+                                 f"——违反最小补丁纪律（loop_a.patch_discipline=minimal）"
+                                 f"；scope 内未声明 ⇒ 硬拒"))
+            if out_scope_extra:
+                notes.append(f"ℹ 另有 {len(out_scope_extra)} 个改动在 loop_a.scope 之外"
+                             f"（未纳入声明集，不阻断本批收批）：{out_scope_extra[:10]}")
+        else:
+            problems.append(("undeclared_changes",
+                             f"本批实际改动 {len(actual)} 个文件，其中 {len(extra)} 个超出声明范围："
+                             f"{extra[:10]}——违反最小补丁纪律（loop_a.patch_discipline=minimal）"))
     return (not problems), problems, declared
+
+
+def _in_scope(path, scope):
+    """path 是否落在 scope 白名单内（目录语义：t == p 或 t.startswith(p + "/")）。
+
+    与 `harness.py::_in_scope_dirs` 同语义（保持单一判据口径）。
+    """
+    t = str(path).rstrip("/")
+    return any(t == str(p).rstrip("/") or t.startswith(str(p).rstrip("/") + "/")
+               for p in scope)
 
 
 # ─────────────────────────── Loop B 轮审判据 ───────────────────────────
