@@ -302,12 +302,36 @@ observability:
   # ⚠ B19（第三轮诊断 P1-2）：事件声明与 harness.py#TRACE_EVENTS_DECLARED 双向对账
   #   （test_trace_events 断言两集合相等）。B17 加 domain_pack_check 时漏改本段——
   #   「声明了却没产出」检查对新事件失明 8 天。此后任一侧单独增删事件名都会红。
+  # v3.28.9（C1-a / R9）：登记**此前逃逸**的 10 类生产事件。
+  #   背景：原诊断只发现 4 类逃逸，实测（AST 扫全部 _trace 产出点）实为 13 类，
+  #   其中 3 类按「无法稳定构造 ⇒ 不登记」豁免（见下方清单），本轮登记其余 10 类。
+  #   登记后声明面 21 → 31 类。
+  # ⚠ 已知未声明事件（豁免白名单 · 3 类）：lint_blocked / lint_run_error / snapshot_run_error
+  #   —— 三者均为**异常路径**产出点，无法稳定构造 ⇒ 登记即「纯声明」（声明了却无稳定产出点）
+  #   ⇒ 反制造新的守卫噪声。**处置**：保留逃逸状态，白名单**双写**在本处注释
+  #   与 scripts/test_batch_gate_b19.py 的 T11 白名单常量中。
+  #   ⚠ 若将来要把它们加进本清单，**必须同时在 scripts/test_trace_events.py
+  #   补触发路径**，否则该契约测试会红（它断言「声明的全部事件都有产出」）。
   trace_events: ["team_create", "preflight", "spawn", "spawn_failed", "degrade",
                  "member_return", "gate", "stage_enter", "stage_exit", "budget_exceeded",
                  "error", "no_progress", "compaction",
                  "batch_open", "batch_close", "reflow",
                  "member_write_check", "verify_tier", "sediment", "trend",
-                 "domain_pack_check"]
+                 "domain_pack_check",
+                 # ── v3.28.9（C1-a / R9）：登记此前逃逸的 10 类生产事件 ──
+                 # agent_spawn          ← spawn（成员实际拉起；iron-rules.md:58 逐字引用此名）
+                 # insight_carrier_init ← 洞察载体初始化（工作区 trace 占比 38.6%）
+                 # lint_passed          ← lint 通过
+                 # loop_start           ← loop start（循环启动）
+                 # self_report_false    ← 自检报告为假
+                 # verify_ref           ← 校验引用
+                 # template_audit       ← 模板审计
+                 # quality_source_unverified ← 质量来源未验证
+                 # sweep                ← sweep（全量 pptx 扫描）
+                 # eval                 ← eval（自动化演进环 diff）
+                 "agent_spawn", "insight_carrier_init", "lint_passed",
+                 "loop_start", "self_report_false", "verify_ref",
+                 "template_audit", "quality_source_unverified", "sweep", "eval"]
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──

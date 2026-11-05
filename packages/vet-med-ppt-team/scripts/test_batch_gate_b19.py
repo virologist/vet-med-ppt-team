@@ -124,6 +124,100 @@ def _jout(s):
         return json.loads(s[i:j + 1]) if 0 <= i < j else {}
 
 
+# ══ v3.28.9（C1-a / R9）：T11 产出面对账的辅助设施 ═════════════════════
+# T11 守的是「声明面 ↔ 产出面」这一维（此前只有 T4 守「yaml ↔ 常量」）。
+
+# 动态事件名解析表：这些产出点的第 3 实参**不是字面量**，但产出的事件名已声明。
+#   维护纪律：新增动态产出点时**必须**在此登记，否则 T11 会误报逃逸。
+#   反之若登记了但实际不再产出 ⇒ T11 对该类失明（靠 test_T11_exempt_allowlist_is_explicit 兜）。
+_T11_DYNAMIC_RESOLVERS = {
+    "event or 'error'": {"error"},
+    "f'stage_{args.action}'": {"stage_enter", "stage_exit"},
+    "(contract.get('report') or {}).get('trace_event') or 'domain_pack_check'": {"domain_pack_check"},
+    "args.event": set(),   # trace log 逃生舱：任意用户事件名 ⇒ 天然不受声明面约束
+}
+
+# 豁免白名单（3 类）：异常路径产出点，无法稳定构造 ⇒ 登记即「纯声明」。
+#   ⚠ 必须与 config/harness.yaml#observability.trace_events 的注释清单**双写**。
+_T11_EXEMPT_EVENTS = {"lint_blocked", "lint_run_error", "snapshot_run_error"}
+
+_TRACE_FUNCS = {"_trace", "_trace_error"}
+
+
+def _scan_trace_producers(harness_path):
+    """AST 扫 harness.py 的 _trace/_trace_error 产出点。
+
+    返回 (字面量产出点 dict[event, [lineno]], 动态产出点 list[dict])
+
+    **必须走 AST**：事件名是第 3 个参数而非字面量定义，grep 会零命中；
+    BSD grep 的交替语法还会假零命中（LRN-011）。
+    """
+    import ast
+    src = open(harness_path, encoding="utf-8").read()
+    tree = ast.parse(src)
+    literal, dynamic = {}, []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else (
+            fn.attr if isinstance(fn, ast.Attribute) else None)
+        if name not in _TRACE_FUNCS or len(node.args) < 3:
+            continue
+        ev = node.args[2]
+        try:
+            lit = ast.literal_eval(ev)
+        except Exception:
+            lit = None
+        if isinstance(lit, str):
+            literal.setdefault(lit, []).append(node.lineno)
+        else:
+            try:
+                expr = ast.unparse(ev)
+            except Exception:
+                expr = "<unparsable>"
+            dynamic.append({"lineno": node.lineno, "expr": expr})
+    return literal, dynamic
+
+
+def _produced_trace_events(pkg=None):
+    """产出面全集：字面量产出点 ∪ 动态解析出的事件名。"""
+    pkg = pkg or PKG
+    literal, dynamic = _scan_trace_producers(
+        os.path.join(pkg, "scripts", "harness.py"))
+    names = set(literal.keys())
+    for d in dynamic:
+        for key, resolved in _T11_DYNAMIC_RESOLVERS.items():
+            if key in d["expr"]:
+                names |= set(resolved)
+    return names
+
+
+def _escaped_trace_events(pkg=None):
+    """逃逸集：有产出点但**不在 yaml 声明面**的事件（扣豁免白名单）。"""
+    pkg = pkg or PKG
+    import yaml
+    with open(os.path.join(pkg, "config", "harness.yaml"), encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    declared = set(((cfg.get("observability") or {}).get("trace_events")) or [])
+    produced = _produced_trace_events(pkg)
+    return (produced - declared) - _T11_EXEMPT_EVENTS
+
+
+def _make_sim_pkg(tmp_root):
+    """造一个**最小可运行**的包副本（T11 反向对照用）。
+
+    只复制 T11 需要的文件：scripts/harness.py + config/harness.yaml。
+    ⚠ 不复制整个包（T11 是纯静态分析，不需要其余文件）。
+    """
+    os.makedirs(os.path.join(tmp_root, "scripts"), exist_ok=True)
+    os.makedirs(os.path.join(tmp_root, "config"), exist_ok=True)
+    for rel in ("scripts/harness.py", "config/harness.yaml"):
+        dst = os.path.join(tmp_root, rel)
+        shutil.copy(os.path.join(PKG, rel), dst)
+    return tmp_root
+
+
 class _TmpLoopA(unittest.TestCase):
     """每用例独立临时 state；不碰包目录真状态。"""
 
@@ -277,6 +371,68 @@ class TestTraceReconcile(_TmpLoopA):
         for ev in ("domain_pack_check", "compaction"):
             self.assertIn(ev, yset, f"{ev} 不在 yaml——B17 漂移复发")
             self.assertIn(ev, hset, f"{ev} 不在 harness 常量——v3.18.0 漂移复发")
+
+    # ── v3.28.9（C1-a / R9）：T11 产出面对账 ──────────────────────────
+    def test_T11_no_escaped_trace_events(self):
+        """T11：AST 扫 harness.py 全部 _trace 产出点 ⇒ 逃逸集必须为空。
+
+        **这是 R9 的正名判据**。此前只有 T4 守「yaml ↔ 常量」这一维，
+        而「有产出点但未声明」这一维**无人守** ⇒ 13 类生产事件长期逃逸。
+
+        为什么必须走 AST（不能 grep）：
+          - 事件名是 `_trace()` 的**第 3 个参数**，不是字面量定义
+            ⇒ `grep "insight_carrier_init"` 零命中（不是「没有」，是「找错」）
+          - BSD grep（BRE）不支持交替语法 ⇒ 假零命中（LRN-011）
+        为什么必须留白名单：
+          - `lint_blocked` / `lint_run_error` / `snapshot_run_error` 是**异常路径**
+            产出点，无法稳定构造 ⇒ 登记即「纯声明」⇒ 反制造新的守卫噪声
+            （裁定 §二-3 的处置口径）⇒ 显式豁免，有据可查
+        """
+        escaped = _escaped_trace_events()
+        self.assertEqual(escaped, set(),
+                         f"有产出点但未在 yaml 声明面登记的事件：{sorted(escaped)}"
+                         "（新增 _trace 产出点 ⇒ 必须同步登记 yaml#observability.trace_events "
+                         "+ harness#TRACE_EVENTS_DECLARED；确属无法稳定构造 ⇒ 列入白名单）")
+
+    def test_T11_reverse_control_detects_escaped_event(self):
+        """T11 反向对照：注入一个未声明事件 ⇒ T11 必须红。
+
+        **没有本用例，T11 就是恒绿守卫**（与本轮推翻的「守卫恒红」是同型错误的镜像）。
+        纪律（LRN-013）：必须走**源码级 mutator**（隔离副本精确替换），
+        不能 monkey-patch —— 共享常量覆写是**联动**而非定点爆破。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = _make_sim_pkg(tmp)
+            harness_path = os.path.join(sim, "scripts", "harness.py")
+            src = open(harness_path, encoding="utf-8").read()
+            anchor = "def _trace_error(w, cfg, event, actor, detail):"
+            inject = ('def _t11_mutant(w, cfg):\n'
+                      '    """【T11 反向对照探针】故意产出未声明事件。"""\n'
+                      '    return _trace(w, cfg, "t11_mutant_probe_event", "mutant", {})\n\n\n')
+            self.assertIn(anchor, src, "mutator 锚点未匹配（harness.py 结构已变？）")
+            open(harness_path, "w", encoding="utf-8").write(src.replace(anchor, inject + anchor, 1))
+
+            escaped = _escaped_trace_events(pkg=sim)
+            self.assertIn("t11_mutant_probe_event", escaped,
+                          "T11 反向对照失效：注入的未声明事件未被检出 ⇒ T11 是恒绿守卫")
+            self.assertNotIn("t11_mutant_probe_event", set(harness.TRACE_EVENTS_DECLARED),
+                             "探针事件名不应出现在常量声明里（否则对照无意义）")
+
+    def test_T11_exempt_allowlist_is_explicit(self):
+        """T11 白名单纪律：豁免的 3 类必须**显式登记**，不得隐式放过。
+
+        白名单是「明知未声明」的有据留痕；若某类从产出点消失却仍留在白名单，
+        就会留下「以为豁免、实际早已修好」的隐形缺口 ⇒ 断言白名单不得有冗余项。
+        """
+        produced = _produced_trace_events()
+        for ev in _T11_EXEMPT_EVENTS:
+            self.assertIn(ev, produced,
+                          f"{ev} 在豁免白名单里，但已无产出点 ⇒ 白名单冗余，"
+                          "应移出白名单并（或）登记进 yaml 声明面")
+        # 白名单必须恰好是这 3 类（防止悄悄扩容）
+        self.assertEqual(_T11_EXEMPT_EVENTS,
+                         {"lint_blocked", "lint_run_error", "snapshot_run_error"},
+                         "T11 白名单内容变更 ⇒ 须同步更新 yaml#observability.trace_events 的注释清单")
 
 
 class TestBatchGc(_TmpLoopA):

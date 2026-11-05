@@ -320,8 +320,8 @@ segments:
 - id: harness.yaml#observability
   file: harness.yaml
   prefix: observability
-  key_count: 22
-  keys_sha256: 14e908c4999382f143684ff4c88477aae9e3ecf9
+  key_count: 32
+  keys_sha256: a4ff05c6c9f11ce4db9118691ff17f64d539f9ff
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本+会话层+主理人

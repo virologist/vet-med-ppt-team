@@ -2662,12 +2662,25 @@ def _trace(w, cfg, event, actor, detail):
 #   v3.18.0 加 compaction 时漏了本常量侧，双向漂移各 1 项。
 #   双向对账断言已入 test_trace_events（yaml 集合 == 本常量集合），
 #   此后任一侧单独增删事件名都会红。
+# ⚠ v3.28.9（C1-a / R9）：本常量**保持手工同步**（不改为 yaml 派生）——
+#   派生会让 T4 对账断言变成「yaml == yaml」的**恒真自证** ⇒ 等于拆掉守卫。
+#   本轮改为**新增第三条守卫 T11**（test_batch_gate_b19.py）：AST 扫全部
+#   _trace 产出点 ⇒ 逃逸集（有产出点但未声明）必须为空。
+#   ⇒ 声明面三向闭合：yaml ↔ 本常量（T4）+ 声明面 ↔ 产出面（T11）。
+#   登记的 10 类此前逃逸事件：agent_spawn / insight_carrier_init / lint_passed /
+#   loop_start / self_report_false / verify_ref / template_audit /
+#   quality_source_unverified / sweep / eval
 TRACE_EVENTS_DECLARED = ("team_create", "preflight", "spawn", "spawn_failed", "degrade",
                          "member_return", "gate", "stage_enter", "stage_exit",
                          "budget_exceeded", "error", "no_progress",
                          "batch_open", "batch_close", "reflow", "member_write_check",
                          "verify_tier", "sediment", "trend", "domain_pack_check",
-                         "compaction")
+                         "compaction",
+                         # ── v3.28.9（C1-a / R9）：补齐此前逃逸的 10 类 ──
+                         "agent_spawn", "insight_carrier_init", "lint_passed",
+                         "loop_start", "self_report_false", "verify_ref",
+                         "template_audit", "quality_source_unverified",
+                         "sweep", "eval")
 
 
 def _trace_error(w, cfg, event, actor, detail):

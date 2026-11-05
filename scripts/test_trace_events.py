@@ -321,6 +321,34 @@ def test_声明的全部事件都有代码产出():
         #   「声明了却没产出」检查对新事件失明 8 天（双向对账 T4 补上后
         #   才暴露 yaml 侧也漏）。真命令跑一遍，产出点在此闭环。
         run(["domain-pack-check", "--workspace", w])
+        # ── v3.28.9（C1-a / R9）：补齐 10 类新登记事件的触发路径 ──────────
+        #   背景：C1-a 把 10 类此前逃逸的事件登记进 yaml 声明面，
+        #   而本用例断言「**声明面里的每个事件都要有产出**」
+        #   ⇒ 不补触发路径 ⇒ 登记即违约（实测报错：缺产出 6 类）。
+        # ⚠ 本文件用 `run()` 取 rc，**不按 rc 判成败**（只看事件是否出现在 trace 里）
+        #   ⇒ 故 `self_report_false` 的 rc=1（命令语义：文件不存在⇒自报不实）不影响断言。
+        #
+        # insight_carrier_init：洞察载体初始化（登记目标集）
+        run(["insights", "init", "--task-id", "T1", "--target", "s1",
+             "--kind", "page", "--workspace", w])
+        # self_report_false：核验成员自报落盘 → 文件不存在 ⇒ 判定自报不实 ⇒ 写事件
+        run(["verify-artifact", "--path", os.path.join(w, "不存在.md"), "--workspace", w])
+        # verify_ref：文献引用预检（需先造最小 cases_library.json）
+        _cases_p = os.path.join(w, ".workbuddy", "cases", "cases_library.json")
+        os.makedirs(os.path.dirname(_cases_p), exist_ok=True)
+        with open(_cases_p, "w", encoding="utf-8") as f:
+            json.dump({"cases": [{"case_id": "C-1", "disease_name": "案例",
+                                  "title": "常规背景案例"}]}, f, ensure_ascii=False)
+        run(["verify-ref", "--path", _cases_p, "--workspace", w])
+        # template_audit：模板指纹盘点
+        run(["template-audit", "--root", w, "--workspace", w])
+        # sweep：全量 pptx 扫描（产出 deck_registry）
+        run(["sweep", "--root", w, "--workspace", w])
+        # eval：自动化演进环 diff
+        #   ⚠ **必须跑两次**：首次 eval 只存基线（rc=0 但**不写事件**），
+        #     第二次才走 diff 路径并写 eval 事件。
+        run(["eval", "--root", w, "--workspace", w])
+        run(["eval", "--root", w, "--workspace", w])
         # error：顶层异常出口（经 run_command 注入异常——异常路径不能只藏在 __main__ 里）
         sys.path.insert(0, HERE)
         import harness as _h
