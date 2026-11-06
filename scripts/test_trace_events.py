@@ -419,6 +419,15 @@ def test_声明与产出双向差集可查():
         check("trace report 输出 undeclared_events（产出了却没声明的）",
               isinstance(rep.get("undeclared_events"), list),
               f"got {rep.get('undeclared_events')!r}")
+        # ⚠ v3.28.9（C1-e）：`undeclared_events` 的**内容**必须被断言——
+        #   原断言只判 isinstance(..., list) ⇒ 「产出面多出未声明事件」全部静默通过。
+        #   本工作区只跑了 spawn（与 gate1 等 Loop A 流量事件均已被 T11 登记进声明面）
+        #   ⇒ 若声明面完整，undeclared_events 必须为空集。
+        #   非空 ⇒ 动态产出漏登记 ⇒ 声明面不可信 ⇒ 回 C1-a 处置路径（登记事件），禁放宽断言。
+        und = rep.get("undeclared_events") or []
+        check("trace report 的 undeclared 差集内容必须为空（本工作区产出全在声明面内）",
+              len(und) == 0,
+              f"产出面多出未声明事件：{und}（声明面漏登记 ⇒ 声明面不可信）")
         # 本工作区只跑了 spawn ⇒ 其余 11 个声明事件应被报为 missing（差集确实在算）
         miss = rep.get("declared_events_missing") or []
         check("trace report 的 missing 差集确实反映未产出事件",
