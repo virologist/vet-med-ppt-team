@@ -332,6 +332,50 @@ observability:
                  "agent_spawn", "insight_carrier_init", "lint_passed",
                  "loop_start", "self_report_false", "verify_ref",
                  "template_audit", "quality_source_unverified", "sweep", "eval"]
+
+  # ── v3.28.9（C1-c / R10）：trace 归因键 fail-closed 名单（**唯一源**）────
+  # 背景（实测）：包内 trace 934 条中 **690 条 detail.task_id 空/缺**
+  #   （team_create 687 空串 + reflow 208 / batch_* 25 键缺失 …）
+  #   ⇒ references/intelligence-metrics.md 的 M1「GATE 停等次数 / 任务数」
+  #     **分母根本不存在**；M2「首过任务数 / 总任务数」同理
+  #   ⇒ 指标口径完备、采集管道断裂（R13 / C7 的硬前置）。
+  # 处置：列在此处的事件，**写入时 task_id 为空 ⇒ 拒绝落账**（fail-closed）。
+  # ⚠ **只对新写入生效**：历史记录可读、可统计，不被改写或删除。
+  # ⚠ **不含 Loop A 工程环事件**（batch_open / batch_close / reflow /
+  #    gate[loopA]）——它们的归因键是**批次 id**，不是 task_id；
+  #    把它们列入 = 把 Loop A 整环打死（包内 233 条，占 24.9%）。
+  # ⚠ **不含 error**——`error` 是异常出口本身，若它也 fail-closed，
+  #    `_trace_error` → `_trace` 拒写 → raise → 被 run_command 捕获 → 再写 error
+  #    ⇒ **无限递归**。
+  # ⚠ **不含 compaction / budget_exceeded / no_progress / quality_source_unverified**——
+  #    它们的 CLI `--task-id` 可选或不传 ⇒ 列入即命令直接抛异常退出。
+  # ⚠ **不含 gate**——gate 的 CLI 原本无 `--task-id` ⇒ 本批**同批加参数**后才可列。
+  # ⚠ 名单内的 `"adhoc"` 回落值（`_resolve_task_id` 第三级）**被判为无效**——
+  #    它是「无 task_id」的哨兵值，非空 ⇒ 不判无效就会归因成假任务。
+  # ⚠ **不含 team_create / preflight**（v3.28.9 实测修正，**首版名单选错**）：
+  #    SOP 顺序（references/sop-stages.md 闸1）是
+  #      `preflight → route → state init`——**这两个命令跑在 state init 之前**
+  #    ⇒ task_state.json 尚不存在 ⇒ task_id **天然不可得**（回落值只能是 "adhoc"）。
+  #    ⇒ 把它们列入 = **拒写流程起点的两个事件** ⇒ 「声明的事件都有产出」契约破裂
+  #      （实测：team_create + sediment 双双消失，用例红）。
+  #    这是**设计事实**（任务身份在流程起点尚未存在），不是漏洞 ⇒ 不列。
+  #    它们的 task_id 缺失改由**下文的运行期提示**与 `state init` 后的追溯解决。
+  # ⚠ **不含 degrade**（同上）：preflight 检出的 degrade 事件同样跑在 state init 之前
+  #    ⇒ task_id 天然不可得；显式 `degrade` 命令跑在闸中（state init 之后）才有值。
+  #    ⇒ degrade **不 fail-closed**，但 detail 仍写回落链值（可追溯）。
+  trace_task_id_required:
+    # ── Loop B（课件环）事件：task_id 是**真实归因键**（M1/M2 分母依赖它）──
+    # ⚠ 收录判据（v3.28.9 实测固化）：**该事件的产出点执行时，task_id 必须可得**
+    #   ——即命令跑在 `state init` 之后，或其 CLI 强制要求 --task-id。
+    - spawn                   # 成员上场（CLI --task-id 已 required=True）
+    - agent_spawn             # 兼容事件（同一次 spawn 连写）
+    - spawn_failed            # spawn 失败（闸中，state init 之后）
+    - member_return           # 成员回传（M1 数据源之一）
+    - stage_enter             # 入闸（M3 数据源之一）
+    - stage_exit              # 出闸（M3 数据源之一）
+    - loop_start              # Loop B 任务起点（task_id 恒有值：args.task_id or b<ts>）
+    - insight_carrier_init    # 载体初始化（insights init 入口已强制要求 task_id）
+    - sediment                # 沉淀（闸4.5 之后，state init 之后）
   report_on_finish: true
 
 # ── 增量门禁（v3.5.0：改造类任务的验收基准 = 自引入缺陷 0，不是绝对红灯 0）──

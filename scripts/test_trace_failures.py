@@ -158,7 +158,11 @@ class TestMutantsAreKilled(unittest.TestCase):
             #   首版即踩此坑：变异体没被跑，断言的是真包的拒绝行为（假红）。
             proc = subprocess.run(
                 [sys.executable, str(tmp / "scripts" / "harness.py"),
-                 "spawn-failed", "--agent", "verifier", "--reason", ""],
+                 "spawn-failed", "--agent", "verifier", "--reason", "",
+                 # ⚠ v3.28.9（C1-c / R10）：spawn_failed 入归因键 fail-closed 名单
+                 #   ⇒ 必须显式传 --task-id（变异测试验证的是 reason 判据，
+                 #   不传 task_id 会被 R10 闸拦住，混淆变异断言）。
+                 "--task-id", "T1"],
                 capture_output=True, text=True, cwd=str(ws), timeout=120)
             rc, so, se = proc.returncode, proc.stdout or "", proc.stderr or ""
             if rc == 2 and "枚举" not in se and "usage" in se.lower():

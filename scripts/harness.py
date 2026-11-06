@@ -576,6 +576,7 @@ def cmd_preflight(args):
     #   preflight 是机器唯一能抓到它的时点（抓到即留痕，不靠人自觉申报）。
     _trace(w, cfg, "preflight", "team-lead",
            {"team": args.team, "verdict": report["verdict"],
+            "task_id": _resolve_task_id(args, w),
             "members": {m: v.get("status") for m, v in report["members"].items()},
             "degraded": bad})
     for mid in bad:
@@ -586,7 +587,14 @@ def cmd_preflight(args):
                 "reason": ("成员 MD 缺失" if item.get("status") == "missing_md"
                            else f"平台登记 agentType={item.get('agent_type')!r} ≠ 成员 id"
                                 f"（成员人格/红线未注入 = 静默降级）"),
-                "detected_by": "preflight", "task_id": getattr(args, "task_id", "") or "",
+                "detected_by": "preflight",
+                # ⚠ v3.28.9（C1-c / R10）：回落链（原为 `getattr(args,"task_id","") or ""`
+                #   ⇒ 落空串 ⇒ 被 R10 闸判为无归因 ⇒ 拒写 ⇒ degrade 事件消失）。
+                #   ⚠ 注意：preflight 跑在 SOP 的 `state init` **之前** ⇒
+                #   task_state.json 尚不存在 ⇒ 回落值会是 "adhoc"（仍是无归因）。
+                #   这是**设计事实**（流程起点没有任务身份），故 degrade 的
+                #   task_id 允许为空——degrade 不在 fail-closed 名单内。
+                "task_id": _resolve_task_id(args, w),
                 "disclosure_required": bool(fb.get("require_disclosure", True))})
 
     # ── v3.19.0：外部通道探针（维度 10/11/13）────────────────────
@@ -713,6 +721,7 @@ def cmd_preflight(args):
                   f"无不匹配（未登记者记 not_spawned_yet，非缺陷）", file=sys.stderr)
         _trace(w, cfg, "preflight", "team-lead",
                {"team": args.team, "probe": "members",
+                "task_id": _resolve_task_id(args, w),
                 "mismatches": mismatch,
                 "member_status": {k: v.get("status") for k, v in members_probe.items()}})
 
@@ -897,7 +906,9 @@ def cmd_route(args):
                     "spawn_policy": r.get("spawn_policy"),
                     "confirm_gates": r.get("confirm_gates"),
                     "red_team": bool(r.get("red_team", False)),
-                    "task_id": getattr(args, "task_id", "") or "",
+                    # ⚠ v3.28.9（C1-c / R10）：回落链（--task-id > task_state.json > "adhoc"）
+                    #   —— 原为 `or ""` ⇒ 落空串 ⇒ 被 R10 闸判为无归因 ⇒ 拒写。
+                    "task_id": _resolve_task_id(args, wkspace(args)),
                     "domain": plan.get("domain")})
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
@@ -1259,7 +1270,26 @@ def _collapse_artifact_path(cfg, workspace, task_id, domain_id):
 
 
 def _resolve_task_id(args, workspace):
-    """task_id 取值顺序：--task-id > task_state.json 的 task_id > adhoc。"""
+    """task_id 取值顺序（四级回落）：
+
+    ① `--task-id`（CLI 显式）
+    ② `task_state.json` 的 task_id（闸内状态机）
+    ③ **Loop B 状态文件** `loopB_state.json` 的 task_id（v3.28.9 / C1-c R10 新增）
+    ④ `"adhoc"`（哨兵：无归因）
+
+    ⚠ **为什么加第 ③ 级**（实测修正，本轮第一版名单选错的根因）：
+    回落链原本只有两级（CLI → task_state.json → adhoc），而
+    **SOP 顺序是 `preflight → route → state init`** ⇒ `preflight` / `route`
+    执行时 `task_state.json` 尚不存在 ⇒ task_id 必然落空到 "adhoc"。
+    同理，闸4.5 之后的 `sediment` 若工作区没有 `task_state.json`
+    （只有 `loopB_state.json`，因为 Loop B 的 `loop start` 自带 task_id），
+    也会落空 ⇒ 被 R10 闸判为无归因 ⇒ **拒绝落账** ⇒ 事件消失。
+    ⇒ 本级回落修的是**根因**（task_id 来源单一），不是绕过闸。
+
+    ⚠ 本级回落**只读**，不写任何状态文件；读不到就继续落下一级。
+    ⚠ Loop A 状态（`loopA_state.json`）**不在本级回落内**——它的归因键是
+      批次 id，不是 task_id（见 `_trace` 注释里的两环区分）。
+    """
     tid = (getattr(args, "task_id", "") or "").strip()
     if tid:
         return tid
@@ -1267,6 +1297,17 @@ def _resolve_task_id(args, workspace):
         st = read_state(workspace, strict=False)
         if isinstance(st, dict) and st.get("task_id"):
             return str(st["task_id"])
+    except Exception:
+        pass
+    # ③ Loop B 状态文件（只读回落）
+    try:
+        cfg, _ = load_cfg()
+        p, _notes = _loop_path_for(cfg, workspace, "b")
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                lst = json.load(f)
+            if isinstance(lst, dict) and lst.get("task_id"):
+                return str(lst["task_id"])
     except Exception:
         pass
     return "adhoc"
@@ -2627,7 +2668,115 @@ def cmd_budget(args):
 
 
 # ─────────────────────────── trace ───────────────────────────
-def _trace(w, cfg, event, actor, detail):
+class TraceTaskIdMissing(RuntimeError):
+    """trace 事件缺归因键（task_id）——fail-closed 拒绝落账。
+
+    ⚠ v3.28.9（C1-c / R10）：独立成类（**不用裸 RuntimeError**）——
+      调用方要能**只**捕获这一类 ⇒ 其它运行期异常仍走 `run_command`
+      的 error 事件出口（**不受本闸影响**）。
+
+    ⚠ 冒泡要求：本异常必须从 `run_command` 的 `except BaseException`
+      里**排除**并继续上抛 ⇒ 否则它会被转写成一条 `error` 事件
+      ⇒ 而 `error` 若也在拒写名单里 ⇒ `_trace_error` → `_trace` 拒写
+      → raise → 再被捕获 ⇒ **无限递归**。
+    """
+
+
+# ⚠ v3.28.9（C1-c / R10）：trace 归因键 fail-closed 名单的读取器。
+#   **唯一源** = config/harness.yaml#observability.trace_task_id_required。
+_TRACE_TASK_ID_REQUIRED_CACHE = None
+
+
+def _trace_task_id_required(cfg):
+    """取「必须带 task_id 的事件名」集合（**唯一源** = yaml#observability.trace_task_id_required）。
+
+    ⚠ **缓存**：`_trace` 是高频写路径 ⇒ 每次都读 yaml 会造成不必要的 I/O。
+    ⚠ **缓存安全性**：cfg 由每次 `load_cfg()` 读出 ⇒ 同一进程内 cfg 恒定
+      ⇒ 缓存安全。**测试若要改 yaml ⇒ 须显式清缓存**
+      （`_TRACE_TASK_ID_REQUIRED_CACHE = None`）——本包测试惯例。
+    ⚠ **键名必须逐字引用** `trace_task_id_required` ⇒ 免检区登记表的
+      `leaf_weak` 判据（末段键名在代码中 0 出现 ⇒ 弱证据）才不会把它
+      算成 `leaf_weak` ⇒ **机算字段失配面最小**。
+    """
+    global _TRACE_TASK_ID_REQUIRED_CACHE
+    if _TRACE_TASK_ID_REQUIRED_CACHE is None:
+        lst = ((cfg.get("observability") or {}).get("trace_task_id_required") or [])
+        _TRACE_TASK_ID_REQUIRED_CACHE = frozenset(str(x) for x in lst)
+    return _TRACE_TASK_ID_REQUIRED_CACHE
+
+
+# ⚠ v3.28.9（C1-c / R10）：**无归因**的 task_id 形态全集。
+#   ⚠ `"adhoc"` 也在内 —— `_resolve_task_id()` 的第三级回落值就是它
+#     （`--task-id` > task_state.json#task_id > "adhoc"）。
+#     它**非空** ⇒ 不列它就不会被拒写，但会**归因成假任务**
+#     ⇒ 那正是「把无归因伪装成有归因」⇒ 必须判为无效。
+_TRACE_TASK_ID_INVALID = ("", "None", "null", "adhoc")
+
+
+def _trace(w, cfg, event, actor, detail, channel="auto"):
+    """写一条 trace 事件。
+
+    ⚠ `channel` 参数（v3.28.9 / C1-c R10 · 第二版设计）：
+      · `"auto"`（默认）= **程序自动产出** ⇒ 受 `trace_task_id_required` 闸约束
+      · `"manual"`      = **人工补录**（`trace log` 子命令）⇒ **豁免**该闸
+      （理由见下方「通道维度」注释）
+
+    ── C1（R10）fail-closed 闸 ──────────────────────────────────────
+    病灶（实测）：包内 trace 934 条里 `detail.task_id` **690 条空/缺**
+      （team_create 687 空串 + reflow 208 / batch_* 25 键缺失 …）
+      ⇒ `references/intelligence-metrics.md` 的 M1「GATE 停等次数 / 任务数」
+        **分母根本不存在**；M2「首过任务数 / 总任务数」同理
+      ⇒ 指标口径完备、采集管道断裂（R13 / C7 的硬前置）。
+
+    ⚠ **不是一刀切**（本闸的设计前提，缺了它会打死 Loop A 整环）：
+      · Loop B（课件环）事件：task_id 是**真实归因键** ⇒ 缺失即**拒写**。
+      · Loop A（工程环）事件：task_id **本就不存在**，归因键是**批次 id**
+        ⇒ 只要求 batch 字段非空，不要求 task_id ⇒ **不在名单内**。
+      ⇒ 判据源 = `config/harness.yaml#observability.trace_task_id_required`
+        （**声明哪些事件必须带 task_id**），yaml 为唯一源。
+
+    ⚠ **只对新写入生效**：本闸**只拦"写进去"**，
+      **不修改、不删除、不重写任何历史记录** ⇒ 历史 690 条仍可读、可统计
+      （作为「归因缺失」的基线证据保留），不会被静默抹掉。
+
+    ⚠ **必须 raise 而非 return None**：
+      `return None` ⇒ 调用方拿 `rec` 继续用 ⇒ 下游读到 None 二次出错；
+      `sys.exit(1)` ⇒ 会被 `run_command` 当运行错误捕获 ⇒ 又写一条 error
+      ⇒ 而 error 若在名单里 ⇒ **无限递归**。
+
+    ── 通道维度（v3.28.9 实测修正，**第二版设计**）────────────────────
+    ⚠ **首版设计只按事件名判 ⇒ 拦错了对象**（实测：`test_harness` 2 个用例红）：
+      名单里的事件名（spawn / stage_exit …）有两个**产出通道**：
+        · `auto`   = **程序自动产出**（cmd_spawn / cmd_stage / cmd_sediment …）
+                    ⇒ 归因键缺失是**采集管道断裂** ⇒ 该拒写。
+        · `manual` = **人工补录**（`harness.py trace log --event …`）
+                    ⇒ 责任人是**主理人本人**（他在补录历史事实）
+                    ⇒ 闸不该拦他 ⇒ 豁免。
+      首版无通道维度 ⇒ `trace log --event spawn`（不带 task_id）被拒写
+      ⇒ 「trace 落盘并可按事件汇总」用例红；`stage --action exit`（孤儿告警路径，
+      契约要求 rc=0 + 警告）同样被拒写 ⇒ 「stage 边界」用例红。
+      ⇒ **修根因**：加 `channel` 参数，`manual` 通道豁免归因键闸。
+    """
+    detail = detail if isinstance(detail, dict) else {}
+    # ⚠ 通道豁免：`manual` = 人工补录（主理人补录历史事实）⇒ 不受归因键闸约束。
+    #   `auto`（默认）= 程序自动产出 ⇒ 受闸约束。
+    if channel != "manual" and event in _trace_task_id_required(cfg):
+        _tid = detail.get("task_id")
+        # ⚠ 三类「无归因」形态都要挡：
+        #   ① 键缺失（None） ② 空串 / "None" / "null"（上游 str(None) 落盘
+        #      ⇒ 聚合去重时会算出一个叫 "None" 的**假任务**）
+        #   ③ "adhoc"（`_resolve_task_id` 的回落哨兵 ⇒ 同样是无归因）
+        _bad = (_tid is None
+                or (isinstance(_tid, str)
+                    and _tid.strip() in _TRACE_TASK_ID_INVALID))
+        if _bad:
+            msg = (f"⛔ trace 事件 {event!r} 缺归因键 task_id"
+                   f"（当前值 {_tid!r}）——"
+                   f"按 harness.yaml#observability.trace_task_id_required "
+                   f"**拒绝落账**（fail-closed，不静默写空）。"
+                   f"补 --task-id 后重跑。")
+            print(msg, file=sys.stderr)
+            raise TraceTaskIdMissing(msg)
     rec = {"ts": now_iso(), "event": event, "actor": actor, "detail": detail}
     with open(trace_path(w, cfg), "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -2713,7 +2862,8 @@ def cmd_member_return(args):
         print(f"⚠ agent={args.agent!r} 不在 members 表（{list(members.keys())}）"
               f"——仍记录（可能是外部 agent）", file=sys.stderr)
     detail = {
-        "task_id": args.task_id,
+        # ⚠ v3.28.9（C1-c / R10）：回落链（--task-id > task_state.json > "adhoc"）
+        "task_id": _resolve_task_id(args, w),
         "stage": getattr(args, "stage", None),
         "status": args.status,
         "artifact": args.artifact or "",
@@ -2785,7 +2935,9 @@ def cmd_spawn_failed(args):
         reason = "unknown"
         detail_extra = (f"legacy_reason={raw_reason}；" + detail_extra).strip("；; ")
     detail = {
-        "task_id": args.task_id,
+        # ⚠ v3.28.9（C1-c / R10）：回落链（--task-id > task_state.json > "adhoc"）
+        #   ——「adhoc」会被 R10 闸判为**无归因** ⇒ 拒写（fail-closed）。
+        "task_id": _resolve_task_id(args, w),
         "stage": getattr(args, "stage", None),
         "attempt": attempt,
         "max_attempts": max_attempts,
@@ -3060,7 +3212,9 @@ def cmd_sediment(args):
             return 2
 
     entry = {"target": tgt, "evidence_ref": ev_ref,
-             "summary": args.summary or "", "task_id": args.task_id or "",
+             "summary": args.summary or "",
+             # ⚠ v3.28.9（C1-c / R10）：回落链（原为 `or ""` ⇒ 落空串 ⇒ 拒写）
+             "task_id": _resolve_task_id(args, w),
              "actor": args.actor or "team-lead", "ts": now_iso()}
     log_p = os.path.join(w, ".workbuddy", "sedimentation_log.jsonl")
     os.makedirs(os.path.dirname(log_p), exist_ok=True)
@@ -3089,7 +3243,8 @@ def cmd_degrade(args):
         print(f"⚠ 降级通道 {channel!r} 不在 harness.yaml#fallback.degrade_modes "
               f"（{list(modes.keys())}）——仍记录（便于事后发现自造通道）", file=sys.stderr)
     detail = {
-        "task_id": args.task_id,
+        # ⚠ v3.28.9（C1-c / R10）：回落链（--task-id > task_state.json > "adhoc"）
+        "task_id": _resolve_task_id(args, w),
         "stage": getattr(args, "stage", None),
         "member_id": args.agent,
         "degrade_channel": channel,
@@ -3117,7 +3272,14 @@ def cmd_trace(args):
             d = json.loads(args.detail) if args.detail else {}
         except Exception:
             d = {"raw": args.detail}
-        print(json.dumps(_trace(w, cfg, args.event, args.actor or "main", d), ensure_ascii=False))
+        # ⚠ v3.28.9（C1-c / R10）：`trace log` 是**人工补录通道**
+        #   ⇒ channel="manual" ⇒ **豁免**归因键闸。
+        #   理由：补录的责任人是主理人本人（他在补录历史事实），
+        #   而闸的目的是拦「**程序自动产出**却无归因」的采集管道断裂。
+        #   ⚠ 首版设计无通道维度 ⇒ 本命令补录名单内事件（spawn/stage_exit…）
+        #     时被拒写 ⇒ `test_harness` 的「trace 落盘并可按事件汇总」用例红。
+        print(json.dumps(_trace(w, cfg, args.event, args.actor or "main", d,
+                                channel="manual"), ensure_ascii=False))
         return 0
     if args.action == "report":
         p = trace_path(w, cfg)
@@ -3244,6 +3406,19 @@ def cmd_gate(args):
         print(f"依赖缺失：{vd}", file=sys.stderr)
         return 3
 
+    # ⚠ v3.28.9（C1-c / R10）：gate 事件是 **M1 的分子**（「GATE 停等次数 / 任务数」）
+    #   ⇒ 分子要能算 ⇒ gate 必须带 task_id，否则 M1 只能数分子、算不出分母。
+    #   ⚠ **实测修正规格**：`gate` 事件有 **4 处**产出点，其中 2 处是
+    #     **Loop A 工程环**（batch-open / batch-close 的流量事件，
+    #     detail.deck = "[loopA]<bid>"）⇒ **gate 不能进 yaml 的全局名单**
+    #     （进了会把工程环流量事件一起打死）。
+    #   ⇒ 本处只做「**取到就带上**」：**不拒写**（gate 不在名单里）——
+    #     既补齐 M1 分子侧的 task_id，又不收紧既有调用行为（零误伤）。
+    #   ⚠ 回落链：--task-id > task_state.json#task_id > "adhoc"
+    #     （"adhoc" 会被 R10 闸判为无归因 —— 但 gate 不在名单 ⇒ 不拒写，
+    #      只是 task_id="adhoc"，归因质量差但**不阻断**）。
+    _gate_tid = _resolve_task_id(args, w)
+
     # v3.2.0-batch2：lint 前置（O1）
     lint = os.path.join(HERE, "ooxml_lint.py")
     if os.path.exists(lint):
@@ -3369,6 +3544,7 @@ def cmd_gate(args):
         _trace(w, cfg, "gate", args.actor or "ppt-producer",
                {"deck": os.path.basename(args.deck), "level": args.level, "exit": 4,
                 "meaning": "运行错误——verify_deck 超时", "seconds": _stage_timeout,
+                "task_id": _gate_tid,
                 "stderr_tail": f"timeout>{_stage_timeout}s"})
         print(f"\n[harness.gate] verify_deck 超时（>{_stage_timeout}s）——按运行错误（exit 4）"
               f"走缺陷回流，不当课件红灯。", file=sys.stderr)
@@ -3407,6 +3583,7 @@ def cmd_gate(args):
     _trace(w, cfg, "gate", args.actor or "ppt-producer",
            {"deck": os.path.basename(args.deck), "level": args.level, "exit": p.returncode,
             "meaning": meaning, "seconds": secs,
+            "task_id": _gate_tid,
             "counts": q_counts,
             "stderr_tail": (p.stderr or "")[-300:]})
     print(f"\n[harness.gate] exit={p.returncode}（{meaning}） 耗时 {secs}s —— "
@@ -6520,6 +6697,19 @@ def cmd_insights(args):
               f"载体按任务隔离（RUN_DIR=<workspace>/.harness-runs/<task_id>），"
               f"缺省会落进 default 载体并与其他任务混装。", file=sys.stderr)
         return 2
+    # ⚠ v3.28.9（C1-c / R10）：`init` 也**必须**带 task_id。
+    #   原设计「init 容忍（它就是建载体，必须先有 task 概念）」——
+    #   但 `init` 会写 `insight_carrier_init` 事件，而该事件在
+    #   yaml#observability.trace_task_id_required 名单内（task_id 是真实归因键）
+    #   ⇒ task_id 缺失时事件会被 R10 闸**拒写**（fail-closed）⇒
+    #   命令跑到一半才炸、载体已建 ⇒ 状态不一致。
+    #   ⇒ 改为**入口处显式要求**：缺 task_id 即用法错误（rc=2），不产生副作用。
+    if action == "init" and not task_id:
+        print("用法错误：`insights init` 必须带 --task-id <任务ID>——"
+              "本命令会写 insight_carrier_init 事件（归因键 task_id，"
+              "R10 fail-closed 名单内）⇒ 缺 task_id 时事件会被拒写，"
+              "载体却已建 ⇒ 状态不一致。", file=sys.stderr)
+        return 2
     run_dir, carrier_path, parts_dir = _ic_paths(cfg, w, task_id)
 
     # ── init：登记目标集（幂等；已存在不���空）─────────────────────────
@@ -8280,7 +8470,9 @@ def cmd_spawn(args):
         print(f"⚠ agent={args.agent!r} 不在 members 表（{list(members.keys())}）"
               f"——仍记录（可能是外部 agent）", file=sys.stderr)
     detail = {
-        "task_id": args.task_id,
+        # ⚠ v3.28.9（C1-c / R10）：回落链（--task-id 已 required=True ⇒ 恒有值；
+        #   仍走回落链以防未来 CLI 改动把它变可选）
+        "task_id": _resolve_task_id(args, w),
         "stage": getattr(args, "stage", None),
         "input_chars": getattr(args, "input_bytes", 0),
         "output_chars": getattr(args, "output_bytes", 0),
@@ -8855,7 +9047,8 @@ def cmd_stage(args):
     stages = cfg.get("stages", {})
     stage_name = (stages.get(str(args.stage)) or {}).get("name", f"闸{args.stage}")
     detail = {"stage": args.stage, "stage_name": stage_name,
-              "task_id": args.task_id, "note": args.note or ""}
+              # ⚠ v3.28.9（C1-c / R10）：回落链（原为 args.task_id，可为 None）
+              "task_id": _resolve_task_id(args, w), "note": args.note or ""}
     # 孤儿 exit 防护：report 配对要求同 stage 先有未闭合 enter（s in open_at），
     # 缺 enter 的 exit 会被静默跳过 → stage_seconds 少一段无人知晓。此处提前检查。
     if args.action == "exit":
@@ -8881,7 +9074,18 @@ def cmd_stage(args):
         if open_cnt <= 0:
             print(f"⚠ stage={args.stage}（{stage_name}）无未闭合的 stage_enter——"
                   f"本次 exit 是孤儿事件，trace report 不会把它计入 stage_seconds", file=sys.stderr)
-    rec = _trace(w, cfg, f"stage_{args.action}", args.actor or "vet-med-ppt-team-team-lead", detail)
+    # ⚠ v3.28.9（C1-c / R10 · 第二版设计）：`stage` 是**主理人显式编排动作**
+    #   ⇒ channel="manual" ⇒ 豁免归因键闸。
+    #   理由（实测证据，非推断）：
+    #     · 包内命令菜单的官方示例 = `harness.py stage --action enter --stage 1`
+    #       ⇒ **不带 --task-id** ⇒ 生产用法就是不带
+    #       ⇒ 若走 auto 通道（受闸约束）⇒ **打断生产 SOP**。
+    #     · `--task-id` 在 parser 里是**可选**（default=""）⇒ 契约上允许不带。
+    #     · 孤儿 exit 是**告警路径**（契约要求 rc=0 + stderr 含「孤儿」）
+    #       ⇒ 事件**必须落账**，否则告警了却查不到。
+    #   ⇒ 与 `trace log` 同归「显式调用」通道 ⇒ 豁免。
+    rec = _trace(w, cfg, f"stage_{args.action}", args.actor or "vet-med-ppt-team-team-lead",
+                 detail, channel="manual")
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
 
@@ -9147,6 +9351,12 @@ def main():
     p = sub.add_parser("gate", help="包装 verify_deck，统一退出码语义并落 trace")
     p.add_argument("--deck", required=True)
     p.add_argument("--hours", type=float, default=2)
+    # ⚠ v3.28.9（C1-c / R10）：gate 事件是 **M1 的分子**（「GATE 停等次数 / 任务数」）
+    #   ⇒ 分子要能算，分母也得能算 ⇒ gate 必须带 task_id。
+    #   ⚠ 参数**可选**（default=""）⇒ 旧调用不破；缺省时从 task_state.json 回落。
+    p.add_argument("--task-id", dest="task_id", default="",
+                   help="gate：任务 ID（缺省时从 task_state.json 的 task_id 回落；"
+                        "两者皆无则回落 'adhoc' ⇒ 视为**无归因**，按 R10 闸拒写）")
     # v3.19.4（35 键逐键定性·B 类接线）：默认等级改从 yaml 读
     #   （visual-rules.yaml#gate.deliver_gate_level，原硬编码 "all" ⇒ 双份真相）
     p.add_argument("--level", default=_default_gate_level("deliver_gate_level", "all"),
@@ -9347,6 +9557,13 @@ def run_command(a):
     try:
         return a.func(a)
     except SystemExit:
+        raise
+    except TraceTaskIdMissing:
+        # ⚠ v3.28.9（C1-c / R10）：**必须排除并冒泡**——
+        #   若把它捕获成 error 事件 ⇒ 而 error 若也在拒写名单里
+        #   ⇒ _trace_error → _trace 拒写 → raise → 再被捕获 ⇒ **无限递归**。
+        #   语义：这是「归因缺失」的**显式拒绝**，不是运行错误 ⇒
+        #   不写 error 事件，直接上抛给调用方（退出码语义见调用处）。
         raise
     except BaseException as e:
         try:

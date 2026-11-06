@@ -647,5 +647,280 @@ def main():
     return 0
 
 
+
+
+# ══════════════════════════ C1-c（R10）归因键 fail-closed 守卫 ══════════════════════════
+#
+# 立项背景（实测）：
+#   包内 trace 934 条里 `detail.task_id` **690 条空/缺**
+#   （team_create 687 空串 + reflow 208 / batch_* 25 键缺失 …）
+#   ⇒ references/intelligence-metrics.md 的 M1「GATE 停等次数 / 任务数」
+#     **分母根本不存在**；M2 同理 ⇒ 指标口径完备、采集管道断裂。
+#
+# 本组用例把「归因键缺失 ⇒ 拒绝落账」钉成机器断言：
+#   R10-1 名单内事件 + 空 task_id ⇒ 抛 TraceTaskIdMissing（**不是**静默写空）
+#   R10-2 名单内事件 + 合法 task_id ⇒ 正常落账
+#   R10-3 ⭐ **反向对照**：隔离副本把 yaml 名单缩小 ⇒ R10-1 必须**不抛**
+#          （证明判据真在起作用，不是恒绿）
+#   R10-4 Loop A 工程环事件（batch_open / batch_close / reflow / error）**不在名单**
+#   R10-5 "adhoc"（_resolve_task_id 的回落哨兵）被判为**无效**
+#   R10-6 历史记录**不被改写**（闸只拦新写入）
+#   R10-7 yaml 名单里的事件名都在 trace_events 声明面内（无「幽灵名单项」）
+
+def _required_events_from_yaml():
+    """从 config/harness.yaml#observability.trace_task_id_required 读名单。"""
+    import yaml
+    ypath = os.path.join(PKG, "config", "harness.yaml")
+    with open(ypath, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    lst = ((cfg.get("observability") or {}).get("trace_task_id_required") or [])
+    return [str(x) for x in lst]
+
+
+REQUIRED_EVENTS = tuple(_required_events_from_yaml())
+
+
+def _harness_module():
+    """以模块方式载入 harness.py（拿到 _trace / TraceTaskIdMissing 等符号）。
+
+    ⚠ **模块级缓存**：同一进程内复用同一模块实例 ⇒
+      `_TRACE_TASK_ID_REQUIRED_CACHE` 会被复用 ⇒ 换名单时必须清缓存
+      （见 `_cfg_with_required`）。
+    """
+    global _HARNESS_MODULE_CACHE
+    if _HARNESS_MODULE_CACHE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("harness_r10_probe", HARNESS)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _HARNESS_MODULE_CACHE = m
+    return _HARNESS_MODULE_CACHE
+
+
+def _cfg_with_required(names):
+    """造一份最小 cfg（observability.trace_task_id_required = names）。
+
+    ⚠ v3.28.9（C1-c）：`_trace_task_id_required` 有**模块级缓存**
+      ⇒ 换名单必须**显式清缓存**，否则新名单不生效（缓存命中旧值）
+      ⇒ 对照组会失真（清空名单后仍拒写 ⇒ 误判为「闸不是名单驱动的」）。
+    """
+    global _HARNESS_MODULE_CACHE
+    m = _HARNESS_MODULE_CACHE
+    if m is not None:
+        m._TRACE_TASK_ID_REQUIRED_CACHE = None
+    return {"observability": {"trace_file": ".workbuddy/harness_trace.jsonl",
+                              "trace_task_id_required": list(names)}}
+
+
+#: harness 模块缓存（模块级缓存清理由 _cfg_with_required 负责）
+_HARNESS_MODULE_CACHE = None
+
+
+def test_R10_名单内事件缺task_id时拒绝落账():
+    """名单内事件 + task_id 缺失 ⇒ 抛 TraceTaskIdMissing，且 trace 文件**不新增**记录。"""
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        tp = os.path.join(w, ".workbuddy", "harness_trace.jsonl")
+        before = os.path.getsize(tp) if os.path.exists(tp) else 0
+        cfg = _cfg_with_required(["spawn"])
+        raised = None
+        try:
+            h._trace(w, cfg, "spawn", "tester", {"task_id": ""})
+        except h.TraceTaskIdMissing as e:
+            raised = e
+        except Exception as e:                      # 抛了别的异常 ⇒ 判据面不对
+            raised = e
+        check("R10-1 名单内事件缺 task_id ⇒ 抛 TraceTaskIdMissing",
+              isinstance(raised, h.TraceTaskIdMissing),
+              f"got {type(raised).__name__ if raised else None}: {raised}")
+        after = os.path.getsize(tp) if os.path.exists(tp) else 0
+        check("R10-1 拒写时 trace 文件**未新增**记录（fail-closed 不是事后补写）",
+              after == before, f"before={before} after={after}")
+
+
+def test_R10_名单内事件有task_id时正常落账():
+    """名单内事件 + 合法 task_id ⇒ 正常写入。"""
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        cfg = _cfg_with_required(["spawn"])
+        rec = h._trace(w, cfg, "spawn", "tester", {"task_id": "T-R10-OK"})
+        check("R10-2 名单内事件 + 合法 task_id ⇒ 正常落账",
+              rec.get("detail", {}).get("task_id") == "T-R10-OK", f"got {rec}")
+        check("R10-2 事件名确实写进了 trace 文件",
+              "spawn" in _trace_events(w), f"got {_trace_events(w)}")
+
+
+def test_R10_adhoc回落值被判为无效():
+    """「adhoc」是 _resolve_task_id 的回落哨兵 ⇒ 必须判为**无归因**。"""
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        cfg = _cfg_with_required(["spawn"])
+        raised = None
+        try:
+            h._trace(w, cfg, "spawn", "tester", {"task_id": "adhoc"})
+        except Exception as e:
+            raised = e
+        check("R10-5 「adhoc」被 R10 闸判为无效（不归因成假任务）",
+              isinstance(raised, h.TraceTaskIdMissing),
+              f"got {type(raised).__name__ if raised else None}")
+
+
+def test_R10_LoopA工程环事件不在名单():
+    """Loop A 工程环事件（归因键是批次 id）⇒ **不得**因缺 task_id 被拒写。"""
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        cfg = _cfg_with_required(REQUIRED_EVENTS)
+        ok = True
+        for ev in ("batch_open", "batch_close", "reflow", "error"):
+            try:
+                h._trace(w, cfg, ev, "team-lead", {"batch": "b123"})
+            except Exception as e:
+                ok = False
+                print(f"    ⚠ {ev} 被拒写：{type(e).__name__}: {e}")
+        check("R10-4 Loop A 工程环事件（batch_open/batch_close/reflow/error）不在名单内",
+              ok, "工程环事件被 R10 闸误拒 ⇒ 会打死 Loop A 整环")
+
+
+def test_R10_名单事件均已在声明面内():
+    """yaml 名单里的每个事件名都必须在 trace_events 声明面内 ⇒ 无「幽灵名单项」。"""
+    declared = set(DECLARED_EVENTS)
+    ghost = [e for e in REQUIRED_EVENTS if e not in declared]
+    check("R10-7 yaml 名单里的事件名全部在 trace_events 声明面内（无幽灵名单项）",
+          not ghost, f"幽灵项：{ghost}")
+    check("R10-7 名单非空（空名单 = 闸形同虚设）",
+          len(REQUIRED_EVENTS) > 0, f"名单长度 {len(REQUIRED_EVENTS)}")
+
+
+def test_R10_只拦新写入不改写历史():
+    """闸只拦「写进去」⇒ 历史记录不被修改/删除。"""
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        tp = os.path.join(w, ".workbuddy", "harness_trace.jsonl")
+        with open(tp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": "2026-01-01T00:00:00+08:00",
+                                "event": "spawn", "actor": "old",
+                                "detail": {"task_id": ""}}, ensure_ascii=False) + "\n")
+        with open(tp, encoding="utf-8") as f:
+            hist_before = f.read()
+        cfg = _cfg_with_required(["spawn"])
+        try:
+            h._trace(w, cfg, "spawn", "tester", {"task_id": ""})
+        except Exception:
+            pass
+        with open(tp, encoding="utf-8") as f:
+            hist_after = f.read()
+        check("R10-6 历史记录不被改写（闸只拦新写入）",
+              hist_after == hist_before, "历史内容被改动")
+
+
+def test_R10_反向对照_名单缩小则不拒写():
+    """⭐ 反向对照：把 yaml 名单缩小（清空）⇒ 同一场景**必须不抛**。
+
+    ⚠ 对照纪律（LRN-20261104-013）：`_TRACE_TASK_ID_REQUIRED_CACHE` 是**模块级共享**
+      ⇒ **不能** monkey-patch（多处共享 ⇒ 对照失真）
+      ⇒ 本对照走**直接调用 `_trace_task_id_required` 的等价语义**：
+        用一份**空名单**的 cfg 跑同一场景 ⇒ 若闸仍在拒写 ⇒ 说明拒写不是名单驱动的
+        ⇒ 对照失真 ⇒ 判红。
+    ⚠ 实现与原规格的差异（v3.28.9 实测修正）：
+      原规格写「隔离副本 + 源码级 mutator 改副本 yaml 那一行」。
+      实施时改为「**同进程内换 cfg + 显式清模块级缓存**」——
+      理由：`batch-open`/`batch-close` 等 Loop A 命令会往**真包内**的
+      `.workbuddy/loopA_state.json` 写批次；隔离副本方案在跑对照时若误用真包
+      的 CLI ⇒ **污染生产账本**（本轮已两次踩过污染坑）。
+      等价性由 `_cfg_with_required()` 的「每次显式清缓存」保证：
+      缓存清空后 `_trace_task_id_required(cfg_empty)` 必然读到空名单。
+    """
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        # 对照组：名单为空 ⇒ 同场景**不该**被拒写
+        cfg_empty = _cfg_with_required([])
+        raised = None
+        try:
+            h._trace(w, cfg_empty, "spawn", "tester", {"task_id": ""})
+        except Exception as e:
+            raised = e
+        check("R10-3 反向对照：名单缩小（清空）⇒ 同场景**不再拒写**（判据确由名单驱动）",
+              raised is None,
+              f"got {type(raised).__name__ if raised else None}: {raised}")
+        # 双向闭合：名单恢复 ⇒ 又拒写
+        cfg_full = _cfg_with_required(["spawn"])
+        raised2 = None
+        try:
+            h._trace(w, cfg_full, "spawn", "tester", {"task_id": ""})
+        except Exception as e:
+            raised2 = e
+        check("R10-3 反向对照：名单恢复 ⇒ 又拒写（双向闭合）",
+              isinstance(raised2, h.TraceTaskIdMissing),
+              f"got {type(raised2).__name__ if raised2 else None}")
+
+
+def test_R10_8_manual通道豁免归因键闸():
+    """R10-8：`manual`（人工补录）通道**豁免**归因键闸；`auto` 通道不受豁免。
+
+    ⚠ 背景（v3.28.9 实测修正 · **第二版设计**）：
+      首版设计**只按事件名判** ⇒ 拦错了对象：
+        · `harness.py trace log --event spawn`（**人工补录**通道）被拒写
+          ⇒ `test_harness` 的「trace 落盘并可按事件汇总」用例红；
+        · `harness.py stage --action exit`（**主理人显式编排** + 孤儿告警路径，
+          契约要求 rc=0 + stderr 含「孤儿」）被拒写
+          ⇒ `test_harness` 的「stage 边界」用例红。
+      ⇒ 修根因：加**通道维度**（`channel="auto"|"manual"`），`manual` 豁免。
+
+    ⚠ 本用例的作用是**锁住这个豁免**：未来若有人删掉 `channel` 判据
+      ⇒ 人工补录通道被重新拦死 ⇒ 本用例判红 ⇒ 改动不会静默通过。
+    """
+    h = _harness_module()
+    with _ws() as w:
+        os.makedirs(os.path.join(w, ".workbuddy"), exist_ok=True)
+        cfg = _cfg_with_required(["spawn"])
+        # ① manual 通道 ⇒ **不抛**（人工补录豁免）
+        raised = None
+        try:
+            h._trace(w, cfg, "spawn", "tester", {"task_id": ""}, channel="manual")
+        except Exception as e:
+            raised = e
+        check("R10-8 manual 通道豁免归因键闸（人工补录不被拦）",
+              raised is None,
+              f"got {type(raised).__name__ if raised else None}: {raised}")
+        # ② 事件**确实落账了**（豁免 ≠ 静默丢弃）
+        tp = os.path.join(w, ".workbuddy", "harness_trace.jsonl")
+        recs = []
+        if os.path.isfile(tp):
+            with open(tp, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            recs.append(json.loads(line))
+                        except Exception:
+                            pass
+        check("R10-8 manual 通道的事件确实落账（豁免≠静默丢弃）",
+              any(r.get("event") == "spawn" for r in recs),
+              f"落账 {len(recs)} 条，事件列表 "
+              f"{sorted({r.get('event') for r in recs})}")
+        # ③ auto 通道**不受**豁免影响（防止豁免范围扩大 ⇒ 闸形同虚设）
+        raised2 = None
+        try:
+            h._trace(w, cfg, "spawn", "tester", {"task_id": ""}, channel="auto")
+        except Exception as e:
+            raised2 = e
+        check("R10-8 auto 通道仍受闸约束（豁免范围未扩大）",
+              isinstance(raised2, h.TraceTaskIdMissing),
+              f"got {type(raised2).__name__ if raised2 else None}")
+
+
 if __name__ == "__main__":
+    # ⚠ v3.28.9（C1-c）：本块**必须留在文件末尾**。
+    #   `main()` 用 `globals()` 遍历 `test_*` 函数 ⇒ 本块若在文件**中间**，
+    #   则其后的 `def test_*` 在 `main()` 执行时**尚未定义** ⇒ 静默跳过
+    #   ⇒ 直跑路径（`ensure_settings` 第 7 项跑的就是它）**漏跑新守卫**，
+    #   而 pytest 收集路径不受影响 ⇒ **同一文件两条路径行为不一致**
+    #   ⇒ 守卫在生产回归链路上是死的，且不报错（最难发现的一类假绿）。
+    #   ⇒ 本块移到文件末尾后，两条路径收集到的用例集合一致。
     sys.exit(main())

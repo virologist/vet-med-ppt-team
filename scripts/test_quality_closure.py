@@ -258,9 +258,13 @@ class TestSedimentation(unittest.TestCase):
         """合法沉淀 ⇒ 写 sedimentation_log.jsonl + trace sediment 事件。"""
         ws = Path(tempfile.mkdtemp(prefix="b16-sed2-"))
         try:
+            # ⚠ v3.28.9（C1-c / R10）： sediment 已入归因键 fail-closed 名单；
+            #   本用例的空工作区无 task_state.json / loopB_state.json
+            #   ⇒ 回落链三级全空 ⇒ 必须**显式传 --task-id**（与官方菜单示例一致）。
             rc, out, err = _run(["sediment", "--target", "domain_profile",
                                  "--evidence-ref", "domain-profiles.yaml#avian",
                                  "--summary", "禽流感要点回流",
+                                 "--task-id", "T1",
                                  "--workspace", str(ws)])
             self.assertEqual(rc, 0, err[:300])
             log = ws / ".workbuddy" / "sedimentation_log.jsonl"
@@ -335,7 +339,11 @@ class TestMutantsAreKilled(unittest.TestCase):
         tmp, h = _mutant_copy(mutate)
         ws = Path(tempfile.mkdtemp(prefix="b16-mut-sed-"))
         try:
+            # ⚠ v3.28.9（C1-c / R10）：sediment 入归因键名单 ⇒ 必须显式传 --task-id
+            #   （本变异测试验证的是 evidence_ref 判据被掏空 ⇒ 放行；
+            #    不传 task_id 会被**真源的 R10 闸**拦住，混淆变异断言）。
             proc = subprocess.run([PY, str(h), "sediment", "--target", "domain_profile",
+                                   "--task-id", "T1",
                                    "--workspace", str(ws)],
                                   capture_output=True, text=True, timeout=180)
             self.assertEqual(proc.returncode, 0,
