@@ -43,6 +43,22 @@ guarded_docs:
 #   ② <!-- LEGACY_HISTORY_BEGIN --> … <!-- LEGACY_HISTORY_END --> 哨兵块
 # 注：「六阶段」不在本表——它由 test_arch_drift.py#T6 单独判
 #   （只允许出现在「历史沿革」章节之后），否则守卫自身的说明文字会被误判。
+# ── 闸1 冻结项数口径扫描清单（T12 · v3.28.9 C3）──────────────────
+# 背景：gate1_freeze 从 6 项扩到 9 项后，散文里的「六项」表述漂移 6 处无人拦
+#   （菜单 help / 注释 / agent MD×3 / sop-stages）——改文案是错解，加守卫是正解。
+# 判据：本清单内文档的**同一行内**同时出现闸1 上下文（闸1/闸 1/gate1）
+#   且出现数字项数表述（N 项 / N中文项）⇒ 该数字必须 == len(yaml#gate1_freeze)。
+# ⚠ 豁免区复用 T10 的同一套：## 历史沿革 章节 + LEGACY_HISTORY 哨兵块。
+# ⚠ 「六项」在本包有 2 种含义——闸1 冻结项 vs **轮报六项**（loop_b.round_review 的
+#   6 个字段）；轮报文案不含闸1 上下文 ⇒ 天然不命中 ⇒ 无需额外排除词。
+# ⚠ scan_root：本清单相对包根（与 guarded_docs 同规约）。
+gate1_item_count_scan:
+  - "scripts/harness.py"
+  - "agents/vet-med-ppt-team-team-lead.md"
+  - "references/sop-stages.md"
+  - "docs/architecture.md"
+  - "references/harness-engine.md"
+
 legacy_wording:
   - "只认 0–3"
   - "只接受 0–3"

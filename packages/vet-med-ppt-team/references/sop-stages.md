@@ -81,7 +81,7 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 | 2 | 路由并**选人** | `harness.py route --level <L> --domain <域id> --panel <id1,id2> --rationale "<理由>"` |
 | 3 | **输出给用户对齐** | 读 `collapse show` 的摘要：谁上场、各管哪块（覆盖知识轴）、职责边界、为什么选他 |
 | 4 | 用户确认 | `harness.py collapse confirm --id <域id> --task-id <tid> --actor user --decision "<用户裁决>" --rationale "<理由>"` |
-| 5 | 自检 | `harness.py gate1-check --workspace <W>`（六项冻结清单机器校验，未就绪 rc=1） |
+| 5 | 自检 | `harness.py gate1-check --workspace <W>`（九项冻结清单机器校验，未就绪 rc=1；项数真源 = config/harness.yaml#gate1_freeze） |
 
 **三条硬约束**：
 - **未选人不得确认**：该域有专家面板而未指定 `--panel` 时，`collapse confirm` 直接拒绝（rc=1）。

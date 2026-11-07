@@ -608,6 +608,79 @@ class TestGuardedDocs(_GuardBase):
                                 f" → {line.strip()[:50]}")
         self.assertFalse(hits, "\n     ".join(hits))
 
+    def test_T12_gate1_freeze_item_count_matches_yaml(self):
+        """T12（v3.28.9 C3）：受扫描文档的「闸1 冻结项数」表述必须 == yaml 真源。
+
+        病灶（真实漂移，非假设）：gate1_freeze 从 6 项扩到 9 项后，散文里的
+        「六项」表述漂移 6 处无人拦（菜单 help / 机器校验注释 / agent MD×3 /
+        sop-stages 自检表）——闸1 有 T7 项数机校验，文档侧却零拦截。
+
+        判据（受限扫描，不做全文档裸搜——误伤面极大）：
+          命中 = 同一行内同时出现 ①闸1 上下文（闸1 / 闸 1 / gate1）
+                              ②数字项数表述（N 项 / N中文项，中文只认 1–10）
+          ⇒ 该数字必须 == len(config/harness.yaml#gate1_freeze)。
+
+        ⚠ 豁免区复用 T10 同一套（_exempt_line_numbers）：
+          ## 历史沿革 章节 + LEGACY_HISTORY 哨兵块 ⇒ 历史表述不受影响。
+        ⚠ 「六项」在本包有 2 种含义（闸1 冻结 vs 轮报六项）——轮报文案不含
+          闸1 上下文 ⇒ 天然不命中（实测 harness.py:7605/:8355 不触发）。
+
+        口径真源：config/guard.yaml#gate1_item_count_scan（扫描清单）。
+        """
+        scan_files = list(self.guard.get("gate1_item_count_scan") or [])
+        self.assertTrue(
+            scan_files,
+            "config/guard.yaml#gate1_item_count_scan 为空——T12 扫描覆盖面为零等于没设防")
+        # 项数真源：config/harness.yaml#gate1_freeze（读当前 setUp 已装的 stages 之外再读一次全量）
+        import yaml as _yaml
+        full = _yaml.safe_load(_read(HARNESS_YAML)) or {}
+        freeze = full.get("gate1_freeze") or []
+        self.assertTrue(freeze, "config/harness.yaml#gate1_freeze 为空——项数真源不存在")
+        expect = len(freeze)
+
+        cn = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        pat_num = re.compile(r"([0-9]+|[一二三四五六七八九十]+)\s*项")
+
+        def _count_hits(line):
+            """取行内的「计数项数」命中——排除「第 N 项」序数形态。
+
+            「闸1 第 8 项：知识库路由就绪度」是 docstring 指向清单第 8 个成员
+            （序数，合法）；「gate1_freeze 八项」才是清单总量（计数，要判）。
+            序数豁免：「N 项」紧邻的前缀去掉空白后以「第」结尾。
+            """
+            out = []
+            for m in pat_num.finditer(line):
+                prefix = line[:m.start()].rstrip()
+                if prefix.endswith("第"):
+                    continue  # 序数形态「第 N 项」豁免
+                out.append(m)
+            return out
+
+        hits = []
+        for rel in scan_files:
+            lines = self._doc_lines(rel)
+            exempt = _exempt_line_numbers(lines)
+            for i, line in enumerate(lines):
+                if i in exempt:
+                    continue
+                if not ("闸1" in line or "闸 1" in line or "gate1" in line):
+                    continue  # 非闸1 上下文（轮报六项等天然排除）
+                for m in _count_hits(line):
+                    tok = m.group(1)
+                    n = int(tok) if tok.isdigit() else cn.get(tok)
+                    if n is None:
+                        continue  # 超出 1–10 的复杂写法不判（避免误伤「十一项」）
+                    if n != expect:
+                        hits.append(
+                            f"{rel}:{i + 1} 闸1 冻结项数写「{tok}」（={n}）"
+                            f"≠ yaml 真源 {expect} 项 → {line.strip()[:60]}")
+        self.assertFalse(
+            hits,
+            "受扫描文档的闸1 冻结项数表述与 config/harness.yaml#gate1_freeze 不一致"
+            "（项数扩缩时必须同步全部散文表述；历史口径放历史沿革/哨兵块）：\n     "
+            + "\n     ".join(hits))
+
 
 class TestCrossReviewMapping(_GuardBase):
     """T8：`config/guard.yaml#cross_review_mapping` 与 agent MD「你不做…」边界取反校验。

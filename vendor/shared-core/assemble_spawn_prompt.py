@@ -105,6 +105,22 @@ def resolve_expert_dir(explicit: str | None) -> Path:
     if (inferred / "agents").is_dir():
         return inferred
 
+    # vendor 兜底态修复（v2.6.0 Batch5A · 2026-11-07）：
+    # 本文件位于 <pkg>/vendor/shared-core/ 时，parent.parent = <pkg>/vendor（无 agents/）。
+    # 此前 V6（隔离目录模拟 git clone）经 shim 显式 EXPERT_DIR 可通过，但 core 被
+    # 直接调用（python3 vendor/shared-core/assemble_spawn_prompt.py）时反推死路 exit 3。
+    # 修复：用 __file__ 的完整 parts 匹配 vendor/shared-core 相邻段，上跳到段首（= 包根）。
+    #   注意：inferred.parts 里 vendor 之后已无 shared-core 段（被 parent.parent 切掉），
+    #   必须用 __file__.parts 匹配。
+    fparts = Path(__file__).resolve().parts
+    for i in range(len(fparts) - 2):
+        if fparts[i] == "vendor" and fparts[i + 1] == "shared-core":
+            candidate = Path(*fparts[:i])
+            if (candidate / "agents").is_dir():
+                log(f"ℹ️ vendor 兜底态：包根反推 = {candidate}")
+                return candidate
+            break  # 结构命中但上跳无 agents/ → 落到下方报错，不再乱猜
+
     log("❌ 无法解析专家包目录。请用 --expert-dir 显式传入。")
     sys.exit(3)
 

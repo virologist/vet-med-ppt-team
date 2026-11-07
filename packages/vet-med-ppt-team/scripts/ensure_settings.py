@@ -2145,6 +2145,11 @@ def check_dead_config_keys(expert_dir):
         "default_disease_module_prefix", "case_id_prefix",
         # 成员能力声明：供主理人 spawn 前判断，不由脚本消费
         "writes_allowed",
+        # ── v3.28.9（C3 批）：guard.yaml#gate1_item_count_scan —— T12 扫描清单 ──
+        #   消费点：scripts/test_arch_drift.py#test_T12（self.guard.get("gate1_item_count_scan")）。
+        #   ⚠ 动态 .get() 取值 ⇒ AST **路径级**判据扫不到字面量 ⇒ 按登记判据"弱证据"
+        #     规则登记段名（人读型），理由据实写「守卫扫描清单·test_arch_drift 真消费」。
+        "gate1_item_count_scan",
         # ── v3.28.2：第 18 项人工定性 · 批 B07–B08（成员工具白名单 19 键）裁定 ──
         # harness.yaml#members.*.tools_whitelist[] —— 成员**工具白名单**条目。
         #   ⚠ 与 writes_allowed **共用同一条既有纪律**（harness.py:564-570 明文）：

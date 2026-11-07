@@ -8408,7 +8408,7 @@ def cmd_doctor(args):
         # v3.21.0 补：gate1-check 此前**只在 argparse 里、不在 doctor 表里**——
         #   ⇒ 对 LLM 冷启动不可见（不可发现 = 对 LLM 不存在），闸1 冻结自检白拿。
         #   实测（2026-10-26 独立诊断）：argparse 23 个子命令 vs doctor 表 22 个，缺口即此。
-        ("gate1-check", "v3.18.0：闸1 冻结清单就绪度校验（受众/课时/模板/范围/验收/专家团配置 六项；未就绪 exit 1 阻断）", "无", "--json", "0/1/3", "harness.py gate1-check --workspace <工作区>"),
+        ("gate1-check", "v3.18.0：闸1 冻结清单就绪度校验（九项；未就绪 exit 1 阻断）", "无", "--json", "0/1/3", "harness.py gate1-check --workspace <工作区>"),
         ("insights", "v3.21.0 洞察载体：多专家围绕**同一份给定内容**（PPT 某页 / 某个知识模块）"
                      "的洞察与设计汇入**同一份载体**；载体是全程唯一事实源，轮报/冻结/验收全部从它投影。"
                      "★ 目标上互斥、载体上共享：同轴内不重复做，同一目标上的多轴条目并存是正常的"
@@ -9162,7 +9162,7 @@ def main():
     _ws(p)
     p.set_defaults(func=cmd_collapse)
 
-    # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 六项）
+    # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 九项；项数真源 = config/harness.yaml#gate1_freeze）
     p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（九项；未就绪 exit 1 阻断）")
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     p.add_argument("--allow-no-carrier", dest="allow_no_carrier", action="store_true",
