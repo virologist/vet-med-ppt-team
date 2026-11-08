@@ -2145,6 +2145,21 @@ def check_dead_config_keys(expert_dir):
         "default_disease_module_prefix", "case_id_prefix",
         # 成员能力声明：供主理人 spawn 前判断，不由脚本消费
         "writes_allowed",
+        # ── v3.29.0（B3 批）：figure-assets.yaml 各段（配图链路）─────────────
+        #   消费方：ppt-producer（绘图执行，按 execution_chains 选工具）+
+        #   verifier（四件套齐备检查，B5 批次接线机判脚本）。
+        #   协议文档 references/figure-pipeline.md 与 yaml 同步改。
+        #   ⚠ 登记的是【段名】而非文件名（known_textual 匹配的是路径段）。
+        "figure-assets.required_artifacts",
+        "figure-assets.style",
+        "figure-assets.execution_chains",
+        "figure-assets.review",
+        "figure-assets.triggers",
+        # ── v3.29.0（B1 批）：external-tools.yaml#capability_chains / #retry_defaults ──
+        #   消费方：主理人编排语义（哪个能力域走主链/次链/降级链，人读型）；
+        #   B5 批次 probe_channels.py 将实现链总图的脚本级读取（届时可改路径级登记）。
+        #   knowledge-source-map.md 是协议文档（与 yaml 同步改）。
+        "capability_chains", "retry_defaults",
         # ── v3.28.9（C3 批）：guard.yaml#gate1_item_count_scan —— T12 扫描清单 ──
         #   消费点：scripts/test_arch_drift.py#test_T12（self.guard.get("gate1_item_count_scan")）。
         #   ⚠ 动态 .get() 取值 ⇒ AST **路径级**判据扫不到字面量 ⇒ 按登记判据"弱证据"

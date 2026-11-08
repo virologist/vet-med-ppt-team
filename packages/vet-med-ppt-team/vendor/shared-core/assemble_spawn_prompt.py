@@ -561,6 +561,15 @@ def assemble(expert_dir: Path, member_id: str, fm: dict, body: str,
         lines.append("完成后用 SendMessage 把完整产出回传给 team-lead；"
                      "回传正文最前必须附上你角色定义中规定的上行信封 JSON。")
         lines.append("（提示：建议主理人用 --run-dir 启用落盘契约，回传更可靠）")
+
+    # ── 路由落盘提醒（R2 · 2026-11-07 回链，修 D2-1）───────────────────────────
+    # 背景：CHANGELOG 2.3.0 曾声明"脚本运行时打印 RoutingDecision 提醒"，但 v2.4.0
+    # 下沉联邦时未随迁（联邦真源 0 处该字样）——"派单必落 routing-log"退化为散文条款。
+    # 此处把提醒注入 spawn 文案尾部：主理人生成文案时必然看到，形成确定性强制点。
+    # 各包 routing-log 路径不同（docs/routing-log.md 或项目内），只提醒不代写路径。
+    lines.append("")
+    lines.append("【主理人·路由落盘提醒】本次派单对应一条 RoutingDecision——spawn 前请确认已 append 到本包 "
+                 "routing-log（decision_id / target / confidence / reasoning；漏记 = 违反路由决策协议）。")
     return "\n".join(lines)
 
 

@@ -1,0 +1,50 @@
+# figure-assets.yaml — 配图链路单一数据源（v3.29.0 B3 · N3）
+# ═══════════════════════════════════════════════════════════════
+# 立项依据（诊断报告 §1.1 缺失① / §1.5 断点①②，2026-11-07 实测）：
+#   grep 绘图|matplotlib|ggplot|科研绘图|ipynb 于 agents/config/references 全部 0 命中
+#   ⇒ 配图仅有 extract_assets.py（从旧 PPT 提取嵌入元素），无「生产新图」链路。
+# 消费方：references/figure-pipeline.md（协议）、ppt-producer（绘图执行）、
+#   verifier（四件套齐备检查，B5 批次接线机判）、M6 指标（达标率）。
+
+version: "3.29.0"
+
+# ── 一图四件套（缺一不交付）─────────────────────────────────────
+# 目录约定：<任务工作区>/figures/
+required_artifacts:
+  - figure_pdf: "fig_<id>.pdf"          # 成图（PDF 矢量，嵌入 PPT/教材）
+  - figure_ipynb: "fig_<id>.ipynb"      # 绘图代码（可手动精修）
+  - figure_data: "fig_<id>_data.csv"    # 原始数据（同存保证可复现）
+  - figure_meta: "fig_<id>_meta.yaml"   # 图题/来源/位置/版本
+
+# ── 绘图规范（执行者必须遵守）───────────────────────────────────
+style:
+  chinese_labels: true                  # 中文标签强制
+  output_format: pdf                    # 矢量输出
+  abstraction: moderate                 # 适度抽象——突出规律而非堆数据点
+  title_as_conclusion: true             # 图题写结论句
+  code_layout: "params_plot_separated"  # 参数区/绘图区分离，便于人工精修
+  fonts_note: "中文字体：matplotlib 设 font.family（黑体/宋体按教材要求）；R 用 showtext 或系统字体"
+
+# ── 执行链（工具优先级）────────────────────────────────────────
+execution_chains:
+  科研绘图:
+    primary: research_drawing_skill     # 科研绘图 skill（存在则优先）
+    probe: skill_available
+    fallback: python_matplotlib         # 降级：直调 matplotlib（不依赖 skill）
+  统计图:
+    primary: r_ggplot2                  # R/tidyverse/ggplot2（conda bio 环境）
+    fallback: python_matplotlib
+  数据图:
+    primary: python_matplotlib
+    fallback: r_ggplot2
+
+# ── 科学性闸（成图交付前必过）───────────────────────────────────
+review:
+  content_reviewer: dvm-content-expert  # 严真奥：数据-结论一致性核验
+  style_reviewer: visual-slide-designer # 屠明熙：教材级样式合规
+  record_in: "fig_meta.yaml#review"     # 核验结论落资产 meta
+
+# ── 触发来源 ───────────────────────────────────────────────────
+triggers:
+  - "章节流水线 C1（配图需求单，见 chapter-pipeline-sop.md）"
+  - "七维诊断：缺图/图不达标（修复路由新增『调绘图工具产图』动作）"

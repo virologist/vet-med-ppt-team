@@ -1,5 +1,5 @@
 digest_scheme: indexed-set-v2
-version: 3.28.8
+version: 3.29.0
 segments:
 - id: domain-profiles.yaml#domain_pack_exemptions
   file: domain-profiles.yaml
@@ -185,8 +185,8 @@ segments:
 - id: external-tools.yaml#channels
   file: external-tools.yaml
   prefix: channels
-  key_count: 83
-  keys_sha256: 2de5a099abc31527371c0aa7f5d0afd4f0bc34dd
+  key_count: 116
+  keys_sha256: b13b4c04bae4a72aa28f2e037401f34367b942c4
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本+会话层+主理人

@@ -29,11 +29,55 @@
 #   · 每个通道必须有 probe（可用性探针）与 capability（能力声明）；
 #   · 降级必须**显式标注能力降级**，不得静默当同等能力（ML-4「默认假绿」）。
 
-version: "3.28.8"
+version: "3.29.0"
 # ═══════════════════════════════════════════════════════════════
 # ① 联网通道（维度 13）
 # ═══════════════════════════════════════════════════════════════
 channels:
+
+  # ── v3.29.0 B1：知识源五源补全（书籍/本地库/行业实践）──────────
+  # 依据：outputs/升级设计_多智能体架构v4_20261107.md §六（N5 知识源总图）。
+  # 总图（哪个能力域主链/次链/降级链）见本文件底部 capability_chains 与
+  # references/knowledge-source-map.md（人读版 + 反幻觉三闸）。
+
+  - id: obsidian_local
+    kind: local_fs
+    layer: L1
+    priority: 1
+    capability: ["本地知识库检索", "笔记引用（带文件路径溯源）", "书籍笔记/文献笔记"]
+    probe: "path_exists"
+    probe_config:
+      path_env: "OBSIDIAN_VAULT_DIR"        # vault 绝对路径（环境变量，无则通道不可用）
+      # 实测本机值：/Users/biodog/Library/CloudStorage/OneDrive-Personal/GPT/Obsidian（ 主库）
+      fallback_env: "OBSIDIAN_VAULT_DIR_ALT"
+    usage: "按主题词 grep vault（.md 全文），命中即引用，引用必须带 vault 内相对路径（闸C 溯源可逆）"
+    note: "主库实测存在（OneDrive 同步，含 01-科研/ 结构）；本机无凭据问题，路径即探针"
+    retry: {max_attempts: 1, backoff_base_sec: 0}
+
+  - id: book_pdf_markitdown
+    kind: local_tool
+    layer: L1
+    priority: 2
+    capability: ["书籍 PDF→md 转换", "中英文教材全文检索底座"]
+    probe: "tool_available"
+    probe_config:
+      command: "markitdown --help"
+    usage: "PDF 转出的 .md 落 vault（或任务工作区 books/），检索走 grep；转换是**一次性预处理**，检索时不重复转换"
+    fallback_for: obsidian_local
+    degraded_capability: ["书籍笔记引用"]     # 未装 markitdown 时只能走人工转换，链路不中断
+    retry: {max_attempts: 2, backoff_base_sec: 1.0}
+
+  - id: sogou_wechat
+    kind: mcp_tool
+    layer: L2
+    priority: 3
+    capability: ["公众号文章检索", "行业实践/厂家方案线索"]
+    probe: "tool_available"
+    probe_config:
+      tool_pattern: "搜狗|wechat|weixin|公众号"   # 宿主会话内 ToolSearch 探测
+    usage: "⚠ 仅作**行业实践类**证据（来源等级 P4）；禁止作为科学结论唯一来源；引用必须带公众号名+文章标题+URL+抓取日期（闸C）"
+    note: "L3 语义（最低优先级证据），主链是文献与书籍；本通道是 P4 类证据的补充获取面"
+    retry: {max_attempts: 2, backoff_base_sec: 1.0}
 
   # ── 文献检索：MCP 优先 + esearch 兜底（管家节点裁决 2026-10-25）──
   - id: pubmed_mcp
@@ -299,3 +343,37 @@ standards:
     knowledge_sink: "已导入 IMA《禽病》Avian Disease 知识库（weburl 型 ×2，2026-11-01）"
   # ⚠ 归口纪律（v3.28.2 B4 立规，见 references/dependency-manifest.yaml#skill_contract.standard_authority）：
   #   外部 skill 携带的标准文本只能作**线索**，不得替代本段登记，也不得与本段并存为可引用来源。
+
+
+# ═══════════════════════════════════════════════════════════════
+# ⑤ 能力域→通道链总图（v3.29.0 B1 · N7 工具链总图）
+# ═══════════════════════════════════════════════════════════════
+# 「本地已安装工具的优先/次优先链路」唯一源——编排按此图走，不再靠记忆。
+# 规则：主链两次失败 ⇒ 降次链 + 主理人通报（degrade 事件）；次链再败 ⇒ 降级链。
+# 消费方：主理人编排判断（人读）+ references/knowledge-source-map.md（协议文档）。
+capability_chains:
+  文献证据:
+    primary: pubmed_mcp
+    secondary: europepmc_supplementary
+    fallback: pubmed_esearch      # 能力降级：仅 PMID 存在性核验
+  书籍教材:
+    primary: obsidian_local
+    secondary: book_pdf_markitdown
+    fallback: ima_kb              # 能力降级：库覆盖可能不含该书
+  行业实践:
+    primary: sogou_wechat         # ⚠ P4 级证据，仅此域可用
+    secondary: firecrawl_scrape
+    fallback: fetch_http
+  知识库检索:
+    primary: ima_kb
+    secondary: obsidian_local
+    fallback: web_search          # 能力降级：无库语境的开放检索
+  兜底核验:
+    primary: web_search
+    secondary: null               # 终态，无再降级
+
+# ── 通道 retry 默认值（v3.29.0 · 统一重试策略）──
+# 通道内 retry 键可覆盖此默认；未声明 retry 的通道按此执行。
+retry_defaults:
+  max_attempts: 2
+  backoff_base_sec: 1.0

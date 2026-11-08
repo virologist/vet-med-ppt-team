@@ -2,9 +2,9 @@
   "vendored_from": "my-experts/plugins/shared-core/assemble_spawn_prompt.py",
   "upstream_repo": "my-experts/vet-med-ppt-team",
   "file": "assemble_spawn_prompt.py",
-  "sha256": "f2ced4c20bf2ba3ecca43fdbdded2a70df959e2d30c468a45d1c0c8294130a87",
-  "lines": 685,
-  "synced_at": "2026-10-15",
+  "sha256": "3c3648f17cedf1df9da7d36ef998aa09fdfb071479f76f5fe77600f4212d2871",
+  "lines": 694,
+  "synced_at": "2026-11-07T17:43:26",
   "synced_by": "P0-S4-1 5包vendor分发v2",
   "role": "兜底副本（vendored fallback）",
   "priority": "运行时优先联邦真源；仅在联邦 core 缺失时（git clone / CI / 开发态）启用本副本",
@@ -16,5 +16,6 @@
     "visual-slide-designer",
     "ppt-producer",
     "verifier"
-  ]
+  ],
+  "note": "R2·2026-11-07 路由落盘提醒注入（修 D2-1：联邦下沉时提醒丢失）"
 }
