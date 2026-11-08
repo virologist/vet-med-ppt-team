@@ -63,6 +63,14 @@
 
 ### Verified
 
+- **B4 残留收口批（2026-11-09 补记）**：defect-reflow 台账 12 条 stale 哈希
+  按文件 sha256 口径统一刷新 + RF-015 复合 rule_ref 单真源化（MERGE_GATE.yaml）
+  + RF-016 登记；CHANGELOG 补 v3.28.3 历史段（W1–W5，versionctl 警告清零，
+  148 passed）；`loop reflow` ok=true problems=0（15 条全对齐）；挂账⑤
+  settings.json 定性收口——宿主源码（v3.28.7 字节级核对）只有删除路径零写入
+  路径，settings.json = 宿主私有 override 缓存（如含 API 凭据的用户配置），
+  非包分发物，validate_expert 判据过时，包侧正确态 = 无（体检第 1 项反向守卫），
+  不修包留证。7 必跑套件全绿。
 - 全量体检 27 项（B2 后实测）：第 7 项回归 = **56/56 套件 rc=0**（低负载实测；
   此前 46/56 假红甄别为负载噪声）；唯一非绿 = 第 26 项镜像未同步（收批前已同步，
   184 文件零差异）。
@@ -320,6 +328,25 @@
   test_batch_gate_b19 全绿（125 passed）；登记表 loop_a 段指纹刷新。
 
 ---
+
+## [v3.28.3] - 2026-10-30（Loop A·W1–W5：白名单扩面五连 + 版本同步）
+
+> ⚠ **本版为历史补记**（v3.30.0 B4 批补写）：v3.28.3 的 5 个提交
+> （`f0e2783` / `7efc868` / `2b8310d` / `addfd64` / `6c44ec0`）当时未在本文件
+> 留版本段，导致 versionctl 持续报「有 tag 但 CHANGELOG 无对应版本段」。
+
+### Added
+
+- **W1**：`CHANGELOG.md` 纳入 `loop_a.scope`（单文件，本文件可写的前置）。
+- **W2**：两个 `plugin.json` 纳入 `loop_a.scope`（版本升级必经面）。
+- **W3**：免检区登记表重复声明修复 + 刷新；`marketplace.json` 纳入白名单。
+- **W4**：版本号 3.28.3 全量同步 + 缺陷回流台账种子（defect-reflow 首批条目）。
+- **W5**：修 B2 连带红——`test_spawn_injection` 的 route 短理由
+  （4 字）撞 `rationale_quality.min_chars=30` 格式下限；只改 fixture
+  为真实理由，不降判据。
+
+---
+
 
 ## [v3.28.4] - 2026-11-02（Loop A 第三轮从零诊断：B19+B20 双修）
 
