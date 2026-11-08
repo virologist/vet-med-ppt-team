@@ -22,11 +22,16 @@ version: "3.29.0"
 # 只认整数 0-4；任何其它取值（如 "M5A2"、"stage_6"）一律判非法。
 stages:
   0: {name: "闸1 任务冻结", members: [], gate: "user_confirm", parallel: no, next: 1}
-  # v3.17.0 批次 B：stage 1 由 parallel: yes 改 **no**（伪并行修正）——
+  # v3.17.0 批次 B：stage 1 判定为**串行**（伪并行修正）——
   #   蓝图（pedagogy-architect）的「二八难点清单」依赖证据包（dvm-content-expert）的
   #   「易误解」标注，两侧**存在真实数据依赖**、边界并不互斥。原声明"并行、任务边界互斥"
   #   与事实相反：并行后蓝图方必然回问，每次多一轮往返。改串行：证据先行 → 蓝图。
-  1: {name: "闸2 设计（证据先行→蓝图·并行+仲裁）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", parallel: yes, next: 2}
+  # v3.30.0 B0（第五轮从零审计 A-1）：v3.17.0 修正只改了叙述（SOP/主理人 MD 写串行），
+  #   本行值却停在 parallel: yes——**值与注释自相矛盾的真值分裂**，且被 T2 断言
+  #   （断言并行）与 4 份镜像块焊死，harness.py:777-794 还把该值下发成
+  #   plan["parallel_policy"]="并行派发"（运行时假边：下游拿不到上游证据包就被派发）。
+  #   本批一次性闭合四面：值 no + 本注释 + T2 断言翻转 + 镜像块同步（见 defect-reflow B0）。
+  1: {name: "闸2 设计（证据先行→蓝图·串行）", members: ["pedagogy-architect", "dvm-content-expert"], gate: "user_confirm", parallel: no, next: 2}
   2: {name: "闸3 成稿（页表∥版式）", members: ["pedagogy-architect", "visual-slide-designer"], gate: "script_check", parallel: yes, next: 3}
   3: {name: "闸4 交付（门禁+独立验证）", members: ["verifier"], gate: "gate_script+verifier", parallel: no, next: 4}
   4: {name: "闸4.5 案例三源核验（v3.3.0）", members: ["dvm-content-expert", "verifier"], gate: "three_source_check", parallel: yes, next: null}

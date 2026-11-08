@@ -309,8 +309,17 @@ v3.25.0 实测：`scripts/*.py` 中**无**对应工具层实现
 
 **Logged**: 2026-11-04T11:40:00+08:00
 **Priority**: high
-**Status**: pending
+**Status**: applied
 **Area**: config
+
+> **v3.30.0 B0 收口（2026-11-08）**：Suggested Fix 第 3 条已落地——
+> `stages.1.parallel: yes→no` + name 去「并行+仲裁」、T2 断言翻转
+> （`assertTrue` → `assertFalse`，附历史教训文案）、`test_arch_drift` 反例 A
+> old/new 对调（守卫方向已随真值修复）、4 份 STAGE_MIRROR 镜像块 +
+> `docs/architecture.md` 人读表/判据段同步串行。落地位置 = 本批 commit
+> （defect-reflow B0，含 output_evidence）。第 1/2 条（守卫断言分类规范、
+> 真值三面一致性巡检）属方法建议，转为常驻纪律；`depends_on_members`
+> 键未加（最小补丁边界，按 patch_discipline 留待后续批次单独评估）。
 
 ### Summary
 

@@ -1407,17 +1407,17 @@ class TestGuardAntiExamples(unittest.TestCase):
 
     # ── 反例 A/B/C（人读视图表，§3.4.4）──────────────────────
     def test_anti_A_parallel_flag_regression(self):
-        """反例 A：把 stage 1 的「是否并行」改回 `**并行**` ⇒ 必须判红。
+        """反例 A：把 stage 1 的「是否并行」列改回 `**并行**` ⇒ 必须判红。
 
-        这是**已发生过的真实漂移**（yaml 自 v3.17.0 起 parallel: no，
-        人读表一直写 `**并行**`）。
+        v3.30.0 B0（审计 A-1）：现行口径 = 串行（yaml parallel: no，与 v3.17.0
+        串行修正叙述一致）；反例把「是否并行」列改回并行 ⇒ 旧口径复活，判红。
+        历史版本曾反向（守卫断言并行口径），已随 B0 真值修复对调。
         """
         def mutate(pkg):
             p = pkg / "docs" / "architecture.md"
             t = p.read_text(encoding="utf-8")
-            # 现行口径 = 并行（yaml parallel: yes）；反例把「是否并行」列改回串行
-            old = "| 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | 苏学法 ∥ 严真奥 | **并行** |"
-            new = "| 1 | 闸2 设计（证据先行→蓝图·并行+仲裁） | 苏学法 ∥ 严真奥 | **串行** |"
+            old = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 → 严真奥 | **串行** |"
+            new = "| 1 | 闸2 设计（证据先行→蓝图·串行） | 苏学法 → 严真奥 | **并行** |"
             self.assertIn(old, t, "反例前提不成立：人读表 stage 1 行未按预期排版")
             p.write_text(t.replace(old, new), encoding="utf-8")
         self._fail_case("反例 A（并行标记漂移）", mutate, "是否并行")
@@ -1448,12 +1448,13 @@ class TestGuardAntiExamples(unittest.TestCase):
         """反例 D（**防误伤**）：只改「为什么要这么排」列的措辞 ⇒ **不得**判红。
 
         证明守卫**只比 3 列**，散文怎么改都不触发（FEAT-20261022-001 教训）。
+        v3.30.0 B0：锚文本随 stage 1 串行口径同步更新（原锚是并行理由列）。
         """
         def mutate(pkg):
             p = pkg / "docs" / "architecture.md"
             t = p.read_text(encoding="utf-8")
-            old = "教学蓝图与学科底稿是两条**独立**子产物（前者定教学结构，后者定事实与证据），无数据依赖 ⇒ 可并行；冲突按 `responsibility-matrix#escalation.conflict` 交 team-lead 仲裁"
-            new = "（散文措辞改写测试：语义不变，只是换了说法）教学蓝图与学科底稿并行产出。"
+            old = "蓝图的「二八难点清单」依赖证据包的「易误解」标注，**存在真实数据依赖** ⇒ 串行：严真奥先出证据包，苏学法再排教学蓝图（v3.17.0 批次 B 判定；v3.30.0 B0 把 yaml 值从漂移的 parallel: yes 闭合回 no）"
+            new = "（散文措辞改写测试：语义不变，只是换了说法）stage 1 串行，证据先行。"
             self.assertIn(old, t, "反例前提不成立：stage 1 理由列未按预期")
             p.write_text(t.replace(old, new), encoding="utf-8")
         self._pass_case("反例 D（只改散文）", mutate)

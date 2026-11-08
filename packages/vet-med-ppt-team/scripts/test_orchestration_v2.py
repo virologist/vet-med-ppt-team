@@ -75,12 +75,16 @@ class TestOrchestrationV2(unittest.TestCase):
         self.assertEqual(n, 1, f"应只 1 条 team_create，实得 {n}")
 
     def test_T2_config_flags(self):
-        """T2 闸2 parallel=true + 上下文预算键在配置面。"""
+        """T2 闸2 parallel=false（v3.17.0 串行修正，v3.30.0 B0 值落地）+ 上下文预算键在配置面。
+
+        ⚠ 历史教训（LRN-20261104-001）：本断言曾 assertTrue(parallel)——
+        守卫断言了与事实（SOP 串行叙述）相反的口径，把错误焊死。
+        """
         import yaml
         cfg = yaml.safe_load((PKG / "config" / "harness.yaml")
                              .read_text(encoding="utf-8"))
-        self.assertTrue(cfg["stages"][1]["parallel"],
-                        "闸2 应并行（P-协1 吞吐瓶颈）")
+        self.assertFalse(cfg["stages"][1]["parallel"],
+                         "闸2 应串行（v3.17.0 批次 B 数据依赖修正；v3.30.0 B0 值落地）")
         self.assertIn("per_stage_inject_cap", cfg["context"])
 
     def test_T3_spawn_over_budget_flags_trace(self):
