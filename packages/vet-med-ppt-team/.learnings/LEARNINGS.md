@@ -17,6 +17,7 @@ Corrections, insights, and knowledge gaps captured during development.
 
 | 取值 | 含义 | 判据 |
 |---|---|---|
+| `candidate` | 候选条目（v3.30.0 B3 新增）：**未过合并门禁**，不进遗留盘点待办清单 | 须过 `MERGE_GATE.yaml`（同型 ≥3 复发或管家节点 ack）才可晋升 |
 | `pending` | 建议动作**尚未做**，有具体待办 | 能指出"还差哪一步没做" |
 | `partial` | **部分实现** | 须写明已做哪部分、未做哪部分 |
 | `applied` | 建议动作**已落地**（代码/流程已实现），经验转为常驻纪律 | 能在代码里指出落地位置 |
@@ -24,6 +25,10 @@ Corrections, insights, and knowledge gaps captured during development.
 | `resolved` | **已闭合**（含"经实测否决、如实登记"这类闭合式结论） | 结论明确，无需再动 |
 | `superseded` | 已被后续做法取代 | 须指向取代它的那条 |
 
+
+> **合并门禁（v3.30.0 B3 · 升级项③-1）**：新登记条目 Status 一律先标 `candidate`，
+> 晋升规则见 `MERGE_GATE.yaml`（同型经验 ≥3 条复发，或管家节点显式 ack）。
+> `candidate` 不进入下一轮遗留盘点（未过闸 = 未生效）。
 > **纪律**：只有 `pending` / `partial` 才是待办；`applied` / `manual-only` / `resolved` / `superseded`
 > **不再进入下一轮遗留盘点**（它们是常驻纪律或已闭合结论）。
 > 状态更新须在**落盘的同一批**完成，不留到下轮。

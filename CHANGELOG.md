@@ -6,6 +6,73 @@
 
 ---
 
+## [v3.30.0] - 2026-11-08（第五轮从零审计 A-1 修复 + 三升级项落地）
+
+> 依据：从头重审 GATE 1（`outputs/审计_GATE1_从头重审_20261108.md`，A–F 六项）
+> + 四项管家节点裁定 + 用户「全面排查残留问题直到全部通过」指令。
+> 性质：**功能与修正混合版本**——P0 假边修复、三升级项、九项补件。
+> 批次：B0（`b1794134256`）/ B1a（`b1794142144`）/ B1b（`b1794142645`）/
+> B2（`b1794143250`，重开为 `b1794145985`）/ B3（`b1794146053`），均 confirmed+verified。
+
+### Fixed
+
+- **A-1 闸2 真值分裂（P0 运行时假边）**（B0）：`harness.yaml#stages.1.parallel`
+  值层 `yes→no`——v3.17.0 伪并行修正只改了叙述未改值，值/注释/T2 断言/4 镜像块
+  四面分裂且被 `harness.py:777+` 下发成「并行派发」。同批：T2 断言翻转、
+  反例 A 对调、LRN-20261104-001 → applied（RF-013）。
+- **test_trace_failures T4 测试隔离缺陷**（B3）：`batch-open` 经 `<包>` 占位符
+  解析恒写生产账本，回归即污染（本轮实证 2 次）。修法：`loop_contract.state_path`
+  支持 `VET_LOOP_STATE_OVERRIDE` 环境覆盖（生产不设 ⇒ 行为零变化）；
+  测试 `_run` 统一注入。
+- **knowledge_channel 阻断→提醒+确认放行**（B2，红道 R9）：`scope_mismatch`
+  由 block/rc=1 改为 warn 提醒；用户确认后可放行，交付物须标注跨库使用，
+  沉默不构成确认（probe_channels / `_knowledge_channel_state` / T4 断言同步）。
+- **B0 遗留叙述漂移**（B2 顺带）：sop-stages 闸2 标题、team-lead 职责表、
+  insight-carrier 注释仍写「并行」，与串行真值矛盾——全部同步。
+- **make-gate「九项 A 类」文案漂移**（B3）：`LOOP_INTAKE_A` 实为 5 项，
+  报错文案改为「A 类五项」并注明真源。
+
+### Added
+
+- **升级项① 模式路由**（B2）：`routing.mode_values/mode_default` 五取值
+  （generate/check/augment/restructure-L1/restructure-L2），与 L0–L3 正交；
+  `route --mode` 运行时校验（非法 exit 2）并写进 plan；
+  `gate1_freeze` 9→10（`task_mode`，接单显式确认模式与深度档）；
+  sop-stages §6.1-bis L1/L2 重构协议（L2 须重走闸2 + 对接教学设计判据）；
+  散文「九项→十项」6 处同步（T12 拦漏改）。
+- **升级项② 教学设计 skill 双层形态**（B1a+B1b）：
+  `skills/pedagogical-design-requirements/SKILL.md`（触发封装）+
+  `references/pedagogical-rubric.md`（判据 SSOT：M1–M6 多媒体原则
+  [Mayer 2021 DOI Crossref 核验通过] / B1–B4 反向设计对齐 / A1–A4 培训档 /
+  受众分层引用接口，与 seven-dimension-rubric 单一源声明）；
+  两份 plugin.json 增 `skills[]`（平台规范明文支持，validate_expert 过）；
+  `loop_a.scope` 纳入 `<包>/skills`。
+- **升级项③ harness 三补件**（B3）：
+  ① `.learnings/MERGE_GATE.yaml` 学习边合并门禁（candidate 状态 +
+  ≥3 复发或 ack 晋升；存量 20 条按已登记处理）；
+  ② round-review-sop §4.1 打回包五要素模板（单元/判定/原因/证据/SCOPE，
+  覆盖四条退回路径）；
+  ③ dual-loop-governance §3.0-bis 爆炸半径车道表（绿/黄/红 15 裁决点，
+  红道不设置信度阈值）。
+- defect-reflow RF-20261108-013（B0）/ -014（B2）登记，均含 output_evidence。
+
+### Changed
+
+- 版本声明点 13(15) 处一次性同步 3.29.0 → 3.30.0（体检第 14 项 rc=0）；
+  历史叙述中的 v3.29.0 表述逐处甄别保留（不被盲目替换）。
+
+### Verified
+
+- 全量体检 27 项（B2 后实测）：第 7 项回归 = **56/56 套件 rc=0**（低负载实测；
+  此前 46/56 假红甄别为负载噪声）；唯一非绿 = 第 26 项镜像未同步（收批前已同步，
+  184 文件零差异）。
+- 已知挂账：validate_expert 唯一 error = settings.json（v3.28.8 既定决策，
+  平台校验器与包内反向守卫冲突，[待核实] 平台行为）；Mayer 2026 医学院幻灯片
+  实证未获可确认条目，暂不作锚点。
+
+---
+
+
 ## [v3.28.8] - 2026-11-05（C0 收口：体检第 7 项失败语义五态化 + 废弃口径单一真源）
 
 > 依据：Loop A 第六轮架构诊断（`outputs/架构诊断与升级设计_v1.md`）的 R18 与任务 F。

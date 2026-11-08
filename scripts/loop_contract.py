@@ -191,6 +191,17 @@ def state_path(cfg, workspace, loop, notes=None):
     raw, fell = _val(node.get("state_file"), "state_file", f"state_file_{loop}", notes, f"loop_{loop}")
     if fell:
         return os.path.join(workspace, _FB[f"state_file_{loop}"]), notes
+    # v3.30.0 B3：测试隔离覆盖（VET_LOOP_STATE_OVERRIDE）——只在本环境变量
+    #   显式设置时生效（生产不设 ⇒ 行为零变化）。缘由（B2 批实测两次复发）：
+    #   state_file 按 <包> 占位符解析 = 生产包路径，子进程测试（batch-open 的
+    #   trace 隔离用临时 workspace）会把测试批次写进**生产账本**——"临时
+    #   workspace 不碰真包状态"的叙述与事实分裂（LRN-001 同型）。
+    #   测试设 `VET_LOOP_STATE_OVERRIDE=<临时路径>` 即整体重定向两环账本，
+    #   免改包内 config。override 是**目录前缀**：state_file 文件名保持不变。
+    override = os.environ.get("VET_LOOP_STATE_OVERRIDE", "").strip()
+    if override:
+        return os.path.join(os.path.abspath(override),
+                            f"loop{loop.upper()}_state.json"), notes
     return os.path.abspath(resolve_placeholders(raw, workspace)), notes
 
 

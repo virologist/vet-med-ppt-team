@@ -6,7 +6,7 @@
 # 消费方：references/figure-pipeline.md（协议）、ppt-producer（绘图执行）、
 #   verifier（四件套齐备检查，B5 批次接线机判）、M6 指标（达标率）。
 
-version: "3.29.0"
+version: "3.30.0"
 
 # ── 一图四件套（缺一不交付）─────────────────────────────────────
 # 目录约定：<任务工作区>/figures/

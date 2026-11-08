@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.29.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.30.0
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -8129,10 +8129,10 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
             #   缺失 = 还没问；未确认 = 问过了但用户没拍板（须追认）。
             miss, unconf = _intake_a_gaps(intake)
             if miss:
-                reasons.append(f"九项 A 类未齐（缺 {miss}）——不得用仓库默认值冒充")
+                reasons.append(f"A 类五项未齐（缺 {miss}）——不得用仓库默认值冒充（A 类真源 = LOOP_INTAKE_A，5 项）")
             if unconf:
                 reasons.append(
-                    f"九项 A 类有 {len(unconf)} 项**未确认**（{unconf}）："
+                    f"A 类五项有 {len(unconf)} 项**未确认**（{unconf}）："
                     f"登记了但 status 不是 confirmed——存在 suggested 即不得进入制作，"
                     f"须先在轮报中请用户追认")
             if not miss and not unconf:
@@ -8470,7 +8470,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.29.0", "executable": __file__,
+    out = {"version": "v3.30.0", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -9143,7 +9143,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.29.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.30.0")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

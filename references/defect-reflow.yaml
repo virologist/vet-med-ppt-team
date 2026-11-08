@@ -136,3 +136,11 @@ entries:
     rule_hash_before: "ed94a89763e6"
     rule_hash_after: "7e85e1529530"
     output_evidence: "test_external_tools 16 例全过（T4 断言改 warn 可见+block 归零、rc 剥离环境噪声）+ T12 断言 len==10；test_gate1_check 7 例（无 task_mode 判未就绪=预期阻断）；route --mode check/restructure-L2 实测入 plan、bogus exit 2；gate1-check 实测十项输出；dead_config 36 例（登记表刷新后）；arch_drift 46/harness 21/five_gates 6/domain_pack 17/inspection_red 21 全绿；test_external_tools T4 曾 rc=1 系环境通道噪声（obsidian/markitdown/sogou 本机不可用）甄别留证"
+
+  # ── v3.30.0 B3：升级项③ 三补件 + 版本收口 + 测试隔离缺陷修复 ──────────
+  - id: "RF-20261108-015"
+    rule_ref: ".learnings/MERGE_GATE.yaml + references/round-review-sop.md#4.1 + references/dual-loop-governance.md#3.0-bis + scripts/loop_contract.py#state_path + scripts/test_trace_failures.py#_run + config/harness.yaml（版本行）+ scripts/harness.py（doctor 常量/docstring/argparse）"
+    change: "升级项③：①学习边合并门禁（MERGE_GATE.yaml：candidate 状态 + ≥3 复发或 ack 晋升，存量 20 条 grandfather）；②打回包五要素模板（round-review-sop §4.1：单元/判定/原因/证据/SCOPE，覆盖四条退回路径）；③爆炸半径车道表（dual-loop-governance §3.0-bis：15 裁决点绿/黄/红分级，红道不设置信度阈值）。连带：test_trace_failures T4 测试隔离缺陷修复（loop_contract.state_path 支持 VET_LOOP_STATE_OVERRIDE 环境覆盖，生产零行为变化；本轮回归两次污染实证后修复，修复后 6/6 过且账本零新增）；版本 13(15) 处声明点 3.29.0→3.30.0（历史叙述逐处甄别保留）；make-gate「九项A类」文案改「A类五项」（真源 LOOP_INTAKE_A=5）；insight-carrier 闸2 注释同步串行；CHANGELOG v3.30.0 条目"
+    rule_hash_before: "7e85e1529530"
+    rule_hash_after: "8d798051ea13"
+    output_evidence: "test_trace_failures 6/6（修复后跑测试生产账本零新增污染批）；版本一致性 check_version_consistency rc=0；7 套件全绿（harness 21/dead_config 36/inspection_red 21/arch_drift 46/five_gates 6/domain_pack 17/gate1_check 7）；ensure_settings 全量体检 27 项（B2 后实测第 7 项 56/56 rc=0）；历史叙述误替换 9 处已逐处回改（伤害面甄别留痕）"

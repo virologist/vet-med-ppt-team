@@ -127,6 +127,30 @@ v3.8.0 把两环配置写进了 `harness.yaml`，但**没有一份文档回答�
 > ⚠ ③ 判的是"改动有没有超出声明范围"，**不是**"改得多不多、该不该改"——后者是人的判断。
 > ⚠ 包目录非 git 仓库或 git 不可用时，③ **不做比对并显式告警**（不静默放行、也不假称已判）。
 
+### 3.0-bis 裁决点爆炸半径车道表（v3.30.0 B3 · 升级项③-3）
+
+> 车道语义：**绿 = 自动放行**（确定性、可逆、有轨迹）；**黄 = 确定性检查 + 轨迹**（机器判 + 事后可审计）；
+> **红 = 永远人工**（高撤销成本/不可逆/语义裁决——红道**不设置信度阈值**，机器不代行）。
+
+| 裁决点 | 车道 | 现有强制面（不新建，R7） |
+|---|---|---|
+| 触碰 forbidden_paths（用户课件目录） | 🔴 红 | `loop_a.forbidden_paths` + check-path + batch-open 拒批 |
+| scope 白名单外写操作 | 🔴 红 | `loop_a.scope` + batch-open 越权拒批 |
+| 收批放行（batch-close --confirmed） | 🔴 红 | `confirm_before_each_batch` + 回归 7 套件 + defect_reflow 对账 |
+| knowledge_channel 用户确认放行（跨专业库） | 🔴 红 | 闸1 第 8 项 + 沉默不构成确认（v3.30.0 B2/R9 语义） |
+| gate1_freeze 各项用户确认 | 🔴 红 | `gate1-check` 十项机器校验 + 沉默不构成确认 |
+| 版本 13(15) 处声明点提版 | 🟡 黄 | 体检第 14 项 `check_version_consistency` rc 对账 |
+| config/*.yaml 判据键变更 | 🟡 黄 | 登记表 keys_sha256 失配 + sync_zone_registry + dead_config 判据 |
+| 成员 MD 红线段 / 受守卫文档 | 🟡 黄 | `guard.yaml#guarded_docs` + test_arch_drift T8/T9/T10 + T12 项数扫描 |
+| defect_reflow 台账条目 | 🟡 黄 | `loop reflow` 哈希对账（E_HASH_STALE 防事后改账） |
+| 经验条目晋升（candidate→applied） | 🟡 黄 | `MERGE_GATE.yaml`（≥3 复发或 ack；2026-11-08 后生效） |
+| 打回/退回指令 | 🟡 黄 | 打回包五要素模板（round-review-sop §4.1；SCOPE 缺失 = 指令无效） |
+| Lint/登记表机算字段刷新（sync_zone_registry） | 🟢 绿 | 机算确定、可重放、随批 commit 留痕 |
+| trace 事件写入 | 🟢 绿 | 31 事件 fail-closed 声明面对账（test_trace_events） |
+| 镜像同步（mirror_sync） | 🟢 绿 | dry-run 默认 + --confirm 显式 + 同步后零差异校验 |
+
+> 维护纪律：新裁决点先判车道再接入；车道变更 = 本表变更 = Loop A 批次（红道表格自身变更须经管家节点确认）。
+
 ### 3.1 缺陷回流台账（v3.28.2 新增 · 「改规则不改输出」的留痕面）
 
 **缺口（本轮十三维度诊断 D6/P0-1 实测）**：Loop A 反复出现「改规则不改输出」——

@@ -20,6 +20,7 @@ test_trace_failures.py — B13 可观察性地基的能红证明（3.28.3 批次
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,9 +55,15 @@ class _Ws:
 
 
 def _run(args, cwd):
+    # v3.30.0 B3：测试隔离——batch-open/close 等写 Loop A 账本的动作经
+    # <包> 占位符解析会落到**生产账本**（B2 批实测两次污染）。
+    # VET_LOOP_STATE_OVERRIDE 把两环 state_file 整体重定向到本测试的临时
+    # workspace（生产不设该变量 ⇒ 行为零变化）。
+    env = dict(os.environ)
+    env["VET_LOOP_STATE_OVERRIDE"] = str(cwd)
     proc = subprocess.run([sys.executable, str(HARNESS)] + args,
                           capture_output=True, text=True,
-                          cwd=str(cwd), timeout=120)
+                          cwd=str(cwd), timeout=120, env=env)
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 

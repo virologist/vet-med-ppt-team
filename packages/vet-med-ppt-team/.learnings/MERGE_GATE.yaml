@@ -1,0 +1,30 @@
+# 学习边合并门禁（MERGE_GATE · v3.30.0 B3 · 升级项③-1）
+#
+# 定位：.learnings/ 目录的经验条目从「登记即生效」改为「过闸才生效」。
+# 缘由（第五轮从零审计 D 项实测）：LEARNINGS.md 20 条中 10 条无 Status 字段、
+#   「登记 ≠ 行为约束」有一手复发实证（BSD grep 交替陷阱在 LRN-011/012 已两次
+#   登记的情况下第三次复发）——登记面没有合并门禁 = 漂移风险敞口。
+# 消费方：主理人（LLM 语义执行）；本文件是判据声明，机器暂无强制执行器
+#   （与 tools_whitelist 同族：声明面；强制力来自 batch-close 的 defect_reflow
+#   对账 + 体检第 18 项 dead_config 判据）。
+#
+# 门禁语义：
+#   - 候选条目（candidate）写入 LEARNINGS.md 时 Status 必须标 `candidate`；
+#   - 晋升为常驻纪律（applied/manual-only）须满足以下任一：
+#       ① 同型经验累计 ≥3 条（复发实证 = 值得固化）；
+#       ② 管家节点显式 ack（单条但影响面大时）；
+#   - 既有 20 条 LRN（2026-11-08 前）按「已登记」处理：不回溯改 Status，
+#     待下轮盘点时按 LEARNINGS.md 头部既有 Status 词表逐条收口；
+#   - 新条目一律过闸：candidate → (≥3 复发 或 ack) → applied/manual-only；
+#     未过闸的 candidate 不进入下一轮遗留盘点的「待办」清单（防重复拾取噪音）。
+version: "1.0.0"
+promote_rules:
+  recurrence_threshold: 3        # 同型经验累计 ≥3 条
+  ack_by: "管家节点"             # 单条显式确认
+  candidate_status: "candidate"  # 新条目初始状态（LEARNINGS.md Status 字段取值域新增）
+legacy_grandfather:
+  cutoff: "2026-11-08"           # 此前登记的条目按已登记处理，不回溯
+  count: 20
+non_goals:
+  - 不建机器强制执行器（去教材化；强制力挂既有对账面）
+  - 不引跨包依赖（决策④）
