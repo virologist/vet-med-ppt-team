@@ -152,3 +152,11 @@ entries:
     rule_hash_before: "c46f83066034"
     rule_hash_after: "c46f83066034"
     output_evidence: "loop reflow ok=true problems=0（15 条全对齐）；test_versionctl 148 passed 且警告清单零 ⚠；test_defect_reflow 7 passed；test_harness 21 passed"
+
+  # ── v3.30.0 B5：T18 守卫抽样口径修正（LRN-001 同型第 4 例）──────────
+  - id: "RF-20261109-017"
+    rule_ref: "scripts/test_versionctl.py#T18_anchor_direction + .learnings/LEARNINGS.md#LRN-20261109-021"
+    change: "test_versionctl T18（锚点方向断言）抽样口径修正：加 _extract_release_head 过滤，只对 subject 收口式指名样本断言方向——与 compute_anchors 定案规则（v3.28.0：开头/结尾指名+时间最晚）对齐；中间顺带提及样本是噪声（B4 补 CHANGELOG v3.28.3 段首次触发误报）。LRN-20261109-021 登记（applied）"
+    rule_hash_before: "c46f83066034"
+    rule_hash_after: "7201a8fe1601"
+    output_evidence: "test_versionctl 全量 rc=0 OK（148 例）；T18 类 3 passed；误报现场留证：锚点 6c44ec0（沿用已有 tag）vs 首个命中 548f9a5（subject 中间顺带提及）"

@@ -1025,3 +1025,40 @@ AssertionError: 5 not less than or equal to 0 : 锚点不得晚于任何提及�
 - Tags: 版本治理, 提交subject, 锚点判据, 收口提交, 双通道口径不一致
 
 ---
+
+---
+
+## [LRN-20261109-021] correction
+
+**Logged**: 2026-11-09T06:10:00+08:00
+**Priority**: medium
+**Status**: applied
+**Area**: scripts
+
+### Summary
+
+「守卫假设 vs 实际场景」同型缺陷第 4 例：`test_versionctl.py` T18
+（锚点方向断言）的抽样用 `extract_versions_from_subject`——它抽出 subject
+**中间顺带提及**的版本号；而 `compute_anchors` 的定案规则（v3.28.0）
+只认 subject **开头/结尾收口式指名**。两套口径不一致 ⇒ 任何「CHANGELOG
+历史补段」类提交（顺带提及旧版本）都会让 T18 误报。B4 批补 v3.28.3 段
+时首次触发（此前仓库无此场景，守卫缺陷潜伏 9 天）。
+
+与 LRN-001（T2 断言并行）、LRN-004（洁净度断言）、T4 隔离缺陷同族：
+**守卫的抽样/前提口径必须与其保护的判据定案规则一致**。
+
+### Why It Matters
+
+- 历史补记（补 CHANGELOG 段）是正当运维动作，守卫却把它判成锚点漂移 ⇒
+  正当动作被阻断，用户会学会绕过守卫——比没有守卫更糟。
+
+### Suggested Fix（已落地，B5 批）
+
+T18 抽样加 `named = vc._extract_release_head(subject)` 过滤：只对
+**收口式指名**样本做方向断言；顺带提及样本跳过。抽样口径与锚点定案
+规则对齐，收口式指名样本的断言原样保留（非放松守卫）。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/test_versionctl.py, scripts/versionctl.py
+- Tags: 守卫, 抽样口径, 历史补记, 假阳性, 真值分裂

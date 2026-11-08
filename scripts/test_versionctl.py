@@ -1026,6 +1026,16 @@ class T18AnchorDirectionMultiMention(unittest.TestCase):
             vs = vc.extract_versions_from_subject(e["subject"])
             if not vs:
                 continue
+            # v3.30.0 B4：只取「收口式指名」样本做方向断言。
+            #   extract_versions_from_subject 会抽出**中间顺带提及**（如
+            #   "CHANGELOG v3.28.3 补段"），而 compute_anchors 定案规则
+            #   （v3.28.0）只认 subject 开头/结尾指名 ⇒ 顺带提及样本对
+            #   「锚点==最后指名提交」的方向判据是噪声样本（B4 补段
+            #   CHANGELOG 时首次触发误报）。抽样口径与锚点定案规则对齐，
+            #   非放松守卫：收口式指名样本的方向断言原样保留。
+            named = vc._extract_release_head(e["subject"])
+            if not named:
+                continue
             for v in vs:
                 if v not in anchors:
                     continue
