@@ -26,5 +26,8 @@
     "./agents/visual-slide-designer.md",
     "./agents/ppt-producer.md",
     "./agents/verifier.md"
+  ],
+  "skills": [
+    "./skills/pedagogical-design-requirements"
   ]
 }

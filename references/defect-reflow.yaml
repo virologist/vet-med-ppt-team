@@ -125,7 +125,7 @@ entries:
   - id: "RF-20261108-013"
     rule_ref: "config/harness.yaml#stages.1 + scripts/test_orchestration_v2.py#T2 + scripts/test_arch_drift.py#反例A + docs/architecture.md"
     change: "A-1 修复：v3.17.0 伪并行修正只改叙述未改值——yaml 值 parallel: yes 与注释/序述/守卫三面分裂，且被 T2 断言（断言并行）与 4 份镜像块焊死、harness.py:777-794 下发成「并行派发」运行时假边。本批四面一次闭合：值 no + name 去「并行+仲裁」+ T2 断言翻转（assertTrue→assertFalse）+ 反例 A old/new 对调 + 4 份镜像块与人读表/判据段同步串行 + LRN-20261104-001 pending→applied"
-    rule_hash_before: "eac2fa5e5a6b"
-    rule_hash_after: "e40d2441e66c"
+    rule_hash_before: "07ff7b234a07"
+    rule_hash_after: "ed94a89763e6"
     output_evidence: "回归 7 套件全绿（test_arch_drift 含反例 A 反转后守卫仍拦旧口径复活；test_orchestration_v2 T2 翻转后过）+ harness route plan parallel_policy 实测输出「串行派发」（详见 B0 收批 note 与 outputs/B0_收批证据_20261108.md）"
 
