@@ -14,6 +14,9 @@
     "./agents/ppt-producer.md",
     "./agents/verifier.md"
   ],
+  "skills": [
+    "./skills/pedagogical-design-requirements"
+  ],
   "expertType": "team",
   "agentName": "vet-med-ppt-team-team-lead",
   "teamInfo": {

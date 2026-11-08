@@ -101,6 +101,17 @@ members:
 #   ⇒ 说明语义一律移到同级 `spawn_policy` 键（人读、不参与 ID 解析）；
 #     `scripts/harness.py#cmd_route` 另加**运行时校验**（伪 ID 直接报错退出，不静默透传）。
 routing:
+  # ── v3.30.0 B2（升级项①）：mode 维度与 L0–L3 正交 ──────────────────
+  # mode = 任务模式（五取值域），与复杂度分级（L0-L3）是两个独立维度：
+  #   L 级决定「派多少人」，mode 决定「走哪条流程通道」。
+  # mode 合法值（cmd_route 运行时校验，非法值报错退出不静默透传）：
+  #   generate       生成（既有五闸流水线，默认值——不指定即生成）
+  #   check          检查（只出审计报告不改稿；verify_deck 既有纯诊断出口）
+  #   augment        增补（Loop B delta_gate 既有通道的显式入口）
+  #   restructure-L1 重构·内容级（证据更新/增补/版式修复，保留原结构，走 Loop B delta_gate）
+  #   restructure-L2 重构·教学级（反向设计重排教学路径，须重走闸2 + 教学设计判据）
+  mode_values: ["generate", "check", "augment", "restructure-L1", "restructure-L2"]
+  mode_default: "generate"
   L0: {team_create: false, spawn: [], confirm_gates: 1, spawn_policy: "不建团、不 spawn（单点直办）"}
   L1: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert"], confirm_gates: 2, spawn_policy: "按需1-2名（主理人按任务性质取舍，从上述候选中挑）"}
   L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2, spawn_policy: "全员常驻（ppt-producer 不常驻——门禁类按需跨闸调用，见 members.ppt-producer.spawn）"}
@@ -230,13 +241,19 @@ gate1_freeze:
     label: "知识库与外部通道路由（库归属 + 通道可用性 + 可更换提醒）"
     required: true
     source: "config/external-tools.yaml"
-    note: "知识库组**仅动物医学专业**可用；其他专业须**主动提醒**用户更换/更新；库属其他专业时**阻断**"
+    note: "知识库组**仅动物医学专业**可用；其他专业须**主动提醒**用户更换/更新；库属其他专业时**提醒并待用户确认放行**（v3.30.0 B2 语义变更：原「阻断」经红道 R9 裁定改为「提醒+确认后放行」——阻断只在探针实测 scope_mismatch 且用户未确认时成立，用户显式确认后放行并在交付物标注；用户沉默不构成确认）"
 
   - id: insight_carrier_targets
     label: 洞察载体目标集（多专家单载体的登记面）
     required: true
     source: "harness.py insights init（<RUN_DIR>/_insights/carrier.json 的 targets 非空）"
     note: "v3.22.0 G3（第二轮独立诊断 P3）：sop-stages 闸1 写明「目标集登记完成前不得 spawn 任何成员」，但 gate1-check 此前不校验载体——硬约束只是文字。现改为机器校验：载体存在且 targets 非空才就绪。纯诊断单（不落载体）用 --allow-no-carrier 逃生口，输出会标注降级。"
+  # ── v3.30.0 B2 新增第 10 项：任务模式与深度档（升级项①）──────────
+  - id: task_mode
+    label: "任务模式与深度档（生成/检查/增补/重构-L1/L2 五取值；接单时显式确认）"
+    required: true
+    source: "config/harness.yaml#routing.mode_values"
+    note: "mode 与 L0-L3 复杂度正交：L 级定派多少人，mode 定走哪条流程通道。用户接单时显式确认；不指定时须向用户确认默认 generate 是否适用（检查/重构类任务静默按 generate 跑 = 走错流程通道）。restructure-L2 须重过闸2 反向设计三件套 + 对接教学设计判据（references/pedagogical-rubric.md）。"
 # ── 坍缩（把「用哪个域 / 哪些专家」坍缩成一份可确认的专家团配置）────
 # 规格原文：「坍缩结果须**主动输出**并与我对齐、**经确认后生效**」。
 #   本节把"待确认 → 已确认"的状态机与落盘位置写死成配置，脚本只执行不判断。

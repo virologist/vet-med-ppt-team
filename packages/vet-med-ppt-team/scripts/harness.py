@@ -758,6 +758,20 @@ def cmd_route(args):
     if not r:
         print(f"用法错误：未知复杂度 {args.level}", file=sys.stderr)
         return 2
+    # ── v3.30.0 B2（升级项①）：mode 维度校验（与 L0-L3 正交）──────────
+    # mode 取值域唯一源 = config/harness.yaml#routing.mode_values；
+    # 不传 --mode 时按 mode_default（generate）回落——生成是默认通道，
+    # 但 plan 里显式带 mode 键，让"本次走哪条通道"在机器输出可见（不再靠语义猜）。
+    _mode_values = list((cfg.get("routing", {}) or {}).get("mode_values")
+                        or ["generate", "check", "augment", "restructure-L1", "restructure-L2"])
+    _mode_default = (cfg.get("routing", {}) or {}).get("mode_default") or "generate"
+    _mode = (getattr(args, "mode", "") or "").strip() or _mode_default
+    if _mode not in _mode_values:
+        print(f"⛔ 非法任务 mode：{_mode!r}\n"
+              f"   合法取值域（config/harness.yaml#routing.mode_values）：{_mode_values}\n"
+              f"   → mode 与 L0-L3 正交：L 级定「派多少人」，mode 定「走哪条流程通道」。",
+              file=sys.stderr)
+        return 2
     # ── spawn 成员 ID 校验（Task#7：伪 ID 不得静默透传）──────────────
     valid_ids = set((cfg.get("members") or {}).keys())
     spawn = r.get("spawn") or []
@@ -768,7 +782,8 @@ def cmd_route(args):
               f"   → spawn 元素**只能是成员 ID 本身**；说明性文字请放同级 `spawn_policy` 键"
               f"（如「按需1-2名」），不得塞进 spawn 数组元素。", file=sys.stderr)
         return 2
-    plan = {"level": args.level, "team_create": r.get("team_create"),
+    plan = {"level": args.level, "mode": _mode,
+            "team_create": r.get("team_create"),
             "spawn": spawn, "spawn_policy": r.get("spawn_policy"),
             "confirm_gates": r.get("confirm_gates"),
             "red_team": r.get("red_team", False),
@@ -1965,13 +1980,14 @@ def _delivery_language_state(intake):
 def _knowledge_channel_state(w):
     """闸1 第 8 项：知识库路由就绪度（维度 10/13）。
 
-    判据（v3.19.0）：
+    判据（v3.19.0 立；③ 于 v3.30.0 B2 经红道 R9 变更）：
       ① 外部工具配置可读；
       ② 若工作区有探针结果（task_state.json#tool_probe_results）⇒ 读它；
          无探针结果时**不做阻断**（探针是可选的开工前检查，不是闸1 必过项），
          只报"未探测"提示；
-      ③ 探针结果里若存在 **scope_mismatch**（库属其他专业）⇒ **阻断**
-         （管家节点裁决 #4：不得静默使用其他专业的库）。
+      ③ 探针结果里若存在 **scope_mismatch**（库属其他专业）⇒ **提醒并待用户确认后放行**
+         （原语义为阻断，B2 变更缘由见函数体内注释；放行不得静默，
+         交付物须标注跨库使用；用户沉默不构成确认）。
     返回 (ready, detail)。
     """
     p = os.path.join(PKG, "config", "external-tools.yaml")
@@ -1998,13 +2014,47 @@ def _knowledge_channel_state(w):
     mism = probe.get("scope_mismatches") or []
     if mism:
         names = "、".join(str(m.get("library_name") or m.get("library_id")) for m in mism)
-        return False, (f"⛔ 知识库属其他专业（{names}）——**不得静默使用**；"
-                       f"须提醒用户更换/更新为其所在专业的库")
+        # v3.30.0 B2（红道 R9）：阻断语义 → 提醒+确认后放行。
+        #   变更缘由：库属其他专业 ≠ 内容必然不可用（用户可能就是跨专业授课/培训档任务），
+        #   一刀切阻断把「应当由用户裁决」的事揽给了脚本；但**放行不得静默**——
+        #   就绪判定 = 「已提醒」即成立，放行后须在交付物显式标注跨库使用。
+        #   用户沉默不构成确认；探针未跑时仍走「未探测」分支。
+        return True, (f"⚠ 知识库属其他专业（{names}）——**已提醒，待用户确认后放行**；"
+                      f"使用前须提醒用户更换/更新为其所在专业的库；"
+                      f"用户显式确认放行后，交付物须标注「跨专业知识库使用」")
     unavailable = probe.get("unavailable_channels") or []
     if unavailable:
         return True, (f"外部通道探测：{len(unavailable)} 条不可用"
                       f"（{', '.join(unavailable)}）——须按降级路径处置并向用户声明")
     return True, "外部通道探测全部可用；知识库归属无冲突"
+
+
+def _task_mode_state(cfg, intake):
+    """闸1 第 10 项：任务模式与深度档（v3.30.0 B2 · 升级项①）。
+
+    判据：intake.task_mode 已登记且取值 ∈ routing.mode_values。
+    mode 是新维度不是新 stage（结构不变式）；与 L0-L3 复杂度正交。
+    返回 (ready, detail)。
+    """
+    routing = cfg.get("routing", {}) or {}
+    valid = list(routing.get("mode_values")
+                 or ["generate", "check", "augment", "restructure-L1", "restructure-L2"])
+    v = intake.get("task_mode")
+    if v in (None, "", [], {}):
+        return False, ("未登记任务模式——须向用户显式确认（generate/check/augment/"
+                       "restructure-L1/restructure-L2 五取值）；"
+                       "静默按 generate 跑 = 检查/重构任务走错流程通道")
+    v = str(v).strip()
+    if v not in valid:
+        return False, f"task_mode={v!r} 不在合法取值域 {valid}"
+    detail = f"已确认任务模式：{v}"
+    if v == "restructure-L2":
+        detail += "（教学级重构：须重过闸2 反向设计三件套 + 对接 pedagogical-rubric.md 判据）"
+    elif v == "restructure-L1":
+        detail += "（内容级重构：保留原结构，走 Loop B delta_gate）"
+    elif v == "check":
+        detail += "（纯诊断：只出审计报告不改稿）"
+    return True, detail
 
 
 def _insight_carrier_state(w, cfg, args=None):
@@ -2157,6 +2207,8 @@ def cmd_gate1_check(args):
         "knowledge_channel": _knowledge_channel_state(w),
         # ── v3.22.0 G3 新增第 9 项：洞察载体目标集（第二轮独立诊断 P3）────
         "insight_carrier_targets": _insight_carrier_state(w, cfg, args),
+        # ── v3.30.0 B2 新增第 10 项：任务模式与深度档（升级项①）──
+        "task_mode": _task_mode_state(cfg, intake),
     }
 
     rows, not_ready = [], []
@@ -8408,7 +8460,7 @@ def cmd_doctor(args):
         # v3.21.0 补：gate1-check 此前**只在 argparse 里、不在 doctor 表里**——
         #   ⇒ 对 LLM 冷启动不可见（不可发现 = 对 LLM 不存在），闸1 冻结自检白拿。
         #   实测（2026-10-26 独立诊断）：argparse 23 个子命令 vs doctor 表 22 个，缺口即此。
-        ("gate1-check", "v3.18.0：闸1 冻结清单就绪度校验（九项；未就绪 exit 1 阻断）", "无", "--json", "0/1/3", "harness.py gate1-check --workspace <工作区>"),
+        ("gate1-check", "v3.18.0：闸1 冻结清单就绪度校验（十项；未就绪 exit 1 阻断）", "无", "--json", "0/1/3", "harness.py gate1-check --workspace <工作区>"),
         ("insights", "v3.21.0 洞察载体：多专家围绕**同一份给定内容**（PPT 某页 / 某个知识模块）"
                      "的洞察与设计汇入**同一份载体**；载体是全程唯一事实源，轮报/冻结/验收全部从它投影。"
                      "★ 目标上互斥、载体上共享：同轴内不重复做，同一目标上的多轴条目并存是正常的"
@@ -9121,6 +9173,12 @@ def main():
 
     p = sub.add_parser("route", help="复杂度 → spawn 计划")
     p.add_argument("--level", required=True, choices=["L0", "L1", "L2", "L3"])
+    # v3.30.0 B2（升级项①）：任务模式维度（与 L0-L3 正交）
+    p.add_argument("--mode", default="",
+                   help="任务模式（取值域 = routing.mode_values）：generate=生成（默认）/ "
+                        "check=检查（只出审计报告不改稿）/ augment=增补 / "
+                        "restructure-L1=重构·内容级 / restructure-L2=重构·教学级（须重过闸2）。"
+                        "不传按 mode_default（generate）回落并在 plan 显式输出")
     # v3.17.0：域坍缩——追加域字段并落盘坍缩产物（未确认不生效）
     p.add_argument("--domain", default="",
                    help="内容域 id（见 `domain list` 菜单）；不传则**输出与改造前逐字节一致**。"
@@ -9162,8 +9220,8 @@ def main():
     _ws(p)
     p.set_defaults(func=cmd_collapse)
 
-    # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 九项；项数真源 = config/harness.yaml#gate1_freeze）
-    p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（九项；未就绪 exit 1 阻断）")
+    # v3.18.0：闸1 冻结清单的机器校验（gate1_freeze 十项；项数真源 = config/harness.yaml#gate1_freeze）
+    p = sub.add_parser("gate1-check", help="闸1 冻结清单就绪度校验（十项；未就绪 exit 1 阻断）")
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     p.add_argument("--allow-no-carrier", dest="allow_no_carrier", action="store_true",
                    help="v3.22.0 G3：纯诊断单不落洞察载体时的显式豁免（输出标注降级，非静默）")

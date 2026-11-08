@@ -281,13 +281,13 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 |------|--------|---------|---------|
 | **闸1** 任务冻结 | 主理人 | **确认门 1/2** | 澄清+判级+工具探针+**页数三口径（物理/可见/导出）**与 `--hours` 冻结+**页数口径轨 `--caliber`（course=整套课程，默认；single-ppt=单次 PPT）**+**重复指令对账**+**选域与选人（`route --domain --panel` → 输出给用户对齐 → `collapse confirm`）**+**建洞察载体（v3.21.0：`insights init` 登记目标集）** → sop-stages.md#闸1 |
 
-> **闸1 冻结九项（v3.18.0 起有机器校验；项数真源 = `config/harness.yaml#gate1_freeze`）**：受众/课时/模板/处理范围/验收标准/**已坍缩的专家团配置**/交付语言/知识库路由/洞察载体目标集 现在可一条命令自检：
+> **闸1 冻结十项（v3.18.0 起有机器校验；项数真源 = `config/harness.yaml#gate1_freeze`）**：受众/课时/模板/处理范围/验收标准/**已坍缩的专家团配置**/交付语言/知识库路由/洞察载体目标集/**任务模式与深度档**（v3.30.0 B2）现在可一条命令自检：
 > ```
 > python3 scripts/harness.py gate1-check --workspace <工作区>
 > ```
 > 退出码 0 = 九项齐备可进闸2；1 = 有未就绪项（逐项列出缺什么）。
 > 模板项查的是**工作区模板登记册**（包内不预置模板文件）；专家团配置项查坍缩产物的**确认态 + 选中专家数**。
-| **闸2** 设计 | 苏学法 ∥ 严真奥（并行） | **确认门 2/2** | 蓝图（七段+二八难点+页数锁定）+ 证据缺口 + **方案颗粒度四坐标** + **方向裁决（强/中/弱）** + **洞察写回载体（v3.21.0）** → #闸2 |
+| **闸2** 设计 | 严真奥 → 苏学法（串行） | **确认门 2/2** | 蓝图（七段+二八难点+页数锁定）+ 证据缺口 + **方案颗粒度四坐标** + **方向裁决（强/中/弱）** + **洞察写回载体（v3.21.0）** → #闸2 |
 | **闸3** 成稿 | 苏学法 ∥ 屠明熙（并行） | 免确认（迭代回路非作者交叉复检） | 合并页表五字段 + **新发现的问题写回载体（v3.21.0）** → #闸3 |
 | **闸4** 交付 | 脚本/郅作基门禁 + verifier 独立复判 | 交付终审 | 机器门禁 + 双校验 + 挂账审判 + **载体冻结与轮报投影（v3.21.0）** → #闸4 |
 | **闸4.5** 案例三源核验（v3.3.0） | 严真奥 ∥ verifier | 免确认 | `verify_deck.py --three-source-check`；抽 cases_library 10% 未核验重跑 → #闸4.5；**用户指定源走 `fetch_authority.py --source-json`（access≠confirmed 阻断 rc=4），L2 实调 MCP 后 `--record` 回填**（v3.19.2） |
@@ -338,7 +338,7 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 | ① 路由并**选人** | `harness.py route --level L2 --domain animal-medicine --panel avian_virologist,poultry_pathologist --rationale "<选型理由>"` |
 | ② 把选人结果**输出给用户对齐** | 读 `route` 输出的 `expert_panel_pool` / `selected_experts` / `selection_rationale` → 列出「本次上场的是谁、各管哪块、为什么是他」 |
 | ③ 用户确认 | `harness.py collapse confirm --id <域id> --task-id <tid> --actor user --decision "<用户裁决>" --rationale "<理由>"`（**`--decision` 必填、`--actor` 不得填 team-lead**，缺任一即拒绝确认） |
-| ④ 闸1 就绪自检 | `harness.py gate1-check`（九项冻结清单机器校验，项数以 `config/harness.yaml#gate1_freeze` 为真源） |
+| ④ 闸1 就绪自检 | `harness.py gate1-check`（十项冻结清单机器校验，项数以 `config/harness.yaml#gate1_freeze` 为真源） |
 
 - ⚠ **未选人不得确认**：该域有专家面板但未指定 `--panel` 时，坍缩产物处于 `pending_selection`，`collapse confirm` 会**直接拒绝**（exit 1）——「确认了一个域但没定谁上场」等于没对齐。
 - ⚠ **未确认不得装配**：装配器默认 `--require-confirmed`，未确认态**拒绝产出 spawn prompt**（exit 5）；确需先跑通用兜底时显式加 `--allow-unconfirmed`（输出会标注降级，生产流程禁用）。

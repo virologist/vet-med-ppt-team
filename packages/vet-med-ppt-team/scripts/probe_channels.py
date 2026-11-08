@@ -493,13 +493,15 @@ def probe_channels(cfg: dict, domain_id: str = "") -> dict:
 
     # ── 主动提醒（管家节点裁决 #1：可灵活选择与配置，主动提醒更换/更新）──
     # ① 库属其他专业（裁决 #4）
+    # v3.30.0 B2（红道 R9）：severity block → warn——提醒+确认后放行，
+    #   「用不用」交用户裁决，脚本不再一刀切阻断；放行不得静默（交付物须标注）。
     for m in report["scope_mismatches"]:
         report["replace_suggestions"].append({
             "kind": "scope_mismatch",
-            "severity": "block",
+            "severity": "warn",
             "target": m.get("library_name"),
             "detail": (f"{m.get('reason')}——请更换/更新为你所在专业的知识库"
-                       f"（**不得静默使用其他专业的库**）"),
+                       f"（如经用户确认继续使用，交付物须标注「跨专业知识库使用」）"),
         })
     # ② 域无账号内知识库 → 提醒换库
     for d in (cfg.get("domains_without_knowledge_bases") or []):
@@ -531,7 +533,7 @@ def probe_channels(cfg: dict, domain_id: str = "") -> dict:
                            + (f"｜导航：{kb.get('share_url')}" if kb.get("share_url") else "")),
             })
 
-    # ── 判据：required 通道不可用 或 scope 不匹配 → 阻断级 ──
+    # ── 判据：required 通道不可用 → 阻断级；scope 不匹配 → 提醒级（v3.30.0 B2/R9）──
     blocking = [c for c, v in report["channels"].items() if v.get("status") == STATUS_UNAVAILABLE]
     if blocking or report["scope_mismatches"]:
         report["verdict"] = "degraded"
@@ -576,8 +578,9 @@ def main() -> int:
                 print(f"  [{s.get('severity')}] {s.get('target')}：{s.get('detail')}",
                       file=sys.stderr)
 
-    # 退出码：有 required 通道不可用 或 scope 不匹配 → 1
-    if report.get("unavailable_channels") or report.get("scope_mismatches"):
+    # 退出码：required 通道不可用 → 1（阻断）；
+    #   scope 不匹配 → 仅提醒不阻断（v3.30.0 B2 红道 R9：提醒+确认后放行）
+    if report.get("unavailable_channels"):
         return 1
     return 0
 

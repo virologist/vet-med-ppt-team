@@ -81,7 +81,7 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 | 2 | 路由并**选人** | `harness.py route --level <L> --domain <域id> --panel <id1,id2> --rationale "<理由>"` |
 | 3 | **输出给用户对齐** | 读 `collapse show` 的摘要：谁上场、各管哪块（覆盖知识轴）、职责边界、为什么选他 |
 | 4 | 用户确认 | `harness.py collapse confirm --id <域id> --task-id <tid> --actor user --decision "<用户裁决>" --rationale "<理由>"` |
-| 5 | 自检 | `harness.py gate1-check --workspace <W>`（九项冻结清单机器校验，未就绪 rc=1；项数真源 = config/harness.yaml#gate1_freeze） |
+| 5 | 自检 | `harness.py gate1-check --workspace <W>`（十项冻结清单机器校验，未就绪 rc=1；项数真源 = config/harness.yaml#gate1_freeze） |
 
 **三条硬约束**：
 - **未选人不得确认**：该域有专家面板而未指定 `--panel` 时，`collapse confirm` 直接拒绝（rc=1）。
@@ -91,7 +91,7 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
 
 ---
 
-## 闸 2｜设计（苏学法 ∥ 严真奥，并行）
+## 闸 2｜设计（严真奥 → 苏学法，串行）
 
 输入：闸 1 确认结论。
 
@@ -131,6 +131,28 @@ stage 4 | 闸4.5 案例三源核验（v3.3.0） | members: dvm-content-expert, v
    合起来才是完整洞察；脚本只检出「多轴并存 ⇒ 待人工裁决」，**不判是否互斥**（那是语义判断）。
    同轴内不得做两遍（那才是重复劳动）。
 6.1 **请用户确认 → 确认门 2/2（设计确认）**。此后进入制作阶段不再逐段确认。
+
+### 6.1-bis 重构模式的 L1/L2 分流协议（v3.30.0 B2 · 升级项①）
+
+> 任务模式（task_mode）是闸1 第 10 项冻结项；mode 与 L0–L3 复杂度**正交**。
+> 取值域唯一源 = `config/harness.yaml#routing.mode_values`；本节只写**流程语义**。
+
+**L1 内容级重构（restructure-L1）**——保留原结构，只动内容面：
+- 适用：证据更新 / 数据增补 / 版式修复 / 单页文字优化；
+- 流程通道：**Loop B 既有 delta_gate**（自引入缺陷阻断 / 存量挂账），不重走闸2；
+- 约束：不得改变教学路径（页序/章节组织）；结构改动诉求出现即升级为 L2 评估。
+
+**L2 教学级重构（restructure-L2）**——反向设计重排教学路径：
+- 适用：章节组织重排 / 学习目标重写 / 受众层变更 / 课时结构变化；
+- 流程通道：**必须重走闸2**（本闸全流程：证据先行 → 蓝图 → 确认门 2/2），
+  且蓝图自检须**对接教学设计判据 SSOT**（`references/pedagogical-rubric.md`
+  §1 多媒体原则 + §2 反向设计三件套对齐）；
+- 原件处置：原 .pptx 为一等输入（只读 sha256 基线），重构产物为新版本，
+  不覆写原件（同 Loop B 原件只读纪律）；
+- 禁止：以 L1 名义做 L2 改动（教学路径被改而未过设计闸 = 绕过确认门，按越权处置）。
+
+**检查模式（check）**：只出审计报告不改稿（`verify_deck.py --json` 分级报告 +
+七维诊断契约）；**增补模式（augment）**：Loop B delta_gate 的显式入口（点名深化）。
 
 ### 6.2 gate 结构项预检清单（B23② · 第五轮诊断 N3 · **闸2 交付物的强制项**）
 

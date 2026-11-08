@@ -125,7 +125,14 @@ entries:
   - id: "RF-20261108-013"
     rule_ref: "config/harness.yaml#stages.1 + scripts/test_orchestration_v2.py#T2 + scripts/test_arch_drift.py#反例A + docs/architecture.md"
     change: "A-1 修复：v3.17.0 伪并行修正只改叙述未改值——yaml 值 parallel: yes 与注释/序述/守卫三面分裂，且被 T2 断言（断言并行）与 4 份镜像块焊死、harness.py:777-794 下发成「并行派发」运行时假边。本批四面一次闭合：值 no + name 去「并行+仲裁」+ T2 断言翻转（assertTrue→assertFalse）+ 反例 A old/new 对调 + 4 份镜像块与人读表/判据段同步串行 + LRN-20261104-001 pending→applied"
-    rule_hash_before: "eac2fa5e5a6b"
-    rule_hash_after: "e40d2441e66c"
+    rule_hash_before: "07ff7b234a07"
+    rule_hash_after: "ed94a89763e6"
     output_evidence: "回归 7 套件全绿（test_arch_drift 含反例 A 反转后守卫仍拦旧口径复活；test_orchestration_v2 T2 翻转后过）+ harness route plan parallel_policy 实测输出「串行派发」（详见 B0 收批 note 与 outputs/B0_收批证据_20261108.md）"
 
+  # ── v3.30.0 B2：升级项① 模式路由与学科解耦 + knowledge_channel 语义变更（红道 R9）──
+  - id: "RF-20261108-014"
+    rule_ref: "config/harness.yaml#routing + config/harness.yaml#gate1_freeze + scripts/harness.py#cmd_route/_task_mode_state/_knowledge_channel_state + scripts/probe_channels.py + scripts/test_external_tools.py#T4/T12"
+    change: "升级项①：routing 增 mode_values/mode_default（五取值，与 L0-L3 正交），cmd_route 增 --mode 校验（非法值 exit 2）并把 mode 写进 plan；gate1_freeze 9→10（task_mode，接单显式确认模式与深度档）；_knowledge_channel_state 与 probe_channels scope_mismatch 由 block/rc=1 阻断改为 warn 提醒+确认放行（交付物须标注跨库使用，用户沉默不构成确认）；散文九项→十项 6 处同步；sop-stages 增 §6.1-bis L1/L2 重构协议（L2 须重走闸2 + 对接 pedagogical-rubric.md）；顺带修 B0 遗留（sop-stages :94 标题、team-lead :290 职责表仍写并行）"
+    rule_hash_before: "ed94a89763e6"
+    rule_hash_after: "PENDING_B2_CLOSE"
+    output_evidence: "test_external_tools 16 例全过（T4 断言改 warn 可见+block 归零、rc 剥离环境噪声）+ T12 断言 len==10；test_gate1_check 7 例（无 task_mode 判未就绪=预期阻断）；route --mode check/restructure-L2 实测入 plan、bogus exit 2；gate1-check 实测十项输出；dead_config 36 例（登记表刷新后）；arch_drift 46/harness 21/five_gates 6/domain_pack 17/inspection_red 21 全绿；test_external_tools T4 曾 rc=1 系环境通道噪声（obsidian/markitdown/sogou 本机不可用）甄别留证"

@@ -215,10 +215,10 @@ segments:
 - id: harness.yaml#gate1_freeze
   file: harness.yaml
   prefix: gate1_freeze
-  key_count: 40
-  keys_sha256: 45b5e4ffe6c8f515d330b6bc79501b53ed53f6db
+  key_count: 45
+  keys_sha256: f831bc2ae613adea73358fd8e2a9018838bdee02
   leaf_unused: 0
-  leaf_weak: 36
+  leaf_weak: 40
   consumer: 脚本
   disposition: 新增键须接线
   note: 闸1 任务冻结清单（任务包四要素、域、面板等）。gate1-check 整块校验。
@@ -310,10 +310,10 @@ segments:
 - id: harness.yaml#routing
   file: harness.yaml
   prefix: routing
-  key_count: 24
-  keys_sha256: eb3fc29a4c352acdf42a7909b2cdfe3e3b05f9b8
+  key_count: 30
+  keys_sha256: e0df8eb4d4aee7e0db129db727379144ff8f6dc7
   leaf_unused: 0
-  leaf_weak: 24
+  leaf_weak: 30
   consumer: 脚本
   disposition: 新增键须接线
   note: L1/L2/L3 分层路由与成员映射。
@@ -340,10 +340,10 @@ segments:
 - id: harness.yaml#loop_a
   file: harness.yaml
   prefix: loop_a
-  key_count: 21
-  keys_sha256: cb85fc2fdd80ff3997b16bce8106640407bae447
+  key_count: 22
+  keys_sha256: 5fd08214254a072a230cfe1b2a069cad974507de
   leaf_unused: 0
-  leaf_weak: 20
+  leaf_weak: 21
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。

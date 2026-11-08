@@ -142,9 +142,13 @@ class TestExternalTools(unittest.TestCase):
         finally:
             renamed.rename(self.ext_cfg)
 
-    # ── T4 反例：库属其他专业 → scope_mismatch 阻断 ─────────────
-    def test_T4_scope_mismatch_blocks(self):
+    # ── T4 反例：库属其他专业 → scope_mismatch 提醒（v3.30.0 B2/R9：不再阻断）──
+    def test_T4_scope_mismatch_warns(self):
         """T4【反例】：把某库的 owner_scope 改成别的专业 → 探针必须报 scope_mismatch。
+
+        v3.30.0 B2（红道 R9）语义变更：scope_mismatch = 提醒+确认后放行（不阻断）。
+        本断言同步：仍须产出 scope_mismatches（可见性不降），但 rc=0、
+        提醒级别降为 warn；「不得静默」改由「须用户确认 + 交付物标注」承载。
 
         ⚠ v3.25.0：改**副本**（`self.ext_cfg`），跑**副本**的探针（`self.probe`）。
         """
@@ -155,10 +159,15 @@ class TestExternalTools(unittest.TestCase):
         d = json.loads(out)
         self.assertTrue(d.get("scope_mismatches"),
                         "库属其他专业却未报 scope_mismatch——判据是假的")
-        self.assertEqual(rc, 1, "scope 冲突应返回 rc=1（阻断级）")
+        # ⚠ rc 不作 scope 断言：探针 rc=1 判「required 通道不可用」（环境依赖——
+        #   本机装没装 obsidian/markitdown 等通道与 scope 语义正交）。
+        #   scope 的断言面 = scope_mismatches 可见 + 提醒降为 warn（不残留 block）。
+        warns = [s for s in d.get("replace_suggestions") or []
+                 if s.get("severity") == "warn"]
+        self.assertTrue(warns, "scope 冲突未产出 warn 级提醒（放行不得静默）")
         blocks = [s for s in d.get("replace_suggestions") or []
-                  if s.get("severity") == "block"]
-        self.assertTrue(blocks, "scope 冲突未产出 block 级提醒")
+                  if s.get("severity") == "block" and s.get("kind") == "scope_mismatch"]
+        self.assertFalse(blocks, "scope 冲突仍产出 block 级提醒——B2/R9 语义未落地")
 
     # ── T5 L1/L2 分层契约 ──────────────────────────────────────
     def test_T5_mcp_channels_are_L2(self):
@@ -263,7 +272,7 @@ class TestExternalTools(unittest.TestCase):
 
     # ── T12 闸1 清单含新增两项 ─────────────────────────────────
     def test_T12_gate1_freeze_has_new_items(self):
-        """T12：gate1_freeze 清单含 v3.19.0 新增的两项。"""
+        """T12：gate1_freeze 清单含 v3.19.0 新增两项 + v3.22.0 G3 项 + v3.30.0 B2 项。"""
         cfg = yaml.safe_load(HARNESS_YAML.read_text(encoding="utf-8"))
         ids = [str(i.get("id")) for i in (cfg.get("gate1_freeze") or [])]
         self.assertIn("delivery_language", ids, "gate1_freeze 缺 delivery_language")
@@ -272,7 +281,10 @@ class TestExternalTools(unittest.TestCase):
         #   （洞察载体目标集——"目标集登记完成前不得 spawn 成员"此前只是文档，无门禁）
         self.assertIn("insight_carrier_targets", ids,
                       "gate1_freeze 缺 insight_carrier_targets")
-        self.assertEqual(len(ids), 9, f"闸1 清单应为 9 项，实得 {len(ids)}")
+        # v3.30.0 B2（升级项①）：闸1 新增第 10 项 `task_mode`
+        #   （任务模式与深度档——与 L0-L3 正交，接单显式确认）
+        self.assertIn("task_mode", ids, "gate1_freeze 缺 task_mode")
+        self.assertEqual(len(ids), 10, f"闸1 清单应为 10 项，实得 {len(ids)}")
 
     # ── T13 v3.19.1·S2：非法域 id 必须被点破（归因正确）────────
     def test_T13_invalid_domain_is_flagged(self):
