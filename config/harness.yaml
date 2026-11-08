@@ -454,6 +454,13 @@ loop_a:
     #   只放开这两个清单文件，其它包根内容仍不放开。
     - "<包>/.codebuddy-plugin/plugin.json"
     - "<包>/.claude-plugin/plugin.json"
+    # ── v3.30.0 B1a：skills/ 纳入白名单（目录级，同 B16/B21 先例）─────────────
+    # 缘由：升级项②（教学设计要求 skill 双层形态）要求包根建 skills/<name>/SKILL.md
+    #   并挂 plugin.json skills[]（平台规范 plugin-json-spec.md:33 明文支持，
+    #   validate_expert.py 校验 SKILL.md 存在 + skills/ 须在包根）。skills/ 不在 scope
+    #   ⇒ 「建得了清单却建不了目录」= 无解漂移（同 B16 docs 先例）。
+    # 边界：只放开 skills/（skill 封装目录），不放开包根其它内容。
+    - "<包>/skills"
     # ── v3.28.2 W3：两个 marketplace.json 纳入白名单 ─────────────────────
     # 缘由（体检第 14 项实测）：版本号 13 处里有 2 处是
     #   `.codebuddy-plugin/marketplace.json` 与 `.claude-plugin/marketplace.json`
