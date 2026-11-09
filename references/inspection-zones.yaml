@@ -341,7 +341,7 @@ segments:
   file: harness.yaml
   prefix: loop_a
   key_count: 22
-  keys_sha256: 5fd08214254a072a230cfe1b2a069cad974507de
+  keys_sha256: 7e58566d0d2f3838a8ff619bab6f6274f983d555
   leaf_unused: 0
   leaf_weak: 21
   consumer: 脚本

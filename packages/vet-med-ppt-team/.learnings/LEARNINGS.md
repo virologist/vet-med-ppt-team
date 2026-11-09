@@ -1062,3 +1062,55 @@ T18 抽样加 `named = vc._extract_release_head(subject)` 过滤：只对
 - Source: correction
 - Related Files: scripts/test_versionctl.py, scripts/versionctl.py
 - Tags: 守卫, 抽样口径, 历史补记, 假阳性, 真值分裂
+
+---
+
+## [LRN-20261109-022] correction
+
+**Logged**: 2026-11-09T22:50:00+08:00
+**Priority**: medium
+**Status**: applied
+**Area**: scripts, config, references
+
+### Summary
+
+两个同族「复制 / 连带」缺陷（B6 批，均由上轮「直跑补链」掩盖）：
+
+① `ensure_settings.format_regression_report` 的 `timed_out` 组处置文案是
+   `env_limited` 分支**复制粘贴**来的 ⇒ 超时被误诊为「宿主 broker 拦 mkdir /
+   TMPDIR 不可写」，排查方向被带偏（11-09 终检汇报据此写成「环境限制所致」，
+   上轮因此用「直跑 36 passed 补链」绕过，没修根因）。
+   根因不是判据错，是**诊断文案与状态语义不正交**——守卫的输出文案本身
+   也是可观测面，错文案等同错判据。
+
+② 改 `config/harness.yaml` 的**值**（`regression_timeout_s` 300→600）后，
+   `references/inspection-zones.yaml` 的 `harness.yaml#loop_a.keys_sha256`
+   机算字段 stale ⇒ `test_inspection_zone_registry_red.py` 3 个变异体红证明
+   用例假红。`harness.yaml` 注释早已写明「改它必须连带刷新」，但**注释不是
+   门禁**：首轮执行漏做，靠全量回归才暴露。关键认知：配置**值**进入
+   `idents`（`路径=值repr`）指纹，不是「只改键名才要刷登记表」。
+
+### Why It Matters
+
+- ① 让「用补链绕过」看起来合理：直跑通过就以为收口了，实际终检恒留 ⚠、
+  且诊断方向错。⇒ 凡终检出现 ⚠，必须追到「判据/阈值/文案」层，
+  **禁以「另一次直跑通过」替代根因修复**。
+- ② 注释型约束无人守。⇒ 批次收口清单应显式含「改 config/*.yaml 后必跑
+  `loop reflow` + `--dump-block-segments` 比对机算字段」。
+
+### Suggested Fix（已落地，B6 批）
+
+- 三组处置文案按语义分组，超时组指向 `regression_timeout_s` 阈值 +
+  先单跑取真实耗时；新增 `TestTimeoutDispositionWording` 两条能红反例
+  （用 HEAD 修复前版本实测：报告缺阈值指引且处置行含 TMPDIR 归因 ⇒ 均挂）。
+- 阈值 300→600（直跑 164.38s / 56 套件串行 / 3.6× 余量），`REG_TIMEOUT`
+  降级语义原样保留（**非放松守卫**）。
+- 用 `--dump-block-segments` 机算刷新登记表 1 个字段；台账 8 条指向
+  `config/harness.yaml` 的 `rule_hash_after` 按 B4 同口径刷新。
+- 因果隔离方法留证：还原配置 / 仅改值 / 仅加注释 三组对照，把「值变动」
+  从「注释字面量」中分离出来。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/ensure_settings.py, config/harness.yaml, references/inspection-zones.yaml, scripts/test_regression_skip_report.py, references/defect-reflow.yaml
+- Tags: 诊断文案, 状态语义正交, 机算字段连带刷新, 能红反例, 假红, 补链掩盖根因

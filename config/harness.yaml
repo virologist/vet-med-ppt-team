@@ -506,7 +506,14 @@ loop_a:
   #   结论区降级为「⚠️ 存在未验证项」，绝不洗成「✅ 全部通过」（假绿）。
   #   为何外提：本键是**机器判据参数**（不同机器性能差异大），禁硬编码；
   #   真源单一，改它必须连带刷新 references/inspection-zones.yaml（机算字段）。
-  regression_timeout_s: 300
+  #   B6（2026-11-09）实测校准：300s 在本机（56 个 test_*.py 串行 + 宿主
+  #   load≈19）会让最慢套件 test_dead_config_disposition.py 超时——该套件
+  #   **单独直跑实测 164.38s / 36 passed**，串行上下文叠加载荷后 >300s。
+  #   ⇒ 调到 600s ≈ 3.6× 直跑实测余量。⚠ 这不是放松守卫：超时仍判
+  #   `REG_TIMEOUT`、仍进未验证累加器、结论区仍降级；只是把「机器判据参数」
+  #   与本机实际耗时分布对齐，让终检能真正跑完（未验 ≠ 已验）。
+  #   ⇒ 若他机更慢，按同法先单跑取耗时再调本键；禁改判定逻辑走捷径。
+  regression_timeout_s: 600
   # B20-③（第三轮诊断 P2-1）：批次历史压缩保留数——closed 批次超此数压入
   #   archived_batches 摘要区（显式 `loop batch-gc` 触发，不自动）。
   #   对照先例：snapshot LRU keep=3 / task_state state_history_keep=10。

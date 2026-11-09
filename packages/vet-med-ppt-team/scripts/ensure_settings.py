@@ -787,8 +787,23 @@ def format_regression_report(results, total_suites):
                 lines.append(f"     {name} → {d.get('text', '超时未跑完')}")
             lines.append(f"     → 合计 {to_cases} 个套件未跑完 ⇒ 相关守卫的「能红」属性本轮"
                          f"**未验证**（未验 ≠ 已验，勿据此认为守卫有效）")
-        lines.append("     → 处置：环境限制所致（宿主 broker 拦 mkdir / TMPDIR 不可写），"
-                     "**不是包缺陷**；换个会话或另设 TMPDIR 后重跑本套件再判")
+        #: ⚠ B6（2026-11-09）：处置文案必须按**语义分组**给，禁三组合用一句。
+        #:   缺陷现场：`REG_TIMEOUT`（套件在阈值内没跑完）此前共用 env_limited
+        #:   的归因「宿主 broker 拦 mkdir / TMPDIR 不可写」，排查者被误导去换
+        #:   TMPDIR 而不是看超时阈值——11-09 终检汇报即据此把超时误写成
+        #:   「环境限制所致」。三类成因互不覆盖：跳过=没跑 / 受限=跑了被打断 /
+        #:   超时=没跑完。守卫见 test_regression_skip_report.py#T_R18_T7。
+        if skipped:
+            lines.append("     → 处置〔跳过〕：宿主环境限制致反例未执行；"
+                         "解除限制（broker 放行 mkdir / 可写 TMPDIR）后重跑该套件再判")
+        if env_limited:
+            lines.append("     → 处置〔环境受限〕：宿主 broker 拦 mkdir / TMPDIR 不可写，"
+                         "**不是包缺陷**；换个会话或另设 TMPDIR 后重跑本套件再判")
+        if timed_out:
+            lines.append("     → 处置〔超时〕：套件在阈值内未跑完，**不是宿主环境限制**；"
+                         "先单跑 `python3 scripts/<套件>.py` 取真实耗时，"
+                         "再按机器性能调 `harness.yaml#loop_a.regression_timeout_s`"
+                         "（禁靠改 TMPDIR 误治）；调后重跑体检直到该项 ✓")
         #: ⚠ 阻断与否沿用 `REGRESSION_SKIP_BLOCKS_RELEASE`（既有可切换设计）：
         #:   判「不阻断」的是**同一个常量** ⇒ 将来若决定阻断，改常量即可，
         #:   判定逻辑与文案都不必动。

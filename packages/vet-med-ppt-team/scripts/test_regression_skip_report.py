@@ -937,5 +937,58 @@ class TestTimeoutSemantics(_SkipSemanticsBase):
                       "真包：超时必须计入未验证累加器（对照不得污染真包）")
 
 
+class TestTimeoutDispositionWording(_SkipSemanticsBase):
+    """T-R18-7（B6 / 2026-11-09）：超时组处置文案不得误归因宿主环境限制。
+
+    缺陷现场（真实，非假设）：`format_regression_report` 把 skipped /
+    env_limited / timed_out 三组**共用**一句 env_limited 的处置文案
+    「宿主 broker 拦 mkdir / TMPDIR 不可写」⇒ `REG_TIMEOUT`（套件在阈值内
+    没跑完）被误诊为宿主环境限制；11-09 终检汇报据此写成「环境限制所致」，
+    排查方向被带偏（去换 TMPDIR 而不是校准 regression_timeout_s）。
+
+    能红判据：修复前 timed_out 报告含「TMPDIR 不可写」归因、且不含
+    「regression_timeout_s」阈值指引 ⇒ 本类两条用例都会挂。
+    """
+
+    def _timeout_report(self):
+        status, detail = self.es.analyze_timeout_suite("test_slow.py", 600)
+        self.assertEqual(status, self.es.REG_TIMEOUT)
+        return self.es.format_regression_report(
+            [("test_slow.py", status, detail)], 1)
+
+    def test_t7_timeout_wording_points_to_threshold_not_tmpdir(self):
+        lines, rc = self._timeout_report()
+        blob = "\n".join(lines)
+        self.assertEqual(rc, 0, "超时不阻断（但必须进未验证累加器）")
+        self.assertIn("超时", blob)
+        self.assertIn(
+            "regression_timeout_s", blob,
+            "超时处置必须指向超时阈值真源（否则排查者去改 TMPDIR = 误治）")
+        self.assertIn("处置〔超时〕", blob, "超时组必须有自己的分组标识")
+        self.assertNotIn(
+            "处置〔环境受限〕", blob,
+            "只有超时时不得打印环境受限组的处置文案（复制粘贴回潮）")
+        for line in lines:
+            if "处置" in line:
+                self.assertNotIn(
+                    "TMPDIR 不可写", line,
+                    f"超时处置不得误归因宿主环境限制：{line}")
+
+    def test_t7b_three_groups_get_distinct_dispositions(self):
+        """三组同时出现时，处置文案必须各自分组、互不串味。"""
+        skip_d = {"text": "rc=0 / 检出跳过", "skipped_cases": 2}
+        env_d = {"text": "rc=1 / 宿主环境受限", "env_limited_cases": 1}
+        to_status, to_d = self.es.analyze_timeout_suite("test_slow.py", 600)
+        lines, rc = self.es.format_regression_report([
+            ("test_a.py", self.es.REG_PASS_WITH_SKIPS, skip_d),
+            ("test_b.py", self.es.REG_ENV_LIMITED, env_d),
+            ("test_slow.py", to_status, to_d),
+        ], 3)
+        blob = "\n".join(lines)
+        self.assertEqual(rc, 0)
+        for tag in ("处置〔跳过〕", "处置〔环境受限〕", "处置〔超时〕"):
+            self.assertIn(tag, blob, f"缺分组处置文案：{tag}")
+
+
 if __name__ == "__main__":
     unittest.main()
