@@ -1114,3 +1114,73 @@ T18 抽样加 `named = vc._extract_release_head(subject)` 过滤：只对
 - Source: correction
 - Related Files: scripts/ensure_settings.py, config/harness.yaml, references/inspection-zones.yaml, scripts/test_regression_skip_report.py, references/defect-reflow.yaml
 - Tags: 诊断文案, 状态语义正交, 机算字段连带刷新, 能红反例, 假红, 补链掩盖根因
+
+---
+
+## [LRN-20261110-023] correction/high · 「零命中」不是「不存在」——否定性结论必须双源核验
+
+**Logged**: 2026-11-10T06:30:00+08:00
+**Priority**: high
+**Status**: applied
+**Area**: process, .learnings, references
+
+### Summary
+
+`LRN-20261104-011` 已登记「BSD grep 不支持 `\|` 交替 ⇒ 零命中可能是工具假象」、
+`LRN-20261104-012` 已警告「已登记的教训不会自动生效，同型错误会复发」。
+六天后同型错误复发且后果升级：
+
+11-09 盘点任务 #160 挂账时执行
+`ls -1 04-test | grep -i "C0\|独立验证" | head -5 || echo "未找到 C0 独立验证报告"`，
+本机 BSD grep 把 `\|` 当字面量 ⇒ `rc=1` 假零命中；`|| echo` 把「工具没匹配」
+翻译成「对象不存在」。据此判定「`04-test/C0_独立验证报告.md` 未落盘、
+事后补写会伪造当时证据、判定不补写」，并写进跨会话项目记忆
+（`.workbuddy/memory/2026-11-09.md`）、最终汇报与 #160 终局处置。
+
+11-10 独立实测证伪：该报告 **11-04 20:16 即已完整落盘**（805 行 / 41,746 bytes，
+A–E 全部实测完毕，独立验证者 `agent-harness-tester-3`，批次 `b1793786650`）。
+`grep -iE "C0|独立验证"` 立即命中 3 个文件，`test -f` 决定性证真。
+
+**升级点**：11-04 那次只误派了一份工作清单；这次把假阴性写进了**持久知识资产**
+⇒ 后续会话读到记忆会以为报告缺失，并连带漏检 C0 报告 5.3/5.6 挂的两项真实遗留
+（最小补丁纪律过度放宽 / 改动已发布未收批）。
+
+### Why It Matters
+
+- **`|| echo` 是语义陷阱**：把「命令未成功/未匹配」与「对象为假」合并成同一条输出。
+  据此产生的否定性结论往往不可逆（写进记忆、任务终局、发布汇报）。
+- **零命中的信息量是 0**：可能是「确实没有」，也可能是语法错、路径错、权限错、
+  资源瞬断（本轮同时出现 `resource temporarily unavailable: /dev/null` 与 SIGTERM 137）。
+  把 0 信息量当成「否」是判据级错误。
+- **LRN 登记 ≠ 生效**：教训若不在盘点阶段被主动调用，会跨会话复发
+  （`LRN-012` 第二次被验证）。
+- 管道退出码受 `head` 等末段影响，`||` 触发条件本身都不可靠。
+
+### Rule（已落地，B7 批）
+
+1. 凡要下「未落盘 / 缺失 / 未完成 / 不存在」等**否定性事实结论**，必须经
+   **第二条独立路径**复核：`test -f` / `stat` / 专用检索工具 / 直接列目录；
+   两条路径不得共享同一正则或同一管道。
+2. 禁止 `grep ... || echo "未找到"` 作为判据。
+3. 交替匹配统一 `grep -E "a|b"` 或 `-e a -e b`；本仓默认 macOS BSD grep。
+4. 高负载期 Bash 批量 grep 出现空结果 / SIGTERM 时，**先怀疑工具再下结论**，
+   换专用检索工具复核（本轮 Grep 工具立即纠正了 Bash grep 的空结果）。
+5. 写进持久记忆的「缺失/未完成」结论须附**实测命令与退出码**，便于后续会话复核。
+
+### Suggested Fix（已落地，B7 批）
+
+- 更正 `.workbuddy/memory/2026-11-09.md`（追加更正段，保留原错误不抹除）、
+  任务 #160 description、最终汇报；终局核验报告落
+  `outputs/遗留与更正_终局核验_20261110.md`。
+- C0 报告两项遗留实证归位：5.3 已由 v3.28.7 两态区分修复
+  （`loop_contract.py:319-327`、`harness.py:6370-6383`、
+  `TestPatchDisciplineTwoState` 4 passed）；5.4 经补开批次 `b1793794546`
+  = `abandoned` 留痕闭环，账本 open=0。
+- 两件平台侧/未来任务定性留证：`validate_expert.py:239` 属宿主内置缓存
+  （包侧不修，本包 `ensure_settings.py:249-288` 反向守卫）；
+  `knowledge_channel` 真实放行待实际跨专业任务触发，不以模拟记录充当。
+
+### Metadata
+- Source: correction
+- Related Files: .learnings/LEARNINGS.md, references/defect-reflow.yaml, outputs/遗留与更正_终局核验_20261110.md
+- Tags: 否定性结论, 双源核验, BSD grep, 假阴性, 持久记忆污染, LRN-011/012 同型复发, 兜底陷阱
