@@ -83,6 +83,26 @@ shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
 - 全量 8 套件回归、`ensure_settings --quick`、镜像同步、`batch-close`
   的最终结论见本批交付报告（四项状态分别标注）。
 
+### 收口补记（2026-11-12，接续 429 中断）
+
+前序会话在 08:10 完成提交与推送后因 Token 频次限制中断，遗留两项
+**客观可验的收口缺口**，本补记予以清偿：
+
+- **版本位漂移**（S-E73 同型）：`f42716c` 的 CHANGELOG 顶部与 commit 均为
+  v3.31.3，但 24 个版本位仍停在 3.31.2（4 个 plugin/marketplace JSON +
+  5 个 config YAML + 3 个 references YAML，主副本与镜像双轨共 24 处）。
+  已全部对齐到 3.31.3；镜像双轨 `diff -rq` 零差异。
+- **缺 tag**：`versionctl list` 报 v3.31.3 无版本指针，已补 `v3.31.3` tag。
+- 独立复验（本轮实测，不复用前序结论）：
+  `test_versionctl.py` **148 passed + 4 subtests** ·
+  `test_five_gates.py + test_contracts.py` **41 passed** ·
+  `check_contracts.py` **C1-C9 九项全绿** ·
+  `test_pkg_isolation.py + test_contracts.py` **42 passed** ·
+  `make_isolated_pkg()` 探针 **6.22s / 172 文件 / 排除项裁剪干净**。
+- 组合回归曾出现 1 次 `[Errno 17] File exists: .../config` 瞬态失败
+  （3 次组合跑中 1 次），同批前序会话已记录该类失败为「宿主 broker
+  瞬态」，单独跑与复跑均通过；按既有纪律不凭单跑宣称修复，如实留痕。
+
 ---
 
 ## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）
