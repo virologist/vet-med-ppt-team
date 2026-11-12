@@ -133,9 +133,27 @@ maxTurns: 200
 
 **三条硬约束**：① **授权不互通**——用户在 Loop A 批准的升级指令 **≠** 授权处理任何课件，Loop B 启动必须由用户在课件级单独点名（文件名+范围）；② **状态不互通**——`loopA_state.json` / `loopB_state.json` / `task_state.json` 三者并存不覆盖；③ **目录不互通**——Loop A 只碰 `<包>/{scripts,config,references,agents}`，用户课件目录与 `.workbuddy/artifacts` 是绝对禁区。
 
+- **冷启动先跑 `harness.py next`（v3.31.0 新增 · 任务级导航）**——
+  ```bash
+  harness.py next --workspace <工作区>          # 人读四段式
+  harness.py next --workspace <工作区> --json   # 机器可读
+  ```
+  | 段 | 内容 |
+  |---|---|
+  | 【现在在哪】 | 当前闸（读工作区状态定位，不靠记忆） |
+  | 【下一步动作】 | **可直接照跑**的命令串（来自 `references/work-map.yaml#actions`） |
+  | 【验收条件】 | 机器项 / 人工项**分列**（语义与审美不交给脚本） |
+  | 【关键分支】 | 该闸的分支与出口 |
+
+  ⚠ **退出码语义**：`0`=有明确下一步 · `1`=**卡住**（有未满足项，输出会点名）·
+  `2`=用法错 · `3`=**依赖缺失**（工作地图读不到——此时**不得假装「无待办」**）。
+  ⚠ 工作地图唯一源 = `references/work-map.yaml`（由 `check_contracts.py` C1 与
+  `config/harness.yaml#stages` 逐项比对，不一致即判红）。
+
 - **Loop A 纪律（v3.20.0 已代码化）**：每批修改前停一次确认；只做最小补丁；回归必跑。**三条判据现在由脚本强制**，不是自觉——
   ```bash
   harness.py loop batch-open  --loop a --note <本批主题> --files scripts/<目标脚本>.py,config/<目标配置>.yaml
+  harness.py loop batch-extend --loop a --batch <id> --files <开工后才发现要改的文件>
   harness.py loop batch-close --loop a --batch <id> --confirmed \
              --regression ensure_settings,test_harness,test_five_gates
   ```
@@ -143,6 +161,11 @@ maxTurns: 200
   ③ 实际改动超出声明文件集 → exit 1（`patch_discipline=minimal`，用 `git status` 比对）。
   ⚠ ③ 判的是"有没有超出声明范围"，**不是**"改得多不多、该不该改"——后者是人的判断。
   **不得因一次课件的特殊要求擅自改全局规则**。
+  ⚠ **开工后才发现要改别的文件 ⇒ 走 `batch-extend`，不要手改状态文件**（v3.31.1 新增）：
+  声明集在 `batch-open` 时冻结，但**有合规追加入口**——追加同样要过
+  `loop_a.scope` / `loop_a.forbidden_paths` 越界校验，且**只增不删、不得事后改账**
+  （已收批/已废弃批次一律拒绝追加）、全程留痕。
+  缺这条入口时，"为了防越权的纪律"会反过来逼人绕过自己（手改 `loopA_state.json`）⇒ 留痕被摧毁。
 - **Loop B 纪律**：**每轮必须停等用户读完再进下一轮**，执行细则以 `references/round-review-sop.md` 为准（转换层/条目八字段/七种裁决语义/sha256 冻结失效/五类终止/终审 10 项）；原件只读，工作副本迭代；制作期遇内容问题**退回内容轮**，不得自行改写已批准内容。
 - **Loop 状态推进必须走 `harness.py loop`，不得靠口头记账（v3.20.0 扩到 23 个动作）**——
 

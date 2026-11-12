@@ -4,9 +4,15 @@
 # 缘由（第五轮从零审计 D 项实测）：LEARNINGS.md 20 条中 10 条无 Status 字段、
 #   「登记 ≠ 行为约束」有一手复发实证（BSD grep 交替陷阱在 LRN-011/012 已两次
 #   登记的情况下第三次复发）——登记面没有合并门禁 = 漂移风险敞口。
-# 消费方：主理人（LLM 语义执行）；本文件是判据声明，机器暂无强制执行器
-#   （与 tools_whitelist 同族：声明面；强制力来自 batch-close 的 defect_reflow
-#   对账 + 体检第 18 项 dead_config 判据）。
+#
+# ⚠ **v3.31.0：执行器已落地**（此前本文件头注自陈「机器暂无强制执行器」——
+#   那是一句**声明面空转**的话，等于门禁只存在于纸面）：
+#   · 执行器 = `scripts/check_contracts.py`（契约 C6，判定纯函数可测）
+#     · 解析 LEARNINGS.md 条目 → 校验 Status 合法性（含 grandfather 豁免）
+#     · 判定 candidate 的晋升资格：同型（Tags 交集非空）累计 ≥ recurrence_threshold
+#       **或** 管家节点显式 ack（`--ack LRN-xxx`）
+#   · 执行器**只读**：不修改任何学习条目（实际晋升是显式的人的动作）
+#   · 强制力来源：体检第 28 项调 `check_contracts.py`（退出码并入体检结论）
 #
 # 门禁语义：
 #   - 候选条目（candidate）写入 LEARNINGS.md 时 Status 必须标 `candidate`；
@@ -17,14 +23,24 @@
 #     待下轮盘点时按 LEARNINGS.md 头部既有 Status 词表逐条收口；
 #   - 新条目一律过闸：candidate → (≥3 复发 或 ack) → applied/manual-only；
 #     未过闸的 candidate 不进入下一轮遗留盘点的「待办」清单（防重复拾取噪音）。
-version: "1.0.0"
+version: "1.1.0"
 promote_rules:
   recurrence_threshold: 3        # 同型经验累计 ≥3 条
   ack_by: "管家节点"             # 单条显式确认
   candidate_status: "candidate"  # 新条目初始状态（LEARNINGS.md Status 字段取值域新增）
+  # v3.31.0：同型判定的**可操作代理** = Tags 集合交集非空（不是语义判定）
+  #   ⚠ 宁可多要求一次 ack，也不误把不同型经验合并计数（假合并代价 > 漏合并）
+  same_type_proxy: "tags_intersection"
+executor:
+  script: "scripts/check_contracts.py"
+  contract_id: "C6"
+  invocation: "python3 scripts/check_contracts.py"
+  ack_flag: "--ack <LRN-id>"
+  read_only: true
 legacy_grandfather:
   cutoff: "2026-11-08"           # 此前登记的条目按已登记处理，不回溯
   count: 20
 non_goals:
-  - 不建机器强制执行器（去教材化；强制力挂既有对账面）
   - 不引跨包依赖（决策④）
+  # v3.31.0：删掉「不建机器强制执行器」——**已建**（见上方 executor 段）。
+  #   保留的边界：执行器**只读**，不代做晋升决策（那仍是人的动作）。

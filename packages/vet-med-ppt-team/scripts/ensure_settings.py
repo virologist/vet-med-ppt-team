@@ -120,7 +120,7 @@ REQUIRED_SCRIPTS = [
     "test_loop_state.py",        # 双层 Loop 状态机回归测试（33 例：停等/部分冻结/sha256 失效/预算触顶/越界）
 ]
 
-N = 27  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对；v3.27.0 L-7：26 根⇄镜像提交态一致性；v3.28.2 D17：27 YAML 1.1 布尔键陷阱）
+N = 28  # 检查项总数（...；v3.12.0：17 悬空脚本引用）（v3.2.0-batch2：7→10；v3.3.1：10→11；v3.4.2 P2-4：12；v3.4.3 B3：13 联邦巡检；v3.8.0 P-2：14 版本号一致性；v3.8.0：15 frontmatter 闭合；v3.11.0：16 受众分层单一数据源；v3.17.0：22 闸3 交叉复检映射；v3.25.0：25 harness 副本结构比对；v3.27.0 L-7：26 根⇄镜像提交态一致性；v3.28.2 D17：27 YAML 1.1 布尔键陷阱；v3.31.0：28 契约巡检）
 
 
 # ── 8. 活跃目录备份膨胀（D12）─────────────────────────────
@@ -1050,7 +1050,11 @@ def check_doc_implementation_drift(expert_dir):
     SUB_WHITELIST = {"doctor", "preflight", "route", "state", "budget", "trace",
                      "spawn", "stage", "gate", "verify-artifact", "verify-envelope",
                      "verify-ref", "sweep", "template-audit", "eval",
-                     "loop"}   # v3.9.0：双层 Loop 状态机
+                     "loop",
+                     # v3.31.0：新增任务级导航命令。**必须登记**——
+                     #   否则 CHANGELOG 里声明的 `harness.py next` 不会被本项捕获，
+                     #   即「声明了但不校验」⇒ 声明层≠执行层（本项治的就是这个）。
+                     "next"}   # v3.9.0：双层 Loop 状态机
     claimed = [c for c in claimed if c in SUB_WHITELIST]
     if not claimed:
         print(f"[12/{N}] ✓ CHANGELOG 无 harness.py 子命令声称（无漂移风险）")
@@ -1393,8 +1397,18 @@ def check_version_consistency(expert_dir):
                 #   缘由（v3.28.0 实测）：本次收口做版本号全量同步时，
                 #   用 grep 全仓扫描发现它停在 3.27.0；若只改清单内 12 处，
                 #   它就会**静默漂移** ⇒ 又是「声明层≠执行层」。
+                # v3.31.0 补：config/figure-assets.yaml（配图链路契约）
+                #   —— 同型第 14 处，且是**本轮收口当场自证**的：v3.31.0 提版时
+                #   实际改了 14 个声明点，但体检第 14 项只报"13 处一致"⇒
+                #   figure-assets.yaml 不在清单内 ⇒ 它若漂移，体检**照样全绿**。
+                #   ⚠ 这正是本项自己注释里写的"每次都是新发现一处漏掉"——
+                #   本轮把它一次性补齐（同时新增下方「清单自检」防再漏）。
+                # v3.31.0 补：references/work-map.yaml（任务级工作地图唯一源）
+                #   —— 本轮新增文件，自带 version 键且已同步到 3.31.0；
+                #   不纳入巡检则它漂移时体检全绿 ⇒ 与 figure-assets 同型。
                 "config/language-profile.yaml", "config/external-tools.yaml",
-                "references/inspection-zones.yaml"):
+                "references/inspection-zones.yaml", "config/figure-assets.yaml",
+                "references/work-map.yaml"):
         p = os.path.join(expert_dir, *rel.split("/"))
         if not os.path.isfile(p):
             continue
@@ -1426,6 +1440,63 @@ def check_version_consistency(expert_dir):
     if not main_ver:
         print(f"[14/{N}] ⚠ 主清单无 version 字段，无法做一致性巡检")
         return 1
+
+    # ── v3.31.0：清单自检（防「新增带 version 键的文件却漏进巡检清单」）──
+    # 病灶（同型第 14 处，现场实证）：v3.31.0 提版时**实际改了 14 个声明点**，
+    #   但本项只报"13 处一致"⇒ config/figure-assets.yaml 不在清单内。
+    #   若它漂移，本项**照样全绿** ⇒ 「声明层≠执行层」复发。
+    # 本项自己注释里写「每次都是新发现一处漏掉」⇒ 光补清单不够，
+    #   必须让「清单是否覆盖全部实际声明点」本身**可判定**。
+    # 判据：扫描 config/ 与 references/ 下所有 yaml，找出带顶层 `version:` 键的文件，
+    #   与本项巡检清单取差集；差集非空 ⇒ 判红并列出漏掉的文件。
+    # ⚠ 排除已知**非包版本**的 yaml（它们带 version 键但语义是别的契约版本）。
+    _NON_PACK_VERSION_YAML = {
+        # 这些 yaml 带 version 键，但其 version 是**自身契约版本**，不随包版本走
+        "config/domain-pack-contract.yaml",
+        "config/verification-tiers.yaml",
+        "references/insight-carrier.yaml",
+        "references/asset-fields.yaml",
+        "references/audience-profile-schema.yaml",
+        "config/domain-profiles.yaml",
+        "config/guard.yaml",
+        "config/hygiene-words.yaml",
+        "config/responsibility-matrix.yaml",
+    }
+    _watched = set()
+    for rel in ("references/result-envelope.yaml", "config/domain_config.yaml",
+                "config/language-profile.yaml", "config/external-tools.yaml",
+                "references/inspection-zones.yaml", "config/figure-assets.yaml",
+                # config/harness.yaml 走**单独分支**入库（③，扫全文而非逐文件列表），
+                # 但它同样带 version 键 ⇒ 必须计入「已覆盖」，否则自检会误报漏项。
+                "config/harness.yaml",
+                # references/work-map.yaml（v3.31.0 新增：任务级工作地图唯一源）——
+                #   它带 version 键且**本轮已同步到 3.31.0**；若不纳入巡检，
+                #   它漂移时体检照样全绿 ⇒ 与 figure-assets 同型，必须纳入。
+                "references/work-map.yaml"):
+        _watched.add(rel)
+    _found = set()
+    for sub in ("config", "references"):
+        d = os.path.join(expert_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".yaml"):
+                continue
+            rel = f"{sub}/{fn}"
+            if rel in _NON_PACK_VERSION_YAML:
+                continue
+            txt = open(os.path.join(d, fn), encoding="utf-8", errors="replace").read()
+            if _re.search(r'^version:\s*"?v?[0-9.]+"?\s*$', txt, _re.M):
+                _found.add(rel)
+    _unlisted = sorted(_found - _watched)
+    if _unlisted:
+        print(f"[14/{N}] ⚠ 版本巡检清单**漏项**：{len(_unlisted)} 个带 version 键的 yaml 未纳入本项")
+        for rel in _unlisted:
+            print(f"     {rel:34s} ← 漏登记（它若漂移，本体检**不会判红**）")
+        print("     → 处置：把上述文件加入本项 yaml version 键巡检清单"
+              "（历史教训：4→8→10→13→14，每次都是「新发现一处漏掉」）")
+        return 1
+
     bad = [(src, v) for src, v in rows if v != main_ver]
     if bad:
         print(f"[14/{N}] ⚠ 版本号不一致（主清单={main_ver}）：{len(bad)}/{len(rows)} 处偏离")
@@ -3043,6 +3114,55 @@ def check_yaml_bool_keys(expert_dir):
     return 0
 
 
+def check_contracts(expert_dir):
+    """第 28 项（v3.31.0 新增）：**契约巡检**——把「仅有文字说明」的要求转为机器判据。
+
+    背景（本轮实测，四条一手证据）：
+      ① 交付三件套只在 `references/delivery-spec.md` 有 schema，**无脚本检查齐备性**；
+      ② 文档里的体检项数口径有 15/15、22/22、23/23 三个版本，真源 27 项，**无守卫**；
+      ③ 闸2/3/4 **无闸1 同级的就绪检查**（只有 `gate1-check`）；
+      ④ `references/work-map.yaml`（新增工作地图）若无守卫，会与
+         `config/harness.yaml#stages` 各说各话（真值分裂同型）。
+
+    执行面 = `scripts/check_contracts.py`（契约 C1–C7），本项只**调用并汇总**：
+      · 执行器缺失 ⇒ 本项判红（不是「跳过」——检查器不存在 = 纪律无执行面）；
+      · 执行器 rc≠0 ⇒ 判红并转述失败项（逐条列出，含证据）；
+      · 执行器自身故障 ⇒ 判红（探测受阻不得洗成「通过」——假绿禁令）。
+    """
+    cpath = os.path.join(expert_dir, "scripts", "check_contracts.py")
+    if not os.path.isfile(cpath):
+        print(f"[28/{N}] 🔴 契约巡检执行器缺失：{cpath}")
+        print("      —— 「仅有文字说明、无实际检查」的纪律没有执行面；"
+              "请恢复 scripts/check_contracts.py")
+        return 1
+    try:
+        import subprocess
+        r = subprocess.run([sys.executable, cpath, "--pkg-root", expert_dir],
+                           capture_output=True, text=True, timeout=300)
+        out = (r.stdout or "") + (r.stderr or "")
+        if r.returncode == 0:
+            # 转述执行器的逐项结果（让人看见「检查了什么」，不只看结论）
+            for ln in (r.stdout or "").splitlines():
+                if ln.startswith(("✓", "🔴", "⚠")) or ln.startswith("     "):
+                    print(ln)
+            print(f"[28/{N}] ✓ 契约巡检通过（工作地图一致 / 文档口径一致 / "
+                  f"学习门禁执行器在位 / 认可样例库一致）")
+            return 0
+        # rc≠0 ⇒ 逐条列出失败项（已由执行器打印），此处补处置指引
+        for ln in (r.stdout or "").splitlines():
+            if ln.startswith(("✓", "🔴", "⚠")) or ln.startswith("     "):
+                print(ln)
+        print(f"[28/{N}] 🔴 契约巡检未通过（执行器 rc={r.returncode}）")
+        print("      → 处置：按上方失败项修正；契约判据真源 = "
+              "references/work-map.yaml 与 config/harness.yaml#stages")
+        return 1
+    except Exception as e:
+        print(f"[28/{N}] 🔴 契约巡检**未能执行**（{type(e).__name__}: {str(e)[:100]}）")
+        print("      —— 探测受阻不得洗成「通过」（假绿禁令）：本项判红，请手动执行 "
+              "`python3 scripts/check_contracts.py` 复核")
+        return 1
+
+
 def collect_block_segments(expert_dir):
     """返回「免检区（块级消费段）」清单（v3.25.0 · 供登记表守卫与 dump 开关复用）。
 
@@ -4617,6 +4737,8 @@ def main():
     rc |= check_mirror_committed_parity(path)
     # v3.28.2（D17）：YAML 1.1 布尔键陷阱（阻断；防「写 no: 得到 False 键」静默失效）
     rc |= check_yaml_bool_keys(path)
+    # v3.31.0：契约巡检（阻断；把「仅有文字说明」的要求转为机器判据）
+    rc |= check_contracts(path)
 
     print()
     #: ⚠ **v3.27.0 收尾：把「未验证」透传到最终结论**。

@@ -6,6 +6,320 @@
 
 ---
 
+## [v3.31.3] - 2026-11-12（回归可信度收口：copytree 慢路径根治 + 假绿纠正 + 证据纪律）
+
+> 本条是 v3.31.2 的**收口续批**。起因：v3.31.2 后跑全量回归，
+> 8 套件仅 **4/7** 通过，三项失败中**两项是本批工具链自身的问题**，
+> 一项是上一版「22 项全绿」的**假绿**。本批逐项查清并根治。
+
+### P0 · 上一版「D5 22 项全绿」是假绿（必须更正）
+
+`scripts/test_host_broker_resilience.py` 第 366 行两语句被黏在一行：
+
+```python
+tree = ast.parse(src)        offenders = []      # SyntaxError: invalid syntax
+```
+
+⇒ 该套件**从未真正跑过**，回归器如实报 `rc=1 / SyntaxError`。
+此前记录的「D5 22 项全绿」来自**另一条路径的局部核验**，
+**不能**当作套件通过证据 ⇒ 本版更正：修掉黏连、以回归器 rc 为唯一通过判据。
+教训：**能红守卫自己先得能跑**；守卫起不来时，回归器必须报红而不是被当成噪声略过。
+
+### P0 · `test_dead_config_disposition` 超时 2400s 的根因
+
+实测锁定在 `scripts/test_pkg_isolation.py::make_isolated_pkg()` 的
+
+```python
+shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
+```
+
+宿主 `sitecustomize.py` 的 `_brokered_shutil_copytree` 只有在
+`symlinks is False` **且** `ignore is None` **且** `copy_function is 原生copy2`
+**且** `ignore_dangling_symlinks is False` **且** `dirs_exist_ok is False`
+**五条全成立**时才把整棵树交给宿主代理（**一次** broker 往返）；
+带 `ignore` ⇒ 退化成**逐文件** `_brokered_shutil_copyfile`
+⇒ 每个文件一次 broker 往返 × 读超时固定 5 秒。
+
+| 对照实验（子进程隔离，本机实测） | 耗时 |
+|---|---|
+| `copytree(config, ignore=…)` | 0.58s |
+| `copytree(config)`（无 ignore） | **0.03s** |
+| `copytree(scripts, ignore=…)`（91 文件） | **>300s 未完成** |
+| 逐子树 `copytree(...)`（无 ignore）×7 | **0.42s** |
+
+⇒ `scripts/` 91 文件 ⇒ 单次隔离副本约 **7.6 分钟**，
+一个套件里多次构造 ⇒ 必然撞 2400s 超时（实测 `rc=124`）。
+
+**处置（最小改动、不绕开宿主授权）**：改为**逐个需要的子树**各拷一次，
+全部**不带 `ignore`**；再新增 `_prune_copy_excludes()` 事后裁剪缓存残留。
+顺带把一直闲置的 `COPY_DIRS` 常量接回主线（原设计意图本就如此），
+且天然不碰 `.git`(35M) / `packages`(39M)。
+**实测 `make_isolated_pkg()`：>2400s → 0.46s**，副本 172 文件、
+排除项全无、`cleanup_isolated_pkg()` 清理成功。
+
+### P1 · 回归器证据纪律（结果可验证）
+
+`.workbuddy/run_regression.py` 两处修正：
+
+1. **完整输出落盘**：旧版只保留每个套件最后一行 ⇒
+   `test_five_gates` 报 `FAILED (errors=2)` 却拿不到 traceback，
+   无法判断是超时、断言还是环境瞬态。现落盘到
+   `.workbuddy/_logs/suite_<name>.log`，失败可定位到具体用例与栈。
+2. **证据名单与必跑清单对齐**：旧版把 `ensure_settings` 排除在证据外，
+   但 `loop_a.regression_required` **明确列了它**，而
+   `_regression_evidence_verdict` 要求「证据集合 == `--regression` 集合」
+   ⇒ 收批必然报 `evidence_suite_mismatch`。现证据收全部实跑项
+   （7 必跑 + D5），并打印收批用名单。`regression_check` 只拒绝缺项、
+   **允许多跑**（`loop_contract.py` 已核实）。
+
+### 实测状态（有证据才宣称通过）
+
+- `test_five_gates` 单独复跑：**6/6 OK / 8.01s / rc=0**；
+  单次 `harness.py state set` 耗时 0.47–0.60s（**排除「超时导致 errors=2」**）。
+  ⇒ 首次回归里的 `errors=2` 属**回归上下文中的瞬态失败**，
+  本版通过完整日志机制在最终全量回归中复核，不凭一次单跑宣称修复。
+- `make_isolated_pkg()`：**0.46s / rc=0**（修复前 >2400s）。
+- 三个新 Python 文件 `ast.parse` 全通过。
+- 全量 8 套件回归、`ensure_settings --quick`、镜像同步、`batch-close`
+  的最终结论见本批交付报告（四项状态分别标注）。
+
+---
+
+## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）
+
+> 本条是 v3.31.1 的**续批**（同一改造任务的收口），不新开功能方向。
+> v3.31.1 修的是「`os.makedirs(exist_ok=True)` 不幂等」这一**单点**；
+> 本批用 **10 组探针**把宿主 broker 的真实行为**彻底查清**，
+> 发现病灶是**四个独立入口 + 一个根因** ⇒ 由此定案根治方案。
+
+### 根因（一句话）：broker 代做完后，响应在 5 秒读超时中丢失
+
+宿主 `sitecustomize.py` 劫持了**四个**独立入口：
+
+| 入口 | 宿主 shim 函数 | 位置 |
+|---|---|---|
+| `os.mkdir` | `_brokered_os_mkdir` | sitecustomize.py:611 |
+| `os.makedirs` | `_brokered_os_makedirs` | sitecustomize.py:621 |
+| `pathlib.Path.mkdir` | `_brokered_path_mkdir`（**独立打补丁**） | sitecustomize.py:767 |
+| `os.replace` / `os.rename` | `_brokered_os_rename` | sitecustomize.py:636 |
+| `pathlib.Path.touch` | `_brokered_path_touch`（**独立打补丁**，v3.31.2 补测时新发现） | sitecustomize.py:785 |
+
+⇒ **入口是 5 个不是 4 个** —— 第 5 个（`Path.touch`）在补测阶段才暴露：
+实测 `test_five_gates.py::test_T4_three_source_check_runs` 直接挂在
+`(tmp/"demo.pptx").touch()` ⇒ `PermissionError: Brokered host touch requires
+an available runtime file rule` ⇒ **漏掉它 ⇒ 修复不完整**。
+
+broker 通信：socket 读超时固定 **5 秒**（sitecustomize.py:402）。
+`_broker_request_host_operation`（L475）三种结局：响应 `None` ⇒ 回落原生执行；
+`ok:True` ⇒ 宿主**代执行**；`decision:"deny"` ⇒ 抛 `PermissionError`。
+
+⚠ **失败形态严格三态循环**（探针 9/10 实测，各 4/12 次）：
+
+| 形态 | 异常 | 真相 |
+|---|---|---|
+| ① 直接成功 | （无） | 目录存在 |
+| ② **假失败** | `FileExistsError` | **目录已存在**（uuid 不撞名 ⇒ 只可能是 broker 代建成功、**响应丢失**） |
+| ③ **真失败** | `PermissionError` | 目录**确实不存在**（4 秒后复查仍 False ⇒ broker 明确 deny） |
+
+⇒ **根治点 = 失败后复查真相**（`isdir` / 内容比对），**零成本**（纯 stat，不发 broker 请求）。
+
+### 处置
+
+- **`ensure_dir()` 加「失败后复查 `isdir`」**：假失败 ⇒ 判成功；**真失败 ⇒ 直接抛出**。
+  ⚠ **盲重试被实测否决并从全部设计中撤销**（探针 3/8/9/10）：
+  探针3「重试 4 次内 10/10 成功」是**假象**——那次用 `exist_ok=True`，
+  而 `exist_ok=True` 会**吞掉**「目录已被建好」的假失败 ⇒ 所谓成功其实是 no-op；
+  探针9 真失败连试 3 次仅 **3/10** 成功；
+  探针8 注入重试后单次 `mkdtemp` 耗时 **235.56s** ⇒ 把「等一次授权」放大成「等 30+ 秒」。
+  ⇒ `yaml#loop_a.mkdir_retry` 键随之撤销（避免留下没人读的"假配置"）。
+- **新增 `_replace_with_truth_check(src, dst)`**：`os.replace` 的可靠替身
+  ——**内容比对真相**（`src`/`dst` 内容一致 ⇒ rename 实际已发生 ⇒ 判成功）
+  + 有限重试。⚠ **不能只看「dst 是否存在」**：状态文件**本来就存在** ⇒ 存在性恒真 ⇒ 判据会假绿。
+  ⇒ `harness.py` 内**三处** `os.replace` 全部改走它（`_atomic_write_json` /
+  探针结果落盘 / 损坏文件备份轮转）⇒ **所有 loop 命令的写状态路径**不再随机挂。
+- **新增 `scripts/host_safe_tmp.py`**（518 行）：宿主安全目录创建库 + 注入器，
+  覆盖全部入口 —— `os.mkdir`（覆盖 `tempfile.mkdtemp` 内部与 `os.makedirs` 内部）、
+  `pathlib.Path.mkdir`（**逐级创建**，修 0/6）、`os.makedirs`（复查 + 有限重试）、
+  `os.replace`/`os.rename`（内容比对真相）、`tempfile.mkdtemp`（自实现候选名循环）。
+- **新增 `scripts/usercustomize_host_safe.py`**：注入点。
+  ⚠ 宿主 shim 已占用 `sitecustomize`（PYTHONPATH 第一位）⇒ **不可**再用
+  `sitecustomize`（会覆盖宿主策略 = 越权）；Python 的 `site.execsitecustomize()`
+  **先** import sitecustomize、**再** import usercustomize ⇒ 两者共存且顺序有保证
+  ⇒ 把注入目录**追加**到 PYTHONPATH **末尾** ⇒ broker 照常生效，补丁叠在其上。
+- **实测修复效果**：`tempfile.mkdtemp` **0/6 → 8/8**；`Path.mkdir(parents=True)`
+  **0/6 → 6/6**；`os.makedirs(exist_ok=True)` **3/6 → 6/6**；
+  `Path.touch` **直接 deny → 有补丁兜底**；
+  mock 锚点语义**未破坏**（`mock.patch("tempfile.mkdtemp")` 仍生效）；
+  broker **仍在生效**（注入后 `os.mkdir` 单次仍耗时 5.00s ⇒ 未绕开宿主授权策略）。
+- ⚠⚠ **重试预算必须封顶**（v3.31.2 补测时的一次真实回归，**修 A 引入 B**）：
+  broker 读超时固定 **5 秒** ⇒ 每次失败 ≈ 5 秒。
+  初版把重试设为 6 次（`DEFAULT_ATTEMPTS`）/ 4 次（harness 侧）⇒ 实测单次
+  `os.replace` 耗时 **19.16s** ⇒ **直接把 `test_five_gates.py` 里 `state set`
+  的 30 秒超时打爆**（2 个用例由「通过」变「超时失败」）。
+  ⇒ **定案：重试一律降到 2 次**（覆盖一次「响应丢失」即够，真失败 ≈ 10 秒，
+    在预算内**如实抛出**）⇒ 与「禁止盲重试」纪律一致。
+  ⇒ 已由 T-D5C-1b 钉死（`DEFAULT_ATTEMPTS ≤ 3` 且 harness 默认 `attempts ≤ 3`）。
+
+### 新增能红守卫 `scripts/test_host_broker_resilience.py`（22 个用例）
+
+| 组 | 判据 |
+|---|---|
+| D5-A | `ensure_dir`：假失败被 `isdir` 复查兜住 · 真失败如实抛出 · **不得盲重试**（调用次数必须为 1）· 已存在目录零请求 |
+| D5-B | `_replace_with_truth_check`：内容一致 ⇒ 判成功 · 内容不同 ⇒ **不得**判成功 · 源已消失 ⇒ 判成功 · 既不存在也不一致 ⇒ 如实拒绝 · `_atomic_write_json` 必须走 helper（AST 级）· `harness.py` 内**全部** `os.replace` 站点必须走 helper（AST 级全量扫描） |
+| D5-C | `host_safe_tmp.install()` 覆盖全部入口 · 幂等 · **保留 `FileExistsError` 原生语义** · 假失败兜住 · `_same_content` 正确 |
+| D5-D | 注入点必须调 `install()` · 注入失败**必须写 stderr**（禁静默失败）· **不得**自带 `sitecustomize`（越权保护） |
+| D5-E | `mock.patch("tempfile.mkdtemp")` 仍生效（**全批守卫的生命线**）· `test_arch_drift.py` 的 `_ORIGIN_MKDOTEMP` 锚点完好 |
+
+⚠ **判据设计铁律（两条，写进文件头）**：
+① **零真实 IO** —— 实测宿主 broker 对新建文件写 **5.13s**、replace **5.00s**、
+mkdir 直接 deny ⇒ 判据若含真实 IO，单套件要跑几十分钟 ⇒ 全部改为 **mock 驱动**；
+② **断言落在「行为」上** —— 「文件存在」是恒真命题 ⇒ 断言"在不在"必然假绿。
+
+### 反馈闭环
+
+- 新增 **`LRN-20261111-029`**（defect/high · applied）：broker 三态循环 ⇒
+  「假失败 vs 真失败」判据设计 + 盲重试否决依据。
+- 撤回 v3.31.1 的一条**认知偏差**：`ensure_dir` 的 docstring 曾把
+  「`exist_ok=True` 会无条件发请求」当作唯一病灶 ⇒ 探针证明真实病灶是
+  「broker 代做 + 响应丢失」的**三态循环** ⇒ v3.31.1 的修法只覆盖了其中一个态。
+
+---
+
+## [v3.31.1] - 2026-11-11（契约巡检补全 C8/C9 + 批次门三处真实缺陷修复 + 声明集受控追加入口）
+
+> 本条是 v3.31.0 的**续批**（同一改造任务的收口），不新开功能方向。
+> v3.31.0 立了「工作地图 + 契约巡检 + 反馈闭环」三根柱子；
+> 本批把**巡检覆盖补到文档层**（C8/C9），并修掉**巡检与批次门自身暴露的三处真实缺陷**。
+
+### 契约巡检补全（C8 / C9）——把「仅有文字说明」继续转成机器判据
+
+- **C8 悬空引用检测**：包内文档（`references/` + `agents/` + `config/` + `scripts/`）
+  引用的 `references/*.md` `scripts/*.py` 等路径**必须真实存在**——
+  此前「引用了不存在的文件」只能靠人眼发现。
+  三轮收窄至**零假阳性**：去掉 `outputs/`（不随包跟踪）→ 排除前瞻性引用
+  （`_FUTURE_MARKERS`）→ 排除 CHANGELOG（历史归档报告）与引述标记
+  ⇒ 首版 22 处假阳性 → 0。
+- **C9 动作命令可达性**：工作地图 `actions` 段的命令串是「**可直接照跑**」的
+  （冷启动的 AI 会照抄执行）⇒ 引用的子命令必须**真的注册**在 `harness.py`，
+  否则工作地图沦为「看起来能用但跑不通」的文档。
+- **`scripts/test_contracts.py` 29 → 35 个用例**，全部通过；
+  C8/C9 各配正例 + **能红反例**（悬空引用判红 / 未注册命令判红）。
+
+### 批次门与改动集合：三处真实缺陷（**假阳性 + 漏判 + 入口不健壮**）
+
+| # | 缺陷 | 性质 | 处置 | 证据 |
+|---|---|---|---|---|
+| A | `git status --porcelain` 把**未跟踪目录折叠成目录名**（`?? references/approved-examples/`），而声明集存的是**目录内文件** ⇒ 同一份改动两侧粒度不一致 ⇒ **已声明文件反被硬拒**（假阳性），且**目录内新增文件完全不可见**（漏判）⇒ 最小补丁纪律双向失效 | 假阳性 + 漏判 | `_git_changed_files()` 改 `-uall` + `os.walk` 兜底展开；`patch_discipline_check` 增加**目录声明归一** | LRN-20261111-026；变异测试 M1 翻红 |
+| B | 批次声明集在 `batch-open` 时**冻结**且**无追加入口** ⇒ 开工后发现要改的文件不在声明里，**没有合规路径**（只能废弃重开 / 手改状态文件绕过留痕）⇒ **为了防越权的纪律反过来堵死正常工程动作** | 纪律设计缺陷 | 新增 `loop batch-extend`（过同一套越界校验 + 只增不删 + 不得事后改账 + 全程留痕） | LRN-20261111-027；变异测试 M3/M4 翻红 |
+| C | **宿主 broker 下 `os.makedirs(exist_ok=True)` 不幂等**：本宿主 `sitecustomize.py` 对 `exist_ok=True` **无条件**发起 broker 授权往返（**即使目录已存在**）⇒ 每次白等约 5 秒 + 约 **1/4 概率**抛 `PermissionError`。病灶：`state_path()` / `trace_path()` / `_atomic_write_json()` 是**所有 loop 命令的必经路径** ⇒ `batch-open` / `batch-extend` / `batch-close` 本身有约 **25% 崩溃率** ⇒ **纪律执行入口不健壮** | 入口健壮性缺陷 | 新增幂等 `ensure_dir()`（先 `isdir` 判断，已存在直接返回、零请求）+ 包内 **19 处** `os.makedirs(exist_ok=True)` 调用点替换 | LRN-20261111-028；变异测试 M1/M2 翻红；`state_path`/`trace_path` 稳态耗时 5s → **0.00s / 0.06s** |
+- **变异测试（反向对照）**：本批 5 项修复逐一做**变异**（把实现改坏），
+  对应用例**全部翻红** ⇒ 判据确实在工作，不是假绿。
+  （M1 删除 `isdir` 短路 ⇒ T-D4-1 翻红 · M2 helper 内递归自调用 ⇒ T-D4-2 翻红 ·
+  M3 退回目录折叠口径 ⇒ T-D1 翻红 · M4 移除目录声明归一 ⇒ T-D2 翻红 ·
+  M5 放行已收批批次追加 ⇒ T-D3-2 翻红）
+- **新增测试** `scripts/test_batch_extend_and_scope.py`（**13 个用例全绿**，1 skip）：
+  T-D1-1 未跟踪目录展开 · T-D2-1/2 目录声明归一（含能红反例）·
+  T-D2-3 目录声明不得越界覆盖 · T-D3-1..5 追加入口五项行为 ·
+  T-D4-1 已存在目录**零建目录请求** · T-D4-2 helper 不得自调用（AST 级判据）·
+  T-D4-3 不存在时仍真的创建（正向能力不退化）。
+  ⚠ T-D4-1 的判据设计要点：**断言必须落在「有没有发起建目录请求」上**，
+  而不是「目录在不在」——后者恒真 ⇒ 判据会假绿（用替换 `os.makedirs` 计数取证）。
+
+### 工具化：`batch-extend` 三处同步接线（可发现性）
+
+- `harness.py` 新增 `batch-extend` 动作（argparse choices +
+  `cmd_loop` 分派 + `doctor#loop_actions` 三处**必须同步**，漏一处即 LLM 冷启动不可见）；
+- `references/work-map.yaml` `actions` 段新增 `loop_a_batch` 组
+  （batch-open → batch-extend → batch-close 三条可照跑命令串）。
+
+### 反馈闭环
+
+- 新增 **`LRN-20261111-026`**（defect/high · applied）：未跟踪目录折叠 ⇒ 改动集合两侧口径不一致。
+- 新增 **`LRN-20261111-027`**（defect/high · applied）：纪律只能"堵"不能"通" ⇒
+  为了防越权的机制反过来堵死正常工程动作。
+- 新增 **`LRN-20261111-028`**（defect/high · applied）：宿主 broker 下
+  `os.makedirs(exist_ok=True)` 不幂等 ⇒ 纪律执行入口本身有约 25% 崩溃率。
+  沉淀了一条可复用的判据设计要点：**断言幂等性必须数「请求次数」，
+  不能断言「结果状态」**（后者恒真 ⇒ 假绿）。
+
+### 回归
+
+- `check_contracts.py` rc=0（C1/C2/C5/C5/C6/C6/C7/C8/C9 全绿）；
+- `test_contracts.py` **35/35 通过**；`test_batch_extend_and_scope.py` **13/13 通过**（1 skip = 环境受限分支）；
+- 变异测试 M1/M2/M3/M4/M5 ⇒ 对应用例**全部翻红**（判据能红）。
+
+---
+## [v3.31.0] - 2026-11-11（专家团系统化改造：工作地图 + 契约巡检 + 反馈闭环执行器）
+
+> 依据：用户指令「从依赖 AI 理解和执行的操作说明，升级为结构清晰、工具可靠、
+> 结果可验证、能持续自我改进的工作系统」；四步流程 = 诊断 → 验收标准确认 →
+> 按需实施 → 测试与交付。确认口径：**允许改现有文件**；四项改造全部做；
+> 通过判定线 = **全量回归 + 能红反例**。
+
+### 结构化：任务级工作地图 + `next` 命令
+
+- **`references/work-map.yaml`（新建 · 唯一源）**：目标 / 双循环 / 五闸
+  （输入·输出·验收条件·关键分支·机器判据）/ 动作序列（可直接照跑的命令串）/
+  反馈回路 / 主观-客观边界。
+- **`scripts/harness.py` 新增 `next` 子命令**（v3.31.0）：冷启动答
+  「**现在在哪 / 下一步跑什么 / 还缺什么 / 验收条件**」——
+  读工作区状态定位当前闸 → 调 `gate1-check` 取未满足项 → 四段式输出。
+  退出码：`0`=有明确下一步 / `1`=卡住 / `2`=用法错 / `3`=依赖缺失
+  （工作地图读不到时**不得假装「无待办」**）。`--json` 供机器消费。
+  已加入 `doctor` 子命令表（**不可发现 = 对 LLM 不存在**，本包铁律）。
+
+### 工具化 / 可验证：契约巡检（体检第 28 项）
+
+- **`scripts/check_contracts.py`（新建）**：把「仅有文字说明」的要求转为机器判据——
+  C1 工作地图⇄`harness.yaml#stages` 逐项一致 · C2 文档体检项数口径一致 ·
+  C3 交付三件套齐备 · C4 闸间就绪 · C5 MERGE_GATE 执行器在位 ·
+  C6 学习门禁（Status 合法性 + 晋升资格） · C7 认可样例库 sha256 漂移。
+- **体检 `ensure_settings.py` 由 27 项 → 28 项**：新增第 28 项「契约巡检」，
+  执行器缺失 / rc≠0 / 执行器故障**一律判红**（探测受阻不得洗成通过）。
+- **`scripts/test_contracts.py`（新建）**：**29 个用例，全部通过**；
+  每条新判据均配正例 + **能红反例**（否则「能红」无从证明）。
+
+### 可改进：反馈闭环 + 认可样例
+
+- **`.learnings/MERGE_GATE.yaml` 升到 1.1.0**：此前头注自陈「机器暂无强制执行器」
+  —— 那是一句**声明面空转**的话；现已落地只读执行器（`check_contracts.py` C6），
+  实际晋升仍是**显式的人的动作**。
+- **`references/approved-examples/`（新建）**：认可样例库（正面锚点），
+  5 条收录标准 + sha256 防漂移 + C7 守卫；**当前为空是真实状态**（空表即缺口，
+  登记为 LRN-20261111-024）。
+- **`LRN-20261111-024`（新建 · candidate）**：「好样例」缺失——
+  认可发生在对话里，没有沉淀为可核对的样例集。
+
+### 本轮**自引入并当场修掉**的缺陷（全部有能红反例）
+
+| # | 缺陷 | 性质 | 处置 |
+|---|---|---|---|
+| 1 | 工作地图闸4.5 名称漏 `（v3.3.0）` ⇒ 与 yaml 真值分裂 | 真值分裂 | C1 判据当场抓到 → 修地图 |
+| 2 | C2 首版判据过宽 ⇒ **13 处假阳性**（`verify-ref 12/12` 等被误判为体检口径） | 假阳性 | 收窄为「同行含体检标识的 X/X」+「ensure_settings…N 项检查」 |
+| 3 | C6 误判 10 条历史条目缺 Status | 假阳性 | 按 `legacy_grandfather.cutoff` 只对晚于截止日的判红 |
+| 4 | C6「candidate 未够格」判红 | **判据级错误** | 「未过闸 = 未生效」是合法状态 ⇒ 改判绿；改拦**反向**情形（已够格却仍挂 candidate） |
+| 5 | **Tags 正则只认 `**Tags**:`，而真实文件全是 `- Tags:` ⇒ 24 条 Tags 全部没解析 ⇒「同型≥3」路径实质空转** | **声明层≠执行层** | 正则兼容两种写法；加 T8 能红反例 |
+| 6 | 第 14 项版本巡检**漏 `config/figure-assets.yaml`** ⇒ 它漂移体检照样全绿 | 同型第 14 处 | 补入清单 + **新增「清单自检」**（扫描全部带 version 键的 yaml 取差集，差集非空即判红） |
+| 7 | 版本收口脚本 `re.sub` 未加 `re.M` ⇒ 统计说「改了 14 处」实际只写盘 3 处 | 统计≠写盘 | 改逐行精确替换 + **改后复验**（旧值必须为 0） |
+
+### 文档口径与版本收口
+
+- 文档体检项数口径：7 处 `22/22`、`15/15`、`20 项` → `28/28`、`28 项检查`
+  （`loop-master-prompt` ×3 · `delivery-spec` · `dual-loop-governance` ×2 ·
+  `adjudication-rules` · `batch-surgery-sop`）——C2 守卫守护。
+- 版本声明点 **15 处**同步 `3.30.0 → 3.31.0`（第 14 项 rc=0）；
+  历史叙述（`v3.30.0 B2 语义变更…`等）**逐处甄别保留未动**。
+
+### 回归
+
+- 体检 **28/28 全绿**（rc=0，含新增第 28 项）；`check_contracts.py` rc=0；
+  `test_contracts.py` **29/29 通过**。
+- 能红反例实测：① 新增未登记 version 键 yaml ⇒ 判红；
+  ② 已登记声明点漂移 ⇒ 判红（rc=1）；③ 已够格却仍挂 candidate ⇒ 判红；
+  ④ 工作地图缺失 ⇒ `next` rc=3。
+
+---
+
 ## [v3.30.0] - 2026-11-08（第五轮从零审计 A-1 修复 + 三升级项落地）
 
 > 依据：从头重审 GATE 1（`outputs/审计_GATE1_从头重审_20261108.md`，A–F 六项）

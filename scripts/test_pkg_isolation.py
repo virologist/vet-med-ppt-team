@@ -71,6 +71,35 @@ COPY_DIRS = ("config", "scripts", "agents", "references", "docs")
 COPY_MANIFEST_DIRS = (".codebuddy-plugin", ".claude-plugin")
 
 #: 拷贝时排除的目录/文件（体积与无关物）。
+#:
+#: ⚠⚠ **v3.31.3：这些是「拷贝后裁剪」的排除项，不再作为 copytree 的 `ignore` 参数。**
+#:
+#: **病灶（实测，2026-11-11）**：宿主 shim 的 `_brokered_shutil_copytree` 只有在
+#:   `symlinks is False` **且** `ignore is None` **且** `copy_function is 原生copy2`
+#:   **且** `ignore_dangling_symlinks is False` **且** `dirs_exist_ok is False`
+#:   这五个条件**全部成立**时，才把整棵树交给宿主代理（**一次** broker 往返）。
+#:   **任何一个不成立** ⇒ 退化为**逐文件** `_brokered_shutil_copyfile`
+#:   ⇒ 每个文件一次 broker 往返 ⇒ 读超时固定 **5 秒**（`sitecustomize.py:402`）。
+#:
+#: **实测对照**（本机，`probe_ct3.py`，子进程隔离）：
+#:   | 变体                              | 耗时      |
+#:   |-----------------------------------|-----------|
+#:   | copytree(config, ignore=…)         | 0.58s     |
+#:   | copytree(config)      ← 无 ignore  | **0.03s** |
+#:   | copytree(scripts, ignore=…)        | **>300s（未完成）** |
+#:   `scripts/` 有 91 个文件 ⇒ 逐文件 91×5s ≈ **7.6 分钟/次**
+#:   ⇒ `test_dead_config_disposition` 里的 `make_isolated_pkg()` **必然超时**
+#:   （实测 rc=124 / TIMEOUT after 2400s）。
+#:
+#: **修法（最小改动，不绕开宿主授权）**：
+#:   ① 先用**无 ignore** 的原生 `copytree` 整树拷贝（走宿主整树代理，**快 20 倍**）；
+#:   ② 拷完**再删**掉不需要的目录/文件（删除在副本内，不碰生产目录）。
+#: ⇒ broker 授权决策照常进行（整树代理仍由宿主裁决），只是不再逐文件往返。
+COPY_EXCLUDE_DIRS = (".git", ".pytest_cache", "__pycache__", "packages", "tests")
+COPY_EXCLUDE_SUFFIX = (".pyc",)
+COPY_EXCLUDE_NAMES = (".DS_Store",)
+
+#: 兼容旧名（外部若有引用）：语义已改为「排除项清单」而非 copytree 的 ignore 回调。
 COPY_IGNORE = shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__", "*.pyc",
                                       ".DS_Store", "packages", "tests")
 
@@ -98,6 +127,37 @@ def _find_shared_core() -> Path:
         f"{cand}；或用 VETMED_SHARED_CORE 指定）。\n"
         "  共享件不随包分发（仅安装态/仓库结构下存在）⇒ 端到端用例无法在隔离副本里跑。"
     )
+
+
+def _prune_copy_excludes(pkg_root: Path) -> None:
+    """在**已拷贝**的副本里删掉残留的排除项（v3.31.3）。
+
+    ⚠ **为什么需要这一步**（实测，2026-11-11）：
+      宿主 shim 的 `_brokered_shutil_copytree` 仅在 `ignore is None` 时
+      把整棵树交给宿主代理（**一次** broker 往返）；带 `ignore` 则退化为
+      **逐文件**代理 ⇒ 每个文件一次往返 × 读超时 5 秒
+      ⇒ `scripts/`（91 文件）单次 ≈ **7.6 分钟** ⇒ 套件必然超时。
+      ⇒ 改为「逐子树整树拷贝（都不带 ignore）+ 事后清理缓存残留」。
+
+    ⚠ **只删副本内的东西**：`pkg_root` 是临时目录下的副本根，
+      **绝不**触及生产目录 ⇒ 裁剪失败也只是副本脏，不影响生产。
+
+    ⚠ **裁剪失败不抛异常**：排除项只是「体积与无关物」，
+      留着它们只会让副本大一点，**不影响断言语义**
+      ⇒ 裁剪失败应当**降级为静默跳过**，不能把整个构造流程判红。
+    """
+    for dirpath, dirnames, filenames in os.walk(pkg_root, topdown=True):
+        # 目录名命中排除表 ⇒ 整棵剪掉（topdown ⇒ 改列表即可阻止下行）
+        for d in list(dirnames):
+            if d in COPY_EXCLUDE_DIRS:
+                shutil.rmtree(os.path.join(dirpath, d), ignore_errors=True)
+                dirnames.remove(d)
+        for fn in filenames:
+            if fn in COPY_EXCLUDE_NAMES or fn.endswith(COPY_EXCLUDE_SUFFIX):
+                try:
+                    os.remove(os.path.join(dirpath, fn))
+                except OSError:
+                    pass
 
 
 class IsolatedPkgBuildError(RuntimeError):
@@ -192,10 +252,27 @@ def make_isolated_pkg(prefix: str = "vetmed-iso-") -> Path:
         plugins = root / "plugins"
         plugins.mkdir(parents=True, exist_ok=True)
         pkg = plugins / "vet-med-ppt-team"
-        shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
-        for d in COPY_MANIFEST_DIRS:
-            if not (pkg / d).is_dir():
+        pkg.mkdir(parents=True, exist_ok=True)
+        # ⚠ **v3.31.3：逐子树拷贝（无 `ignore=` 参数）**——宿主 shim 只在
+        #   `ignore is None` 时才走整树代理；带 ignore 会退化成**逐文件** broker
+        #   往返（读超时 5 秒/次）⇒ `scripts/`（91 文件）单次 ≈ **7.6 分钟**
+        #   ⇒ `test_dead_config_disposition` 必然超时（实测 rc=124 / 2400s）。
+        #   ⇒ 改为「逐个**需要的**子树各拷一次（都不带 ignore）」：
+        #     · 只拷 `COPY_DIRS` + 清单目录 ⇒ **不碰** .git(35M)/packages(39M)
+        #     · 每个子树一次整树代理 ⇒ 实测合计 **0.42s**（对比 >300s）
+        #   ⇒ 顺带把一直闲置的 `COPY_DIRS` 常量接回主线（原设计意图本就如此）。
+        for d in COPY_DIRS:
+            src = PKG / d
+            if not src.is_dir():
                 continue
+            shutil.copytree(src, pkg / d)
+        for d in COPY_MANIFEST_DIRS:
+            src = PKG / d
+            if not src.is_dir():
+                continue
+            shutil.copytree(src, pkg / d)
+        # 兜底：子树内仍可能残留 __pycache__/*.pyc（体积小，删不删都不影响断言）
+        _prune_copy_excludes(pkg)
     except OSError as exc:
         # 拷贝阶段失败 ⇒ 清掉半成品（避免残留大量半拷贝副本），再抛可诊断异常
         shutil.rmtree(root, ignore_errors=True)

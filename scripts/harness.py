@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.30.0
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.31.2
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -344,20 +344,106 @@ def now_iso():
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
 
 
+# ── v3.31.1（2026-11-11 宿主 broker 幂等建目录修复 · LRN-20261111-028）─────
+#: ⚠ **v3.31.2（D5）撤销了「重试参数外提」的设计**（实测否决，非改主意）：
+#:   最初按「禁硬编码」把重试次数/退避下沉到 `yaml#loop_a.mkdir_retry`，
+#:   但探针 8/9/10 实测证明**盲重试是错的**：
+#:     · 探针3「重试 4 次内 10/10 成功」是**假象**——那次用
+#:       `os.makedirs(exist_ok=True)`，而 `exist_ok=True` 会**吞掉**
+#:       「目录已被建好」的假失败 ⇒ 所谓"成功"其实是 no-op；
+#:     · 探针9 真失败（PermissionError）连试 3 次仅 **3/10** 成功；
+#:     · 探针8 实测注入重试后单次 `mkdtemp` 耗时 **235.56s**
+#:       ⇒ 盲重试把「等一次授权」放大成「等 30+ 秒」⇒ 套件成倍变慢。
+#:   ⇒ 定案：**不重试**。假失败用「异常后复查 isdir」兜住（**零成本**、
+#:     纯 stat、不发 broker 请求、确定有效）；真失败如实抛出。
+#:   ⇒ 故本函数**无参数**，也不需要 yaml 配置键 ⇒ yaml 侧的
+#:     `loop_a.mkdir_retry` 键已随之撤销（避免留下一个没人读的"假配置"）。
+
+
+def ensure_dir(path):
+    """确保目录存在（**幂等**：已存在则直接返回，不发起任何建目录请求）。
+
+    ⚠ **为何不能用 `os.makedirs(d, exist_ok=True)`**（实测缺陷，非风格偏好）：
+      本宿主在 `sitecustomize.py` 里劫持了 `os.makedirs`：
+        · `exist_ok=False` 且目录已存在 ⇒ 走原生（快，不发请求）；
+        · `exist_ok=True`  ⇒ **无条件**发起 broker 授权往返
+          （`_broker_request_host_operation("mkdir", ..., recursive=True)`）。
+      实测（2026-11-11，本机）：对**已存在**目录连续 4 次
+      `os.makedirs(d, exist_ok=True)` ⇒ 0.31s / 5.0s / **PermissionError** / 0.43s
+      ⇒ ① 每次白等约 5 秒（broker 往返）；② 约 1/4 概率直接抛
+      `PermissionError: Brokered host mkdir requires an available runtime file rule`。
+
+    ⇒ 病灶（**真实缺陷**，不是环境噪声）：
+      `state_path()` / `trace_path()` / `_atomic_write_json()` 是
+      **所有 loop 命令的必经路径** ⇒ `batch-open` / `batch-extend` / `batch-close`
+      在本宿主有约 25% 的崩溃率 ⇒ 「最小补丁纪律」的执行入口本身不可靠。
+      （测试套件同理：`tempfile.TemporaryDirectory()` 直接抛 ⇒ 既有套件
+      `test_batch_gate_b19.py` 等同样挂 ⇒ 体检第 7 项只能判 REG_ENV_LIMITED。）
+
+    ⚠ **修复口径（v3.31.1）**：先 `os.path.isdir` 判断，**已存在直接返回**（零请求）；
+      不存在才调 `os.makedirs(exist_ok=True)`（一次性创建，必须走 broker）。
+      ⇒ 稳态（目录已存在）**完全不触发** broker ⇒ 既不慢也不失败。
+
+    ⚠⚠ **v3.31.2（D5）根治补丁：失败后复查 `isdir`**
+      探针实测（2026-11-11 本机，10 组探针逐项取证）修正了 v3.31.1 的**认知偏差**：
+        · `os.makedirs(全新路径, exist_ok=True)` 成功率仅 **5/10**（OK/ERR 完美交替）；
+        · `tempfile.mkdtemp()` 成功率 **0/6**；
+        · broker 响应在 `NO_RESPONSE`（读超时）与 `deny` 之间**完美交替**；
+        · 失败形态严格三态循环（各 4/12 次）：
+            - `None`（直接成功）⇒ 目录存在；
+            - **`FileExistsError` ⇒ 目录已存在**（uuid 不撞名 ⇒ 只可能是
+              broker 代建成功但**响应在 5 秒读超时中丢失**）⇒ **假失败**；
+            - `PermissionError` ⇒ 目录**确实不存在**（4 秒后复查仍 False）
+              ⇒ **真失败**（broker 明确拒绝）。
+      ⇒ 修法（三条，缺一不可）：
+        ① `isdir` 短路 —— 已存在 ⇒ 零请求（保留 v3.31.1 成果，稳态 0.00s）；
+        ② **失败后复查 `isdir`** —— 捕获「假失败」⇒ 判成功。
+           这一条**零成本**（纯 stat，不发 broker 请求）且**确定有效**
+           （假失败占失败态的一半）。
+        ③ **真失败 ⇒ 直接抛出**（**不盲重试**）。
+      ⚠ **为何不做盲重试**（探针 3/8/9 实测否决）：
+        · 探针3「重试 4 次内 10/10 成功」是**假象**——那次用的是
+          `os.makedirs(exist_ok=True)`，而 `exist_ok=True` 会**吞掉**
+          「目录已被建好」的假失败 ⇒ 所谓"成功"其实是 no-op；
+        · 探针9 真失败（PermissionError）连试 3 次仅 **3/10** 成功；
+        · 探针8 实测注入重试后单次 `mkdtemp` 耗时 **235.56s**
+          ⇒ 盲重试会把「等一次授权」放大成「等 30+ 秒」⇒ 套件成倍变慢。
+      ⇒ 故本函数**不做重试**：假失败用复查兜住（零成本），
+        真失败如实抛出（让调用方与体检的 `REG_ENV_LIMITED` 归口如实可见）。
+    """
+    if not path:
+        return path
+    if os.path.isdir(path):
+        return path
+    # ⚠ 这里是**唯一**允许走 broker 的地方（目录不存在 ⇒ 必须真的创建）。
+    #   绝不能写成 ensure_dir(path) ⇒ 无限递归（v3.31.1 批量替换时踩到过，
+    #   已由 test_D4_2_no_recursive_ensure_dir 钉死）。
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        # ⚠ **根治点**：失败后复查真相——broker 可能**已代建成功**
+        #   只是响应在 5 秒读超时中丢失（探针实测：假失败形态为
+        #   FileExistsError ⇒ 目录确实已存在）。
+        if os.path.isdir(path):
+            return path
+        raise
+    return path
+
+
 def wkspace(args):
     return os.path.abspath(args.workspace or os.getcwd())
 
 
 def state_path(w):
     p = os.path.join(w, ".workbuddy")
-    os.makedirs(p, exist_ok=True)
+    ensure_dir(p)          # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     return os.path.join(p, "task_state.json")
 
 
 def trace_path(w, cfg):
     rel = cfg.get("observability", {}).get("trace_file", ".workbuddy/harness_trace.jsonl")
     p = os.path.join(w, rel)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
+    ensure_dir(os.path.dirname(p))   # ⚠ v3.31.1：同上
     return p
 
 
@@ -391,6 +477,60 @@ class _TaskIdConflict(Exception):
     """task_id 比对不一致：立即停止推进 + 显式报警（不得静默接受他人 task_id）。"""
 
 
+def _replace_with_truth_check(src, dst, attempts=2, backoff=0.2):
+    """`os.replace` 的可靠替身：**内容比对真相** + 有限重试（v3.31.2 · D5）。
+
+    ⚠ **病灶（实测，2026-11-11）**：宿主 broker 拦 `rename` ⇒
+      `PermissionError: Brokered host rename requires an available runtime file rule`
+      ⇒ `batch-extend` 实测**直接失败**（栈在 `_atomic_write_json` 的
+      `os.replace`）⇒ **所有 loop 命令的写状态路径**随机挂
+      ⇒ 「最小补丁纪律」的执行入口不可靠。
+
+    ⚠ **真相判定方式**：失败后比对 `src` 与 `dst` 的**内容**
+      —— 一致 ⇒ rename **实际已发生**（只是响应在 5 秒读超时中丢失）⇒ 判成功。
+      ⚠ **不能只看「dst 是否存在」**：状态文件**本来就存在**
+      ⇒ 存在性恒真 ⇒ 判据会假绿（把「没替换」判成「替换了」）。
+      ⇒ 另一条旁证：`src` 已消失 ⇒ rename 极可能已发生。
+
+    ⚠ **不绕开 broker**：仍走原生 `os.replace` ⇒ 宿主授权决策照常进行。
+
+    ⚠ **不静默吞错**：重试耗尽仍失败 ⇒ 如实抛出原始异常。
+
+    ⚠⚠ **为什么 `attempts=2` 而不是 4**（2026-11-11 实测修正）：
+      broker 的读超时固定 **5 秒** ⇒ 每次失败 ≈ 5 秒。
+      实测：`attempts=4` 时 `_replace_with_truth_check` 单次耗时 **19.16s**
+      ⇒ 直接把 `test_five_gates.py` 里 `state set` 的 30 秒超时**打爆**
+      （2 个用例由「通过」变「超时失败」⇒ **修 A 引入 B**，属回归）。
+      ⇒ 取 **2** 次：① 覆盖「响应丢失」这一主要假失败形态；
+        ② 真失败最坏 ≈ 10 秒 + 0.2 秒退避 ⇒ 在 30 秒预算内。
+      ⇒ **与「禁止盲重试」纪律一致**：重试只用于覆盖**一次**响应丢失，
+        不做「等下一次放行窗口」的长等。
+    """
+    last = None
+    for i in range(max(1, int(attempts))):
+        try:
+            return os.replace(src, dst)
+        except Exception as exc:  # noqa: BLE001 —— 含 broker 的 PermissionError
+            last = exc
+            # ⚠ **根治点**：内容比对 ⇒ 判断 rename 是否实际已发生
+            if os.path.exists(dst) and os.path.exists(src):
+                try:
+                    with open(src, "rb") as fa:
+                        da = fa.read()
+                    with open(dst, "rb") as fb:
+                        db = fb.read()
+                    if da == db:
+                        return None
+                except OSError:
+                    pass
+            elif not os.path.exists(src) and os.path.exists(dst):
+                # 源已消失 ⇒ rename 极可能已发生（源被移走）
+                return None
+            if i + 1 < max(1, int(attempts)):
+                time.sleep(backoff * (i + 1))
+    raise last
+
+
 def _atomic_write_json(path, obj):
     """原子写 JSON：同目录临时文件 → fsync → os.replace 覆盖。
 
@@ -398,16 +538,20 @@ def _atomic_write_json(path, obj):
     中间态时，磁盘上留下半截 JSON → 解析失败 → 状态被当空状态处理（= 静默重置）。
     os.replace 在同一文件系统内是原子的，读者要么看到旧版要么看到新版。
     （与 Loop B 侧 _write_loop_state 同一实现，两处不再各写一套。）
+
+    ⚠ **v3.31.2（D5）**：改用 `_replace_with_truth_check`（内容比对真相 +
+      有限重试）⇒ 宿主 broker 拦 `rename` 时不再让整个命令失败
+      （实测 `batch-extend` 曾因此直接挂）。
     """
     d = os.path.dirname(path)
-    os.makedirs(d, exist_ok=True)
+    ensure_dir(d)           # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".taskstate.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())      # 落盘缓冲，避免 replace 后仍丢数据
-        os.replace(tmp, path)        # 同目录 → 原子替换
+        _replace_with_truth_check(tmp, path)   # 同目录 → 原子替换（带真相判定）
     except Exception:
         if os.path.exists(tmp):
             try:
@@ -618,7 +762,7 @@ def cmd_preflight(args):
                 # 落 task_state.json#tool_probe_results（该键已在 state_allowed_keys 白名单内）
                 try:
                     sp = os.path.join(os.path.abspath(w), ".workbuddy", "task_state.json")
-                    os.makedirs(os.path.dirname(sp), exist_ok=True)
+                    ensure_dir(os.path.dirname(sp))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
                     st = {}
                     if os.path.isfile(sp):
                         with open(sp, encoding="utf-8") as f:
@@ -632,7 +776,8 @@ def cmd_preflight(args):
                     tmp = sp + ".tmp"
                     with open(tmp, "w", encoding="utf-8") as f:
                         json.dump(st, f, ensure_ascii=False, indent=2)
-                    os.replace(tmp, sp)
+                    # ⚠ v3.31.2（D5）：走真相判定版（宿主 broker 会拦 rename）
+                    _replace_with_truth_check(tmp, sp)
                 except Exception as e:
                     print(f"⚠ 探针结果落盘失败（{e}）——不影响 preflight 结论", file=sys.stderr)
                 if _probe.get("scope_mismatches"):
@@ -2260,8 +2405,9 @@ def cmd_state(args):
             except Exception as e:
                 bak = sp + ".corrupt"
                 try:
-                    os.replace(sp, bak)
-                except OSError as e2:
+                    # ⚠ v3.31.2（D5）：走真相判定版（宿主 broker 会拦 rename）
+                    _replace_with_truth_check(sp, bak)
+                except Exception as e2:
                     print(f"❌ 原 task_state.json 损坏（{e}）且无法备份（{e2}）：{sp}"
                           f"——拒绝重建（不覆盖损坏文件）", file=sys.stderr)
                     return 1
@@ -3194,7 +3340,7 @@ def cmd_verify_tier(args):
     if buckets.get("deferred") and dp.get("require_backlog_entry"):
         rel = dp.get("backlog_rel") or ".workbuddy/verification_backlog.json"
         bp = os.path.join(w, rel)
-        os.makedirs(os.path.dirname(bp), exist_ok=True)
+        ensure_dir(os.path.dirname(bp))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         backlog = {"entries": []}
         if os.path.isfile(bp):
             try:
@@ -3269,7 +3415,7 @@ def cmd_sediment(args):
              "task_id": _resolve_task_id(args, w),
              "actor": args.actor or "team-lead", "ts": now_iso()}
     log_p = os.path.join(w, ".workbuddy", "sedimentation_log.jsonl")
-    os.makedirs(os.path.dirname(log_p), exist_ok=True)
+    ensure_dir(os.path.dirname(log_p))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     with open(log_p, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     _trace(w, cfg, "sediment", entry["actor"],
@@ -5123,7 +5269,7 @@ def cmd_template_audit(args):
                          f"--use-case <场景> --domain <学科>")
     print(json.dumps(out, ensure_ascii=False, indent=2))
     if args.json:
-        os.makedirs(os.path.dirname(os.path.abspath(args.json)) or ".", exist_ok=True)
+        ensure_dir(os.path.dirname(os.path.abspath(args.json)) or ".")   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
     cfg, _ = load_cfg()
@@ -5266,7 +5412,7 @@ def _loop_path_for(cfg, w, loop, notes=None):
         # 而"静默回落"正是本包反复吃亏的形态（看起来有护栏、实际没设防）。
         # _lc_note 自带进程内去重 ⇒ 外层再透出一次不会重复刷屏。
         _lc_note(notes[_before:])
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+    ensure_dir(os.path.dirname(os.path.abspath(p)))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     return p, notes
 
 
@@ -5314,7 +5460,7 @@ class _StateLock:
         self._fh = None
 
     def __enter__(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        ensure_dir(os.path.dirname(self.path))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         self._fh = open(self.path, "a+")
         try:
             import fcntl
@@ -5706,7 +5852,7 @@ def _git_changed_files(scope=None):
         ⇒ `patch_discipline=minimal` 实质失效（实测 42/0 假绿）。
         保留 `scope` 形参仅为**接口兼容**（调用方仍可传，但不再影响返回集）。
     """
-    out, why = _git_pkg(["status", "--porcelain"])
+    out, why = _git_pkg(["status", "--porcelain", "-uall"])
     if out is None:
         return None, why
     changed = []
@@ -5719,7 +5865,36 @@ def _git_changed_files(scope=None):
             changed += [old.strip().strip('"'), new.strip().strip('"')]
         else:
             changed.append(rest.strip().strip('"'))
-    return [os.path.abspath(os.path.join(PKG, c)) for c in changed if c], ""
+    # ⚠ v3.31.1（2026-11-11 目录折叠口径修复 · LRN-20261111-026）：
+    #   `git status --porcelain`（默认 -unormal）把**未跟踪目录**折叠成目录名
+    #   （`?? references/approved-examples/`），而声明集存的是**目录内文件**
+    #   （`references/approved-examples/README.md`）⇒ 同一份改动两侧口径不一致
+    #   ⇒ 已声明文件反被判 `undeclared_changes` 硬拒（假阳性），且**新增文件
+    #   漏检**（只看到目录名，看不到目录内实际改了哪些文件）⇒ 最小补丁纪律
+    #   双重失效：既误拒又漏判。
+    #   修法：`-uall` 展开为逐文件，**再**用 os.walk 兜底扫描目录条目
+    #   （-uall 对已 git 跟踪的目录也逐文件展开；未跟踪目录同理）。
+    #   反向保护：声明集里的**目录**声明（如 `--files references/approved-examples`）
+    #   仍应视为覆盖其下文件 ⇒ 比对时按「声明目录 ⇒ 覆盖目录内文件」归一。
+    resolved = []
+    for c in changed:
+        if not c:
+            continue
+        ap = os.path.abspath(os.path.join(PKG, c))
+        if os.path.isdir(ap):
+            for root, dirs, files in os.walk(ap):
+                dirs[:] = [d for d in dirs if d != ".git"]
+                for fn in files:
+                    resolved.append(os.path.abspath(os.path.join(root, fn)))
+        else:
+            resolved.append(ap)
+    # 去重但保序
+    seen, uniq = set(), []
+    for p in resolved:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq, ""
 
 
 def _resolve_declared_file(f):
@@ -6267,6 +6442,88 @@ def _loop_batch(args, cfg, w, actor=""):
                           "notes": notes}, ensure_ascii=False, indent=2))
         return 0
 
+    # ── batch-extend：受控追加本批声明文件（v3.31.1）────────────────────
+    # 病灶（本轮实测）：声明集在 batch-open 时**冻结**且无追加入口 ⇒ 开工后
+    #   发现要改的文件不在声明里，只能「废弃重开」或手工改 state json
+    #   （绕过留痕）。本轮真实触发：开批后才发现要改
+    #   scripts/loop_contract.py 与 agents/*.md，工具不给路径 ⇒
+    #   "最小补丁纪律"这条**为了防越权**的纪律，反过来把正常工程动作堵死。
+    # 判据（保持纪律强度，不开后门）：
+    #   ① 追加文件须过**同一套** Loop A 越界校验（_loop_a_scope_check）——
+    #      禁区和 scope 白名单一视同仁；
+    #   ② 只能追加到**未闭合、未废弃**的批次（已收批的批次声明集是历史事实，
+    #      改它等于事后改账）；
+    #   ③ 追加必须**留痕**（state.history + trace 记 before/after 与新增项）；
+    #   ④ 只允许**追加**（union），不允许删改既有声明项（避免"先宽后窄"洗白）。
+    if args.action == "batch-extend":
+        bid = (getattr(args, "batch", "") or "").strip()
+        if not bid:
+            opened = _open_batches(batches)
+            if len(opened) == 1:
+                bid = opened[0]
+            elif not opened:
+                print("用法错误：当前无未关闭批次；batch-extend 须带 --batch <id>",
+                      file=sys.stderr)
+                return 2
+            else:
+                print(f"用法错误：有 {len(opened)} 个未关闭批次（{opened}）——"
+                      f"须用 --batch <id> 明确指定（不得猜）", file=sys.stderr)
+                return 2
+        b = batches.get(bid)
+        if not isinstance(b, dict):
+            print(f"用法错误：批次 {bid} 未登记", file=sys.stderr)
+            return 2
+        if b.get("closed"):
+            print(f"⛔ 批次 {bid} 已收批——声明集是**历史事实**，不得事后改账；"
+                  f"如需新改动请开新批次（batch-open）", file=sys.stderr)
+            return 1
+        if b.get("abandoned"):
+            print(f"⛔ 批次 {bid} 已废弃（abandoned）——不得追加声明",
+                  file=sys.stderr)
+            return 1
+        files = _parse_csv(getattr(args, "files", ""))
+        if not files:
+            print("用法错误：batch-extend 必须带 --files a.py,b.py"
+                  "（无新增声明项则本命令无意义）", file=sys.stderr)
+            return 2
+        declared, rejected = [], []
+        for f in files:
+            ap = _resolve_declared_file(f)
+            ok, msg, detail = _loop_a_scope_check(cfg, w, ap)
+            if ok:
+                declared.append(ap)
+            else:
+                rejected.append({"file": f, "resolved": ap, "kind": detail.get("kind"),
+                                 "reason": msg})
+        if rejected:
+            print(json.dumps({"ok": False, "rejected": rejected,
+                              "note": "追加声明文件必须先过 Loop A 越界校验"
+                                      "（loop_a.scope / loop_a.forbidden_paths）"},
+                             ensure_ascii=False, indent=2))
+            print(f"⛔ {len(rejected)} 个追加文件越界/越权 → 声明集**未改**", file=sys.stderr)
+            return 1
+        before = list(b.get("declared_files") or [])
+        before_set = {os.path.abspath(x) for x in before}
+        added = [p for p in declared if os.path.abspath(p) not in before_set]
+        skipped = [p for p in declared if os.path.abspath(p) in before_set]
+        b["declared_files"] = before + added
+        b["declared_extended_at"] = now_iso()
+        _loop_mark_writer(st, actor)
+        _loop_hist(st, "batch_extend",
+                   {"batch": bid, "added": added, "skipped_already_declared": skipped,
+                    "declared_before": len(before), "declared_after": len(b["declared_files"])})
+        _trace(w, cfg, "batch_extend", actor,
+               {"batch": bid, "loop": "a", "added": [str(x) for x in added],
+                "skipped": [str(x) for x in skipped],
+                "declared_before": len(before), "declared_after": len(b["declared_files"])})
+        _atomic_write_json(path, st)
+        print(json.dumps({"ok": True, "batch": bid, "added": added,
+                          "skipped_already_declared": skipped,
+                          "declared_before": len(before),
+                          "declared_after": len(b["declared_files"]),
+                          "state_file": path}, ensure_ascii=False, indent=2))
+        return 0
+
     # ── batch-close：确认 → 回归 → 最小补丁 → 收批 ──────────────────────
     bid = (getattr(args, "batch", "") or "").strip()
     if not bid:
@@ -6521,7 +6778,7 @@ def _loop_defaults(args, cfg, w):
         tpl["_generated_by"] = "harness.py loop defaults --out"
         tpl["_generated_at"] = now_iso()
         p = os.path.abspath(outpath)
-        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        ensure_dir(os.path.dirname(p) or ".")   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         with open(p, "w", encoding="utf-8") as f:
             json.dump(tpl, f, ensure_ascii=False, indent=2)
         out["intake_template_written"] = p
@@ -6789,7 +7046,7 @@ def cmd_insights(args):
                               "carrier": carrier_path}, ensure_ascii=False, indent=2))
             return 0
         carrier["targets"].append({"target_id": tid, "target_kind": kind, "insights": []})
-        os.makedirs(os.path.dirname(carrier_path), exist_ok=True)
+        ensure_dir(os.path.dirname(carrier_path))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         _ic_write_json(carrier_path, carrier)
         _trace(w, cfg, "insight_carrier_init", "team-lead",
                {"task_id": task_id, "target_id": tid, "target_kind": kind})
@@ -6856,7 +7113,7 @@ def cmd_insights(args):
         merged = ic.merge_parts(existing_parts + [part], None, notes)
         merged["task_id"] = task_id or merged.get("task_id") or ""
         # 合并产物里 targets 已含旧数据，merge_parts 会把 carrier 自身的 insights 也收进来
-        os.makedirs(os.path.dirname(carrier_path), exist_ok=True)
+        ensure_dir(os.path.dirname(carrier_path))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         _ic_write_json(carrier_path, merged)
         _lc_note(notes)
         merr = merged.get("merge_errors") or []
@@ -7057,7 +7314,8 @@ def cmd_loop(args):
                   file=sys.stderr)
 
     # ── v3.20.0 B：Loop A 批次门（仅 --loop a；Loop A 状态独立于 Loop B）────
-    if args.action in ("batch-open", "batch-close", "batch-status", "batch-gc"):
+    if args.action in ("batch-open", "batch-close", "batch-status", "batch-gc",
+                       "batch-extend"):
         if loop != "a":
             print(f"用法错误：`{args.action}` 属 Loop A（改专家团工程），须带 --loop a；"
                   f"处理用户课件用 Loop B。", file=sys.stderr)
@@ -7213,7 +7471,7 @@ def cmd_loop(args):
                        "coexist_with": paths.get("coexist_with")},
         }
         _loop_mark_writer(st, actor)
-        os.makedirs(wip, exist_ok=True)
+        ensure_dir(wip)   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
         _loop_hist(st, "start", {"deck": deck, "wip": wip, "actor": actor or "未声明"})
         _write_loop_state(w, "b", st)
         _trace(w, cfg, "loop_start", "team-lead", {"task_id": st["task_id"], "deck": deck, "wip": wip})
@@ -7921,7 +8179,7 @@ def _loop_dispatch(args, cfg, w, loop, st, budgets):
         out_path = (getattr(args, "out", "") or "").strip()
         if out_path:
             op = os.path.abspath(out_path)
-            os.makedirs(os.path.dirname(op), exist_ok=True)
+            ensure_dir(os.path.dirname(op))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
             with open(op, "w", encoding="utf-8") as f:
                 json.dump(wl, f, ensure_ascii=False, indent=2)
             wl["written_to"] = op
@@ -8400,6 +8658,9 @@ LOOP_ACTION_DOC = [
      "0 收批 / 1 未确认或回归缺或改动超范围或实测证据 rc≠0 / "
      "2 用法错或未知套件或旧批次或证据不可用或套件名对不上"),
     ("batch-status", "A", "批次与判据来源（取自 yaml / 回落内置值）", "[--batch]", "loop_a.*", "0"),
+    ("batch-extend", "A", "追加本批声明文件（过同一套越界校验 + 留痕；只增不删）",
+     "--files [--batch]", "loop_a.scope/forbidden_paths + patch_discipline=minimal",
+     "0 追加成功 / 1 越界或批次已闭合或已废弃 / 2 缺 --files"),
     ("batch-gc", "A", "批次历史压缩（closed 超保留数压入 archived 摘要区；误开批次显式废弃）",
      "[--keep N] [--drop-open <id,...>] [--dry-run]",
      "loop_a.batch_history_keep（B20 新增，缺省 20）",
@@ -8420,6 +8681,185 @@ LOOP_ACTION_DOC = [
 ]
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# v3.31.0：任务级工作地图 + `next` 命令
+# ═══════════════════════════════════════════════════════════════════════
+#: 工作地图路径（相对包根）；唯一源 = references/work-map.yaml
+WORK_MAP_REL = os.path.join("references", "work-map.yaml")
+
+
+def _load_work_map():
+    """读 references/work-map.yaml；失败返回 (None, 原因)。
+
+    失败**不静默**：工作地图是本包新增的「任务级导航」，
+    读不到就必须让调用方知道（否则 next 会给不出下一步 = 冷启动失效）。
+    """
+    path = os.path.join(PKG, WORK_MAP_REL)
+    if not os.path.isfile(path):
+        return None, f"工作地图文件不存在：{path}"
+    try:
+        import yaml  # noqa
+        with open(path, encoding="utf-8") as f:
+            wm = yaml.safe_load(f)
+    except Exception as e:
+        return None, f"工作地图解析失败：{type(e).__name__}: {str(e)[:100]}"
+    if not isinstance(wm, dict):
+        return None, f"工作地图不是映射：{path}"
+    return wm, None
+
+
+def _wm_stage(wm, stage):
+    """取工作地图里某一闸的定义（stage 号可为 int/str）。"""
+    for item in (wm.get("stages") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            if int(item.get("stage")) == int(stage):
+                return item
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def cmd_next(args):
+    """v3.31.0：任务级导航——回答「现在在哪 / 下一步跑什么 / 还缺什么 / 怎么算过」。
+
+    为什么需要（2026-11-11 真实运行取证）：
+      · `doctor` 返回 28 个子命令 + `pending_work`，**不回答**任务级问题；
+      · 实测 `gate1-check` 报「闸1 未就绪 1/10 项：task_mode」，而 `doctor` 的
+        pending_work 仍指向另一个 Loop B 任务 ⇒ **两个真源不联动**，
+        冷启动的 AI 无从判断「先补 task_mode 还是先做 Loop B」；
+      · 操作说明散落在 8+ 处人读文档，冷启动要读几千行才知道下一步。
+
+    本命令做四件事（全部**只读**，不写任何状态文件）：
+      1. 定位当前阶段（Loop B 轮次 / task_state.current_stage / 闸1 就绪度）；
+      2. 给出**该阶段的下一步动作**（取自工作地图 actions 段，命令可直接照跑）；
+      3. 列出**未满足项**（复用既有唯一判据 gate1-check，不重造轮子）；
+      4. 给出该阶段的**验收条件**（机器可判 + 需人工各列）。
+
+    退出码：0=有明确下一步；1=卡住（有未满足项）；2=用法错误；3=依赖缺失。
+    """
+    w = wkspace(args)
+    wm, err = _load_work_map()
+    if wm is None:
+        print(f"✗ {err}", file=sys.stderr)
+        print("   → 工作地图缺失 ⇒ 本包的任务级导航不可用（不是「无待办」）",
+              file=sys.stderr)
+        return 3
+
+    stages = wm.get("stages") or []
+    objective = wm.get("objective") or {}
+    actions = wm.get("actions") or {}
+
+    # ── 1) 定位当前阶段 ────────────────────────────────────────────
+    cur_stage = None
+    where = []
+    # 优先 task_state（闸位真源），其次 Loop B 轮次
+    ts = _read_json_readonly(os.path.join(w, ".workbuddy", "task_state.json"))
+    if isinstance(ts, dict) and ts.get("current_stage") not in (None, 0):
+        try:
+            cur_stage = int(ts.get("current_stage"))
+            where.append(f"task_state.json：current_stage={cur_stage}")
+        except (TypeError, ValueError):
+            pass
+    if cur_stage is None:
+        # Loop B 有未完成 ⇒ 从轮次推断（轮次 → 闸的映射见工作地图）
+        lb = _read_json_readonly(os.path.join(w, ".workbuddy", "loopB_state.json"))
+        if isinstance(lb, dict) and not lb.get("termination"):
+            where.append(f"loopB_state.json：第 {lb.get('current_round')} 轮未结束")
+            cur_stage = 1   # Loop B 未完成 ⇒ 处在设计/成稿阶段
+    if cur_stage is None:
+        cur_stage = 0
+        where.append("无未完成的状态记录 ⇒ 视为闸1（任务冻结）起点")
+
+    # ── 2) 闸1 就绪度（复用唯一判据）──────────────────────────────
+    gate1_ready = None
+    gate1_missing = []
+    try:
+        import subprocess
+        r = subprocess.run([sys.executable, os.path.join(PKG, "scripts", "harness.py"),
+                            "gate1-check", "--workspace", w],
+                           capture_output=True, text=True, timeout=120)
+        gate1_ready = (r.returncode == 0)
+        for ln in (r.stdout or "").splitlines():
+            if ln.strip().startswith("✗"):
+                gate1_missing.append(ln.strip().lstrip("✗ ").strip())
+    except Exception as e:
+        gate1_ready = None
+        where.append(f"gate1-check 探测受阻（{type(e).__name__}）——按未检查登记，不判缺陷")
+
+    # ── 3) 组装输出 ───────────────────────────────────────────────
+    cur = _wm_stage(wm, cur_stage) or {}
+    out = {
+        "schema": "workmap-next/1",
+        "workspace": w,
+        "objective": {
+            "goal": objective.get("goal"),
+            "deliverable": objective.get("deliverable"),
+        },
+        "current": {
+            "stage": cur_stage,
+            "name": cur.get("name"),
+            "gate": cur.get("gate"),
+            "where": where,
+            "gate1_ready": gate1_ready,
+        },
+        "next_actions": {
+            "open": actions.get("open") or [],
+            "per_stage": actions.get("per_stage") or [],
+            "spawn": actions.get("spawn") or [],
+            "member_return": actions.get("member_return") or [],
+            "degrade": actions.get("degrade") or [],
+            "gate4": actions.get("gate4") or [],
+            "close": actions.get("close") or [],
+        },
+        "acceptance": {
+            "machine": cur.get("acceptance") or [],
+            "machine_check": cur.get("machine_check"),
+            "human": (wm.get("boundary") or {}).get("human") or [],
+        },
+        "missing": gate1_missing,
+        "branches": cur.get("branch"),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print("═" * 64)
+        print(f"目标：{out['objective']['goal']}")
+        print(f"交付：{out['objective']['deliverable']}")
+        print("═" * 64)
+        print(f"\n【现在在哪】stage {cur_stage} · {cur.get('name')}（门禁：{cur.get('gate')}）")
+        for x in where:
+            print(f"   · {x}")
+        if gate1_ready is True:
+            print("   · 闸1 十项就绪 ✓")
+        elif gate1_ready is False:
+            print(f"   · ⚠ 闸1 未就绪 {len(gate1_missing)} 项：")
+            for x in gate1_missing:
+                print(f"       - {x}")
+        print("\n【下一步动作】（可直接照跑）")
+        seq = (actions.get("open") if cur_stage == 0 else actions.get("per_stage")) or []
+        for i, c in enumerate(seq, 1):
+            print(f"   {i}. {c}")
+        if cur.get("machine_check"):
+            print(f"   → 本闸机器判据：python3 scripts/harness.py {cur['machine_check']}")
+        print("\n【验收条件】")
+        print("   机器可判：")
+        for a in out["acceptance"]["machine"]:
+            print(f"     - {a}")
+        print("   须人工：")
+        for a in out["acceptance"]["human"]:
+            print(f"     - {a}")
+        if cur.get("branch"):
+            print(f"\n【关键分支】{cur['branch']}")
+        if gate1_missing:
+            print(f"\n⛔ 卡住：{len(gate1_missing)} 项未满足，补齐并经用户确认后方可进入下一闸。")
+            return 1
+        print("\n✅ 无未满足项（机器面）；语义与审美仍需人工终审。")
+    return 0
+
+
 def cmd_doctor(args):
     """v3.4.0 R1：LLM 友好"可发现性表"——一次返回所有子命令的 usage/examples/exit_codes。
     根因（2026-10-14 实测 6 步 3 步参数错位）：argparse 仅在运行时暴露错误，
@@ -8433,6 +8873,9 @@ def cmd_doctor(args):
     table = [
         # (子命令, 一句话用途, 必填参数, 常用可选, 退出码, 示例)
         ("doctor",     "可发现性表（你正在看）",                     "无",      "无",          "0", "harness.py doctor"),
+        # v3.31.0：任务级导航——冷启动先跑这个，答「现在在哪/下一步/缺什么/验收条件」
+        ("next",       "v3.31.0：任务级导航（工作地图 → 现在在哪/下一步/缺什么/验收条件）",
+                     "无", "--workspace/--json", "0/1/2/3", "harness.py next --workspace <工作区>"),
         ("preflight",  "开工前成员可用性预检",                        "--team",  "--workspace", "0/1", "harness.py preflight --team vet-med-ppt-team"),
         ("route",      "复杂度 L0-L3 → spawn 计划",                  "--level", "--workspace", "0/1", "harness.py route --level L2"),
         ("state",      "任务状态机读写（init/get/set/validate/compact）", "action",  "--stage/--key/--value", "0/1/2", "harness.py state set --stage 1 --key deliverable --value <path>"),
@@ -8470,7 +8913,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.30.0", "executable": __file__,
+    out = {"version": "v3.31.2", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -8682,7 +9125,7 @@ def cmd_sweep(args):
     elapsed = round(time.time() - t0, 1)
     # 收编到 deck_registry.json
     reg_p = os.path.join(w, ".workbuddy", "deck_registry.json")
-    os.makedirs(os.path.dirname(reg_p), exist_ok=True)
+    ensure_dir(os.path.dirname(reg_p))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     reg = {
         "version": 8,
         "updated": now_iso,
@@ -8780,7 +9223,7 @@ def cmd_eval(args):
     _trace(w, cfg, "eval", "harness", {"diff": diff, "regress": regress, "rc_sweep": rc})
     # 产物
     out = os.path.join(w, ".workbuddy", "artifacts", "v342_verify", "eval_diff.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    ensure_dir(os.path.dirname(out))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"before": bc, "after": ac, "diff": diff, "regress": regress,
                    "ts": datetime.now().astimezone().isoformat(timespec="seconds")},
@@ -8851,7 +9294,7 @@ def cmd_trend(args):
            "note": "counts 缺失的事件计入 without_counts，**不当作 0**"}
     print(json.dumps(rep, ensure_ascii=False, indent=2))
     out = os.path.join(w, ".workbuddy", "artifacts", "quality_trend.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    ensure_dir(os.path.dirname(out))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     with open(out, "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=2)
     print(f"\n趋势报告：{out}")
@@ -9040,7 +9483,7 @@ def cmd_domain_pack_check(args):
     # 落盘报告（供跨任务趋势看齐备度演进）
     rel = (contract.get("report") or {}).get("rel") or ".workbuddy/domain_pack_report.json"
     rp = os.path.join(w, rel)
-    os.makedirs(os.path.dirname(rp), exist_ok=True)
+    ensure_dir(os.path.dirname(rp))   # ⚠ v3.31.1：不用 os.makedirs(exist_ok=True)（宿主 broker 会拦）
     with open(rp, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -9143,7 +9586,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.30.0")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.31.2")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -9153,6 +9596,12 @@ def main():
     p = sub.add_parser("doctor", help="v3.4.0：可发现性表——所有子命令的 usage/examples/exit_codes")
     _ws(p)
     p.set_defaults(func=cmd_doctor)
+
+    # v3.31.0：任务级导航（工作地图 → 现在在哪/下一步/缺什么/验收条件）
+    p = sub.add_parser("next", help="v3.31.0：任务级导航——现在在哪 / 下一步 / 缺什么 / 验收条件")
+    _ws(p)
+    p.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("preflight", help="开工前成员可用性与静默降级预检")
     p.add_argument("--team", default="", help="团队名（读 ~/.workbuddy/teams/<team>/config.json）")
@@ -9474,6 +9923,10 @@ def main():
                                       "worklist",
                                       # v3.20.0 B：Loop A 批次门（仅 --loop a）
                                       "batch-open", "batch-close", "batch-status",
+                                      # v3.31.1：声明集受控追加（开工后发现要改的文件，
+                                      #   补一条留痕路径，避免"为了防越权的纪律反过来堵死
+                                      #   正常工程动作"——详见 _loop_batch 的 batch-extend 分支）
+                                      "batch-extend",
                                       # B20（第三轮 P2-1）：批次历史压缩（显式触发，不自动）
                                       "batch-gc",
                                       # v3.20.0 C：Loop B 判据动作

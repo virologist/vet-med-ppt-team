@@ -1,0 +1,202 @@
+# work-map.yaml — 任务级工作地图（机器可读唯一源）
+#
+# 定位（v3.31.1 新建）：把「任务目标 → 执行步骤 → 输入输出 → 依赖 → 验收条件 →
+# 关键分支」从散落在 8+ 处人读文档，收敛成**一份机器可读**的工作地图。
+#
+# 为什么需要（2026-11-11 真实运行取证）：
+#   · `harness.py doctor` 此前只返回「28 个子命令 + pending_work」，**不回答**
+#     「现在在哪一闸 / 下一步跑什么 / 还缺什么 / 怎么算过」；
+#   · 实测 `gate1-check` 报「闸1 未就绪 1/10 项：task_mode」，但 `doctor` 的
+#     pending_work 仍指向另一个 Loop B 任务 ⇒ **两个真源不联动**，
+#     冷启动的 AI 无从判断「该先补 task_mode 还是先做 Loop B」；
+#   · 操作说明分散在 README / team-lead.md / loop-master-prompt.md /
+#     sop-stages.md / dual-loop-governance.md / round-review-sop.md /
+#     task-intake-checklist.md / harness.yaml —— 本文件是这些的**索引与汇总**，
+#     **不重定义**它们的条款（重定义会造成第二规则源，与本包既有纪律冲突）。
+#
+# 消费方：
+#   · scripts/harness.py#cmd_next —— 渲染「现在在哪/下一步/缺什么/验收条件」
+#   · scripts/check_contracts.py —— 校验本文件与 config/harness.yaml#stages 一致
+#   · 人类阅读：**本文件本身**（YAML 带中文注释，人可直接读）
+#     ⚠ v3.31.1 更正：初版注释写「人类阅读：references/work-map.md（由 next --render 生成）」
+#       —— 该文件**不存在**、`next` 也**无** `--render` 选项 ⇒ 悬空引用。
+#       处置：**改注释为真实状态**（不新增只为填坑的功能——本包纪律：不为重构而重构）。
+#       人读视图已由 `harness.py next` 的**四段式终端输出**承担。
+#
+# ⚠ 唯一源纪律：
+#   · **闸门编号 / 名称 / 成员 / 门禁判据**的唯一源仍是 `config/harness.yaml#stages`，
+#     本文件**镜像**它（由 check_contracts.py 逐项比对，不一致即判红）；
+#   · 本文件**新增**的是「每闸的输入/输出/验收条件/关键分支」——这些此前只存在于
+#     人读散文里，无机器判据。
+#
+# version: 与 config/harness.yaml#stages 对齐时才需改（由守卫比对）
+
+schema: "work-map/1"
+version: "3.31.2"
+
+# ── 任务目标 ──────────────────────────────────────────────────────────────
+# 一句话说清「这个系统要产出什么」，供冷启动自检是否跑偏。
+objective:
+  goal: "把任意教学内容域的主题，做成科学准确、面向学习结果、可直接投影授课的 PPT 方案与页面内容"
+  deliverable: "成品 PPTX + 逐页修改说明 + 验收自检清单（三件套，缺一不算完成）"
+  # 纯诊断分支（只诊断不修改）：交付物换成诊断报告，**不是** PPTX 三件套
+  alt_deliverable: "诊断报告（机器态 YAML + 人读 MD + _index.yaml 台账）"
+  alt_branch: "diagnosis_only"
+  quality_source: "verify"   # 自报数不算验收；唯一裁判 = scripts/verify_deck.py
+
+# ── 两环路由（判环是语义判定，代码不判；但两环的**路径与产物**在本文件登记）──
+loops:
+  A:
+    id: loopA
+    subject: "专家团本身（脚本/配置/成员 MD/规则/版本/发布）"
+    state_file: "<包>/.workbuddy/loopA_state.json"
+    scope_hint: "包内 scripts/config/references/agents/.learnings"
+    forbidden_hint: "用户课件目录与 .workbuddy/artifacts"
+    key_actions: ["batch-open", "batch-close", "reflow", "status"]
+  B:
+    id: loopB
+    subject: "某份真实课件（诊断/改内容/配图/出新版 PPTX）"
+    state_file: "<工作区>/.workbuddy/loopB_state.json"
+    scope_hint: "工作副本 <课件名>_wip/；原件只读"
+    forbidden_hint: "包内 scripts/config/references/agents"
+    key_actions: ["start", "intake", "add-item", "review", "freeze", "continue", "make-gate", "terminate"]
+
+# ── 五闸工作地图（闸门真源 = config/harness.yaml#stages；此处镜像 + 补四要素）──
+# 每项字段：
+#   stage/name/members/gate/parallel  ← 镜像 harness.yaml#stages（守卫逐项比对）
+#   input/output/acceptance/branch     ← 本文件新增（此前仅存在于人读散文）
+stages:
+  - stage: 0
+    name: "闸1 任务冻结"
+    members: []
+    gate: user_confirm
+    parallel: false
+    input: "用户指令 + Loop B 接单十项（A 类 5 项缺一即停）"
+    output: "冻结十项确认态 + 坍缩产物（confirmed/effective）+ 洞察载体目标集 + task_mode"
+    acceptance:
+      - "harness.py gate1-check 退出码 0（十项逐项就绪）"
+      - "task_mode 已显式登记（generate/check/augment/restructure-L1/restructure-L2 五取值之一）"
+    branch: "未选人 → collapse confirm 拒绝（exit 1）；未确认 → 装配器拒绝（exit 5）"
+    machine_check: "gate1-check"
+  - stage: 1
+    name: "闸2 设计（证据先行→蓝图·串行）"
+    members: ["pedagogy-architect", "dvm-content-expert"]
+    gate: user_confirm
+    parallel: false
+    input: "闸1 冻结态 + 坍缩域人格 + 证据包（严真奥产出）"
+    output: "教学蓝图（七段 + 二八难点 + 页数锁定）+ 证据缺口清单 + 洞察写回载体"
+    acceptance:
+      - "证据包先于蓝图产出（串行依赖，不得反序）"
+      - "成员回传信封六字段齐备（harness.py verify-envelope）"
+    branch: "证据不足 → 标 [待核实] 并报阻塞，不进正式内容"
+    machine_check: "verify-envelope"
+  - stage: 2
+    name: "闸3 成稿（页表∥版式）"
+    members: ["pedagogy-architect", "visual-slide-designer"]
+    gate: script_check
+    parallel: true
+    input: "闸2 蓝图 + 页数锁定"
+    output: "合并页表五字段 + 版式方案 + 新发现问题写回载体"
+    acceptance:
+      - "页表逐页五字段齐备"
+      - "闸3 交叉复检映射符合 config（科学性→严真奥 / 教学性→苏学法 / 页面性→屠明熙）"
+    branch: "并行写同一文件会丢更新 ⇒ 专家各写分片、脚本合并"
+    machine_check: "verify-artifact"
+  - stage: 3
+    name: "闸4 交付（门禁+独立验证）"
+    members: ["verifier"]
+    gate: gate_script+verifier
+    parallel: false
+    input: "成品 PPTX + 页表 + 修改说明"
+    output: "门禁报告 + verifier 独立验证报告 + 交付三件套"
+    acceptance:
+      - "harness.py gate 退出码 0 且自引入缺陷 = 0"
+      - "verifier 独立复判结论 = pass 且抽页 ≥ 20%"
+      - "交付三件套齐备（check_contracts.py 契约项）"
+    branch: "exit 4 = 运行错误（走缺陷回流修脚本），不是课件红灯"
+    machine_check: "gate"
+  - stage: 4
+    name: "闸4.5 案例三源核验（v3.3.0）"
+    members: ["dvm-content-expert", "verifier"]
+    gate: three_source_check
+    parallel: true
+    input: "cases_library.json 中 unverified=true 的条目"
+    output: "三源核验记录（PMID/DOI + verified_at 时间戳）"
+    acceptance:
+      - "verify_deck.py --three-source-check 达标"
+      - "无残留 unverified=true（否则挂账并显式登记）"
+    branch: "抽 cases_library 10% 未核验重跑；用户指定源走 fetch_authority.py"
+    machine_check: "case_extract.py audit"
+
+# ── 每闸的机器动作序列（把 iron-rules.md#B1 的人读纪律下沉为可执行清单）──
+# 目的：降低「AI 靠自觉执行」的比例——清单给出命令，冷启动可直接照跑。
+actions:
+  # ⚠ v3.31.0：首条改为 `next`（新增的**任务级导航**）——
+  #   冷启动先问「现在在哪 / 下一步跑什么」，比先跑 doctor 更直接回答问题；
+  #   doctor 仍保留（它给出的是**能力清单**，不是**当前位置**）。
+  open:
+    - "harness.py next --workspace <工作区>"
+    - "harness.py doctor"
+    - "harness.py preflight --team vet-med-ppt-team"
+    - "harness.py state init"
+    - "harness.py stage --action enter --stage 0"
+  per_stage:
+    - "harness.py stage --action exit --stage <N> --note '<闸结论>'"
+    - "harness.py state set --stage <N+1>"
+    - "harness.py stage --action enter --stage <N+1>"
+  spawn:
+    - "harness.py spawn --agent <成员> --task-id <id> --stage <N> --input-bytes N --output-bytes N"
+  member_return:
+    - "harness.py member-return --agent <成员> --task-id <id> --stage <N> --status success --artifact <路径>"
+  degrade:
+    - "harness.py degrade --agent <成员> --task-id <id> --channel <模式> --reason '<原因>'"
+  gate4:
+    - "harness.py verify-ref --path <工作区>/.workbuddy/cases/cases_library.json"
+    - "harness.py gate --deck <成品.pptx> --hours <N> --level all"
+  close:
+    - "harness.py trace report"
+  # ── Loop A 工程环（改专家团自身）：批次门三件套 ──────────────────────
+  # ⚠ v3.31.1：新增 batch-extend —— 声明集在 batch-open 时冻结，
+  #   开工后发现要改的文件不在声明里时，**唯一的合规路径**是追加声明
+  #   （过同一套越界校验 + 留痕 + 只增不删），而不是手改 state json 绕过留痕。
+  loop_a_batch:
+    - "harness.py loop --loop a --actor team-lead batch-open --files <a.py,b.py> --batch <id> --note '<主题>'"
+    - "harness.py loop --loop a --actor team-lead batch-extend --batch <id> --files <c.py>"
+    - "harness.py loop --loop a --actor team-lead batch-close --batch <id> --confirmed --regression <7套件> --regression-evidence <证据json>"
+
+# ── 反馈回路（错误 → 转化去向）──
+# 「同类错误 ≥2 次 → 修规则不修输出」——但**修完必须有产出证据**，
+# 否则只是又一条提示词（这是本包最实在的历史教训，见 .learnings/LEARNINGS.md LRN-023）。
+feedback:
+  channels:
+    - id: user_decision
+      source: "用户裁决（Loop B 轮报 / 方向裁决）"
+      sink: "规则修订 或 认可样例"
+    - id: defect_reflow
+      source: "闸内缺陷（verify_deck P0/P1）"
+      sink: "references/defect-reflow.yaml（附产出证据）"
+    - id: learning
+      source: "跨会话经验与错误"
+      sink: ".learnings/LEARNINGS.md（须过 MERGE_GATE 晋升门禁）"
+    - id: example
+      source: "被用户认可的真实产出"
+      sink: "references/approved-examples/（认可样例库）"
+  # 长期规则 vs 单次要求：只有「可复用判据」才进长期规则
+  rule_promotion:
+    single_request: "本轮有效即止，不写入长期规则"
+    long_term: "同类复发 ≥3 次 或 管家节点显式 ack ⇒ 晋升为长期规则（MERGE_GATE 门禁）"
+    avoid_bloat: "长期规则必须绑定**机器判据或认可样例**；只写散文的一律降级为 manual-only"
+
+# ── 主观 / 客观边界（决定哪部分交给脚本、哪部分必须人工）──
+boundary:
+  auto:
+    - "路径 / 集合 / 计数 / 格式 / 守恒 / 哈希类确定性判据"
+    - "文件存在性与体积"
+    - "配置键漂移与镜像一致性"
+    - "交付三件套齐备性（文件级）"
+  human:
+    - "科学准确性与证据充分性"
+    - "教学有效性与学习目标达成"
+    - "视觉审美与版式取舍"
+    - "方向裁决（强/中/弱）与内容取舍"
+    - "语义与审美判断（用户终审）"

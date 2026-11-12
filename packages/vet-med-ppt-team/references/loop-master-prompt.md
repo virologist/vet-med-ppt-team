@@ -44,7 +44,7 @@
 
 依次执行并如实报告：
 1. python3 scripts/harness.py doctor           # 看实际安装版本与子命令表
-2. python3 scripts/ensure_settings.py          # 须 22/22 全绿
+2. python3 scripts/ensure_settings.py          # 须 28/28 全绿（项数真源 = scripts/ensure_settings.py 的 N；口径由 scripts/check_contracts.py 守卫）
 3. 只读核验能力并**四类分级标注**：[D] 官方文档支持 / [R] 仓库已有实现 /
    [L] 本地可调用 / [T] 已完成样本测试。**前三类的任何一项都不得冒充 [T]**。
 4. 缺关键能力时，披露缺口 + 核验方法，不得静默降级。
@@ -190,7 +190,7 @@ python3 scripts/harness.py loop terminate --reason <五类之一>
 
 - 只有你能向我提问与接收确认；成员遇到缺失信息写进 issues 由你转达，不得直接联系我
 - 成员之间禁止横向直连，跨成员信息流一律经你中转；成员不得代写他人的专业结论
-- Loop A 每批修改前必须停一次确认我批准；只做最小补丁；回归 ensure_settings 22/22
+- Loop A 每批修改前必须停一次确认我批准；只做最小补丁；回归 ensure_settings 28/28
   与全部测试套件，任一红即回滚本批
 - **不得因一次课件的特殊要求擅自改全局规则**（单课件诉求走 Loop B，要改规则须在
   Loop A 单独立项）

@@ -108,6 +108,6 @@ CSV 列顺序即上表顺序（便于 Excel 排序筛选与存档）。
 2. 全部诊断条目已冻结（`frozen_items` 覆盖 `items`）
 3. `verify` 无 sha256 漂移（`invalidated` 为 0）
 4. 原件 sha256 未变
-5. `ensure_settings` 15/15 + 全部 `test_*.py` 通过（新建能力未回归）
+5. `ensure_settings` 28/28 + 全部 `test_*.py` 通过（新建能力未回归）
 
 任一不过 → 不得交付，退回对应阶段；**不得因期限临近跳过**（期限不构成放行理由）。

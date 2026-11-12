@@ -160,7 +160,17 @@ class TestBoolKeyDetection(unittest.TestCase):
         out = (proc.stdout or "") + (proc.stderr or "")
         self.assertIn("RC= 1", out,
                       f"R9c：含布尔键的副本**未被判红** ⇒ 守卫是假绿。\n{out}")
-        self.assertIn("27/27", out, f"R9c：检查项编号不对。\n{out}")
+        # ⚠ v3.31.0：断言改为**动态读取真源项数 N**（原写死 "27/27"）。
+        #   缘由：项数真源 = scripts/ensure_settings.py 的 N，本轮由 27 升到 28
+        #   （新增契约巡检），写死的断言当场判红 —— 属**测试夹具漂移**。
+        #   修法：不复述字面量，改为从源码正则取 N ⇒ 提版时**无需改测试**，
+        #   也就杜绝了「文档口径已改、测试夹具忘改」这类同型复发。
+        import re as _re
+        src = ES.read_text(encoding="utf-8")
+        m = _re.search(r"^N\s*=\s*(\d+)", src, _re.M)
+        self.assertIsNotNone(m, "ensure_settings.py 里找不到项数真源 N")
+        n = int(m.group(1))
+        self.assertIn(f"[27/{n}]", out, f"R9c：检查项编号不对（应为 [27/{n}]）。\n{out}")
 
 
 class TestBoolKeyMutantsAreKilled(unittest.TestCase):

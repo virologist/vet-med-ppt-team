@@ -342,7 +342,24 @@ def patch_discipline_check(cfg, declared, actual, notes=None, scope=None):
                      "**未做**改动集合比对，不得据此宣称已遵守最小补丁纪律")
         return True, [], declared
     actual = [str(x).strip() for x in actual if str(x).strip()]
-    extra = sorted(set(actual) - set(declared))
+    # ⚠ v3.31.1（2026-11-11 目录声明归一 · LRN-20261111-026）：
+    #   声明集里允许写**目录**（`--files references/approved-examples`），
+    #   语义是"该目录下的改动都算已声明"。若不归一 ⇒ 目录内每个文件都会被
+    #   判成 `undeclared_changes` 硬拒（假阳性：明明声明了目录）。
+    #   反向风险（漏判）：把声明目录当成"只声明了这一个文件"也不对。
+    #   ⇒ 归一：声明为目录 ⇒ 其下所有实际改动均视为已声明。
+    _declared_norm = set(declared)
+    for d in declared:
+        if os.path.isdir(d):
+            _declared_norm.add(os.path.abspath(d))
+    extra = sorted(set(actual) - _declared_norm)
+    # 声明目录 ⇒ 其下文件视为已声明（逐文件过滤）
+    if extra:
+        _dir_covers = [os.path.abspath(d) for d in declared if os.path.isdir(d)]
+        if _dir_covers:
+            extra = sorted(p for p in extra
+                           if not any(p == dc or p.startswith(dc.rstrip("/") + "/")
+                                      for dc in _dir_covers))
     problems = []
     if extra:
         if scope:

@@ -1,5 +1,5 @@
 digest_scheme: indexed-set-v2
-version: 3.30.0
+version: 3.31.2
 segments:
 - id: domain-profiles.yaml#domain_pack_exemptions
   file: domain-profiles.yaml
