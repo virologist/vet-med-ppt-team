@@ -103,6 +103,71 @@ shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
   （3 次组合跑中 1 次），同批前序会话已记录该类失败为「宿主 broker
   瞬态」，单独跑与复跑均通过；按既有纪律不凭单跑宣称修复，如实留痕。
 
+### 全项目审计收口（2026-11-13，批次 `baudit20261113`）
+
+对 820 文件 / 81 万行做只读通读（确定性脚本 + 5 路并行语义审计成员），
+按「坏掉 / 不一致 / 低效 / 已不需要」四类盘点。本批只修**证据确凿且
+不越 Loop A scope** 的 7 项，其余需人工裁决的列交付清单。
+
+**已修（均有复验证据）**
+
+1. `[14/28] 版本位 3 处漂移`：`scripts/harness.py` 的文件头、
+   `doctor` 自报常量、argparse 描述仍为 `v3.31.2`，而权威清单是
+   `3.31.3`。7a37c8d 的「24 处对齐」只覆盖了 JSON/YAML，**漏了
+   `harness.py` 三处** ⇒ 体检第 14 项在本批前判红（3/15 处偏离）。
+   已对齐；复验 `[14/28] ✓ 版本号 15 处一致：3.31.3`。
+2. `[26/28] 镜像提交态漂移`：`f42716c` 之后的 CHANGELOG 补记只改了
+   仓库根，镜像未同步 ⇒ 第 26 项读 HEAD 提交树判红。已执行
+   `mirror_sync.py --confirm`（覆盖 4 文件），复验
+   `193 个受管文件逐字节一致 / dry-run rc=0`。
+3. `loop_a.regression_required` 漏 D5 守卫：`test_host_broker_resilience`
+   是 v3.31.3 新增的能红守卫，实跑清单与证据 JSON 都含它，但
+   `config/harness.yaml` 的必跑清单只有 7 项；回归器靠一行注释写明
+   「**不在** regression_required 里，但必须跑」——即**用注释代替门禁**，
+   收批引擎对该套件失明。已补入清单（7→8 项）并同步回归器注释。
+   守卫侧 `test_loop_contract.py:964` 与 `test_batch_gate_b19.py:292`
+   均为动态读 yaml，扩容不产生假红（已实证）。
+4. README 门面版本停在 `v3.28.3`（落后 3 个大版本），且原注称
+   「体检 [14] 会判红」——**该声明是错的**：第 14 项巡检清单不含
+   README。已改为 `v3.31.3` 并把说明更正为「本行须人工同步，
+   不能依赖体检兜底」。
+5. README 与 `docs/architecture.md` 的目录树各标「6 张头像」，
+   实际 `avatars/` 为 7 张（6 成员 + 1 团队）；两处都画了
+   `vet-med-ppt-team.zip`，但**仓库内不存在任何 zip**。已改为事实陈述。
+   关联：`INSTALL.md:52` 仍指引用户「直接取仓库内
+   `packages/vet-med-ppt-team/vet-med-ppt-team.zip`」——该文件不在
+   Loop A scope 白名单内，本批未改，列入待裁决清单。
+6. `.workbuddy/run_regression.py` 注释口径与 ③ 同步（运行时文件，
+   gitignored，不进声明集）。
+7. `collapse confirm` 的**三处命令模板全部缺必填参数**：`cmd_collapse`
+   的 confirm 分支要求 `--decision`（缺则 exit 2）、`--actor`（缺则 exit 2，
+   且填 `team-lead` 会被判「执行方自确认」拒绝）、`--rationale`
+   （缺且产物无 `selection_rationale` 则 exit 1；还须过
+   `rationale_quality.min_chars=30`）。原三处都只给
+   `--id/--task-id/--workspace` ⇒ 照抄执行**必然失败**，
+   是「看起来能用、实际不可用」的假文档。已一并补齐：
+   ① `config/harness.yaml#collapse.confirm_command`；
+   ② `scripts/harness.py` doctor 可发现性表的示例与参数列
+      （`--decision` 此前连参数列都没登记）；
+   ③ `references/inspection-zones.yaml` 的 `harness.yaml#collapse`
+      段指纹同步刷新（键集合仍 22，仅值变更；`indexed-set-v2`
+      把值纳入叶子身份 ⇒ 指纹必须跟着变）。
+   实测：改 ① 后未同步 ③，`test_dead_config_disposition` 的 T9 与
+   `test_inspection_zone_registry_red` 的 3 个变异体红证明立刻判红
+   ——守卫**正确工作**，补齐登记后 57 例复验全绿。
+
+**排除的假阳性（不计入缺陷）**：3 条疑似 Markdown 死链全部是
+反引号内示例（`![原文件名](PictureN.jpg)`）或编号引用
+（`entries[11](RF-...)`），非真实链接；`.versionctl/bin/versionctl.py`
+与 `scripts/versionctl.py` 逐字节相同是**自举锚点设计**（gitignored，
+跨 checkout 存活）；`scripts/probe_channels.py` 是正式通道探针，
+被 `config/external-tools.yaml` 消费，非一次性诊断脚本。
+
+**验证状态**：全量 8 套件回归中 7 项 `rc=0`；`ensure_settings` 因
+第 26 项读**旧 HEAD 提交树**而 `rc=1`（提交前必然中间态），
+需本提交落盘后复验转绿；结论以本批交付报告与
+`.workbuddy/_logs/` 下的日志为准，不在本条预写「全绿」。
+
 ---
 
 ## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）

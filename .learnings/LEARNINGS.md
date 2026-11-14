@@ -1703,3 +1703,56 @@ v3.31.2 曾记录「D5 新增 22 项能红守卫全绿」。实际全量回归�
 - Source: defect
 - Related Files: scripts/test_host_broker_resilience.py, .workbuddy/run_regression.py, scripts/harness.py, config/harness.yaml
 - Tags: 假绿, 能红守卫, self-report 失真, 证据链, 双向相等, 回归器, 教学PPT专家团改造
+
+---
+
+## [LRN-20261113-032] defect/high · 「注释写『必须跑』」不等于门禁真要求跑——必跑清单与实跑清单分离时的失明
+
+**Status**: candidate
+
+### Context
+
+v3.31.3 全项目审计（批次 `baudit20261113`）实测：D5 宿主 broker 能红守卫
+`test_host_broker_resilience` 在 `.workbuddy/run_regression.py` 里被实跑、
+也进了 `regression_evidence.json`（8 项全列），但
+`config/harness.yaml#loop_a.regression_required` 只有 7 项、**不含它**。
+回归器源码注释直白写着「**不在** regression_required 里，但必须跑」——
+即用一句注释替代了门禁声明。后果：`loop_contract.regression_check`
+只按 `regression_required` 判齐备，收批引擎对这个守卫**完全失明**；
+任何人漏跑它仍能 `batch-close` 成功。
+
+同批另证：`ensure_settings.py --dump-block-segments` 把登记表版本号
+硬编码为 `"3.28.3"`，而真源 `references/inspection-zones.yaml` 是
+`3.31.3` ⇒ 每次重新生成登记表骨架都把版本号**写回旧值**。
+这是 S-E73「版本位漏同步」同型复发（7a37c8d 补了 24 处 JSON/YAML，
+仍漏 `harness.py` 三处与本处）。
+
+### Root Cause
+
+① **清单分裂**：必跑清单（yaml）、实跑清单（回归器）、证据清单（JSON）
+   三份各自维护，没有「同源生成」约束；新增套件时只改了两份。
+② **注释当契约**：把「必须跑」写在注释里，机器判据读不到，
+   人却因看到注释而以为已被强制 ⇒ 比完全没写更危险（虚假安心）。
+③ **版本位靠枚举**：每轮提版靠 grep 找「已知的版本位」，
+   新出现的生成分支/活文件版本位必然被漏；清单自检只扫
+   「带 version 键的文件」，扫不到 `print("version: ...")` 这类生成端。
+
+### Rule（候选，待复发 ≥3 或管家节点 ack 后晋升）
+
+1. 新增回归套件的**唯一动作**是改 `loop_a.regression_required`；
+   回归器与证据 JSON 必须从它派生，禁止三处各写一份。
+2. 任何「必须 X」的工程纪律，必须能指出**读它的机器判据**；
+   指不出 = 未落地，不得写成已完成。
+3. 版本号一律从 `.codebuddy-plugin/plugin.json` 动态读，
+   生成端不留字面量；提版后加一条「生成分支输出是否等于真源」探针。
+
+### Suggested Fix
+
+- ✅ 本批已落地：D5 补入 `regression_required`（7→8）、回归器注释同步、
+  `--dump-block-segments` 改为动态读权威版本（复验输出 `3.31.3`）、
+  `harness.py` 三处版本位对齐（体检 `[14/28]` 转绿 15 处一致）。
+
+### Metadata
+- Source: defect
+- Related Files: config/harness.yaml, .workbuddy/run_regression.py, scripts/ensure_settings.py, scripts/harness.py, .workbuddy/regression_evidence.json
+- Tags: 声明层≠执行层, 门禁失明, 清单同源, 注释当契约, 版本位漂移, 能红守卫

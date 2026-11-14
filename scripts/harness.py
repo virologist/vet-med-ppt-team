@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.31.2
+harness.py — vet-med-ppt-team 编排内核（确定性工程层）v3.31.3
 为什么要有这个文件（2026-09-29 基线实测教训）：
   1. 苏学法（pedagogy-architect）连 spawn 三次全部 `not available`，而现行规则
      "Agent 不可用＝任务阻断" → 整条流水线在阶段 3 停摆。纪律越严，缺降级越致命。
@@ -8899,7 +8899,7 @@ def cmd_doctor(args):
         ("template-audit",  "模板指纹盘点 + 登记册审计",              "--root",  "--json/--require-registered", "0/1", "harness.py template-audit --root /Users/.../课程目录"),
         ("loop",  "v3.9.0 双层 Loop 状态机；v3.20.0 扩到 23 个动作（新增批次门 batch-open/close/status 与判据动作 review/retrieval/baseline/delta/geo-baseline/defaults；判据全部取自 config/harness.yaml#loop_a|loop_b|delta_gate）", "action", "--loop/--actor/--deck/--items/--decision/--reason/--verify-json/--lint-json/--geo-baseline/--files/--batch/--regression/--n/--elements/--read-log/--out/--check-refs/--p0/--p1/--p2/--allow-unverified", "0/1/2/3", "harness.py loop review --file <轮报6项JSON> && harness.py loop continue --decision accept --confirmed --verify-json <verify_deck报告.json>（v3.20.0：进位前必须有本轮轮报；报告优先于手工 --p0/--p1/--p2）"),
         ("domain", "v3.17.0：内容域档案菜单与详情（**给 LLM 看的选域菜单**，脚本不自动匹配）", "action", "--id", "0/2/3", "harness.py domain list"),
-        ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--rationale/--actor", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --rationale \"用户主题为 Python 入门\"（须先 route --domain 落盘待确认产物）"),
+        ("collapse", "v3.17.0：坍缩产物查询与确认（**确认前域人格不生效**）", "action", "--id/--task-id/--decision/--actor/--rationale", "0/1/2/3", "harness.py collapse confirm --id computing --task-id T-1 --decision \"用户已阅并确认该专家团配置\" --actor user --rationale \"用户主题为 Python 入门，需要该域的通用教学专家配置\"（v3.31.3 审计补齐：--decision/--actor 为 confirm 必填，缺一即 exit 2；须先 route --domain 落盘待确认产物）"),
         # v3.21.0 补：gate1-check 此前**只在 argparse 里、不在 doctor 表里**——
         #   ⇒ 对 LLM 冷启动不可见（不可发现 = 对 LLM 不存在），闸1 冻结自检白拿。
         #   实测（2026-10-26 独立诊断）：argparse 23 个子命令 vs doctor 表 22 个，缺口即此。
@@ -8913,7 +8913,7 @@ def cmd_doctor(args):
          "harness.py insights add --part <RUN_DIR>/_insights/parts/dvm-content-expert__content.json && "
          "harness.py insights verify"),
     ]
-    out = {"version": "v3.31.2", "executable": __file__,
+    out = {"version": "v3.31.3", "executable": __file__,
            "global_options": ["--workspace <工作空间>（可写在子命令前/后）"],
            # v3.18.0 D3：冷启动自动发现未完成任务；无未完成项时为 null（不输出空壳）。
            # v3.20.0 A3：路径由 loop_b.state_file 决定（传 cfg，不再硬写 loopB_state.json）
@@ -9586,7 +9586,7 @@ def cmd_stage(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.31.2")
+    ap = argparse.ArgumentParser(description="vet-med-ppt-team 编排内核（确定性工程层）v3.31.3")
     ap.add_argument("--workspace", help="工作空间路径（默认 cwd）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

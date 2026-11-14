@@ -4650,7 +4650,12 @@ def main():
         # ⚠ **v3.28.2**：登记表顶层声明**指纹口径**（`digest_scheme`）。
         #   守卫据此分派算法 ⇒ 旧口径登记表（无此字段）**仍能过**（向后兼容）。
         print(f"digest_scheme: \"{DIGEST_SCHEME_INDEXED}\"")
-        print("version: \"3.28.3\"")
+        # ⚠ v3.31.3 全项目审计：此处原为硬编码 "3.28.3" ⇒ 每次重新
+        #   生成登记表骨架都会把版本号**写回旧值**（S-E73 同型第 N 次复发）。
+        #   改为从唯一权威 `.codebuddy-plugin/plugin.json` 动态读取。
+        _mpath = os.path.join(path, ".codebuddy-plugin", "plugin.json")
+        _ver = str(_load(_mpath).get("version", "")).lstrip("v").strip()
+        print(f"version: \"{_ver}\"")
         print("segments:")
         for seg_key, v in items:
             print(f"  - id: \"{seg_key}\"")

@@ -27,7 +27,7 @@
 ⚠ **必须是「追加」**：放首位会遮蔽宿主 shim 的 `sitecustomize` ⇒ broker 失效。
 ⚠ **文件名固定为 `usercustomize.py`**：Python 只认这个名字。
   ⇒ 本文件以 `usercustomize_host_safe.py` 保存（避免与包内其它模块混淆），
-    由 `scripts/run_regression.py` 在启动子进程时**复制/软链**成
+    由 `.workbuddy/run_regression.py`（回归器，运行时脚本）在启动子进程时**复制**成
     `usercustomize.py` 到一个临时注入目录，再把该目录**追加**到 PYTHONPATH。
     （探针7 R1 实测：`usercustomize` 会被自动 import，标记文件已生成。）
 """

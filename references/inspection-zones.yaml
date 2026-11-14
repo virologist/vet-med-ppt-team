@@ -377,7 +377,10 @@ segments:
   file: harness.yaml
   prefix: collapse
   key_count: 22
-  keys_sha256: 0adf3e30f49235b8317e6b1dd6381e301b169332
+  # v3.31.3 全项目审计：collapse.confirm_command 由「缺三个必填参数的死模板」
+  #   补齐为可执行骨架 ⇒ 段内**值**变更（键集合仍 22，consumer/disposition 不变）。
+  #   indexed-set-v2 口径把值纳入叶子身份 ⇒ 指纹必须同步刷新。
+  keys_sha256: 3e4626a013074d05c41edf90a6eadb9760d8225e
   leaf_unused: 0
   leaf_weak: 0
   consumer: 脚本+会话层+主理人

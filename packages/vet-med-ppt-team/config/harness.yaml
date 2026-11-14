@@ -266,7 +266,10 @@ collapse:
   confirmed_status: "confirmed"                    # 已确认态：可生效
   require_user_confirmation: true                  # 硬承诺：未确认不得生效
   # 确认命令（人读，执行方 = 主理人；**沉默不构成确认**）
-  confirm_command: "python3 scripts/harness.py collapse confirm --id <域id> --task-id <task_id> --workspace <工作空间>"
+  # ⚠ v3.31.3 全项目审计：原模板缺 `--decision` / `--actor` / `--rationale` 三个
+  #   confirm 必填项（cmd_collapse 缺一即 exit 2/1，且 `--actor=team-lead` 会被判
+  #   「执行方自确认」拒绝）⇒ 按字面照抄执行必然失败。此处补齐为可执行骨架。
+  confirm_command: "python3 scripts/harness.py collapse confirm --id <域id> --task-id <task_id> --decision \"用户已阅并确认该专家团配置\" --actor user --rationale \"<选型理由：写清为什么是这个域、为什么是这组专家，不少于30字>\" --workspace <工作空间>"
   # 选型理由由**主理人（LLM）**填写，脚本不猜——未填时坍缩产物标记为待补
   rationale_filled_by: "team-lead"
   # ── 选型理由的**格式下限**判据（v3.28.2 B2 · 本轮诊断 P1-1）──────────────
@@ -495,9 +498,13 @@ loop_a:
   #   触发 5 次、test_arch_drift 漏带造成过一次带红提交（B15）。这四套是事实上的
   #   高频必带项，此前全靠主理人记忆传参（漏带=收批门禁对最常红的面失明）。
   #   ensure_settings 是内置执行器，其余均对应 scripts/test_<name>.py。
+  # v3.31.3 全项目审计再 +1（原为 7 项）：D5 宿主 broker 能红守卫
+  #   test_host_broker_resilience 此前只在 .workbuddy/run_regression.py 的注释里
+  #   写「必须跑」，却不在本清单 ⇒ 收批门禁对它失明（声明层≠执行层同型）。
   regression_required: ["ensure_settings", "test_harness", "test_five_gates",
                         "test_dead_config_disposition", "test_inspection_zone_registry_red",
-                        "test_arch_drift", "test_domain_pack"]
+                        "test_arch_drift", "test_domain_pack",
+                        "test_host_broker_resilience"]
   # R18-续（v3.28.8）：**单个回归套件的超时阈值**（秒）——体检第 7 项
   #   跑每个 test_*.py 时的单套件上限。
   #   病灶：此前是裸 `timeout=180` 硬编码 ⇒ 慢机/重负载下真套件被误判超时

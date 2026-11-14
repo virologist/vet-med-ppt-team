@@ -156,12 +156,12 @@ packages/vet-med-ppt-team/
 │   ├── visual-slide-designer.md      ← 必含：版式选型、可读性红线、医学图像规范
 │   ├── ppt-producer.md               ← 必含：写回门禁、台账、批量脚本驾驶
 │   └── verifier.md                   ← 必含：独立复算、口径第二签、挂账审判
-├── avatars/                          ← 6 张头像（512×512 PNG, ≤500KB）
+├── avatars/                          ← 7 张头像（512×512 PNG, ≤500KB；6 成员 + 1 团队）
 │   ├── team.png                      ← 团队整体头像
 │   ├── <member>.png                  ← 每个成员（含主理人）
 ├── (无 settings.json)                ← 宿主 ExpertPluginService 按「单键 agent」判据删除；agent 名由 plugin.json 决定
 ├── README.md                         ← 子包说明（与根 README 不同）
-└── vet-med-ppt-team.zip              ← 一键分发版
+└── (无 zip)                          ← 仓库内不含；旧版曾以 zip 分发
 ```
 
 ---

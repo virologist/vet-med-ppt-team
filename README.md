@@ -63,10 +63,10 @@ vet-med-ppt-team/
 │       │   ├── visual-slide-designer.md ← 视觉设计师
 │       │   ├── ppt-producer.md        ← 制作师
 │       │   └── verifier.md            ← 独立验证（闸4 裁判，v3.17.0 起）
-│       ├── avatars/                   ← 6张头像 PNG (512×512)
+│       ├── avatars/                   ← 7张头像 PNG (512×512，6 成员 + 1 团队)
 │       ├── (无 settings.json)          ← 宿主会删，见 INSTALL.md FAQ
 │       ├── README.md                  ← 子包说明
-│       └── vet-med-ppt-team.zip       ← 一键打包分发
+│       └── (无 zip)                    ← 仓库内不含；旧版曾以 zip 分发
 └── docs/
     ├── architecture.md                ← 团队结构与五闸（stage 0–4）门控详解（+ poultry-disease-index.md 之外的主要内容索引）
     └── iteration-log-v1.0-to-v1.4.md ← 迭代记录
@@ -81,7 +81,7 @@ vet-med-ppt-team/
 | **Claude Code** | ① `/plugin marketplace add virologist/vet-med-ppt-team`<br>② `/plugin install vet-med-ppt-team@vet-med-ppt-team` | [INSTALL.md#ClaudeCode](INSTALL.md#claude-code) |
 | **WorkBuddy** | ① `/plugin marketplace add virologist/vet-med-ppt-team`<br>或手动 `cp -r packages/vet-med-ppt-team ~/.workbuddy/plugins/marketplaces/my-experts/plugins/` | [INSTALL.md#WorkBuddy](INSTALL.md#workbuddy) |
 | **Claude Desktop** | Settings → Plugins → Add Plugin → 输入 `virologist/vet-med-ppt-team` | [INSTALL.md#ClaudeDesktop](INSTALL.md#claude-desktop) |
-| **通用（手动）** | 解压 zip → 放入对应 Agent 的 skill/plugin 目录 | [INSTALL.md#通用](INSTALL.md#通用手动安装) |
+| **通用（手动）** | 用 git 克隆 / 手动 `cp -r packages/vet-med-ppt-team` 到对应插件目录（仓库内不含 zip） | [INSTALL.md#通用](INSTALL.md#通用手动安装) |
 
 ## 快速使用
 
@@ -95,10 +95,14 @@ vet-med-ppt-team/
 
 ## 版本与维护
 
-- **当前版本**：v3.28.3（2026-11-01）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
-  本节仅作门面展示，若与 plugin.json 不一致**以 plugin.json 为准**（体检 [14] 会判红）。
+- **当前版本**：v3.31.3（2026-11-12）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
+  本节仅作门面展示，若与 plugin.json 不一致**以 plugin.json 为准**。
+  ⚠ 体检 [14] 的巡检清单**不覆盖本行**（只校验 plugin/marketplace JSON、
+  config/ 与 references/ 的带 version 键 YAML、harness.py 三处版本位）⇒
+  本行必须随提版**人工同步**，不能依赖体检兜底（v3.31.3 全项目审计更正）。
   （历史勘误：本行曾长期停留 `v1.4.1（2026-09-11）`，与当时实际的 3.28.1 相差两个大版本，
-   属「门面文档口径漂移」——v3.28.3 起订正，并由体检 [14] 四处一致性兜住。）
+   属「门面文档口径漂移」——v3.28.3 起订正。⚠ 原文称「由体检 [14] 四处一致性兜住」
+   经 v3.31.3 全项目审计**证伪**：[14] 巡检清单不覆盖 README；该兜底从未存在。）
 - **变更历史**：见 [CHANGELOG.md](CHANGELOG.md)
 - **更新流程**：见 [UPGRADE.md](UPGRADE.md)
 - **架构设计**：见 [docs/architecture.md](docs/architecture.md)
@@ -113,4 +117,4 @@ vet-med-ppt-team/
 - 在本地仓库 `Claude/vet-med-ppt-team/` 修改
 - 通过 `git commit` 记录变更
 - 通过 `git push` 同步到 GitHub
-- 大版本迭代后重新打包 zip 分发
+- 大版本迭代后打 tag 并 push（当前以 git 分发，仓库内不含 zip）
