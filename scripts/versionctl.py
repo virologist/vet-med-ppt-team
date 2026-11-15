@@ -986,15 +986,6 @@ def write_bootstrap(root, src_path=None):
     return dst
 
 
-def read_bootstrap(root):
-    """读自举锚点里的控制面内容（不存在返回 None）。"""
-    p = bootstrap_script(root)
-    if not p.is_file():
-        return None
-    try:
-        return p.read_text(encoding="utf-8")
-    except OSError:
-        return None
 
 
 def policy_yaml_path(root):

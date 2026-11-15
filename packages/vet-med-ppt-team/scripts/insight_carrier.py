@@ -206,17 +206,6 @@ def _id_pattern(cfg, notes):
     return raw
 
 
-def _module_id_pattern(cfg, notes):
-    """module 形态的 target_id 正则（须非纯数字——管家节点裁决）。"""
-    node = _section(cfg, "fields").get("target_id")
-    raw = node.get("module_pattern") if isinstance(node, dict) else None
-    raw, _fell = _val(raw, "target_id.module_pattern", "module_id_pattern", notes,
-                      "insight-carrier.fields")
-    if not isinstance(raw, str):
-        notes.append(f"insight-carrier.fields.target_id.module_pattern 不是字符串 → "
-                     f"回落内置值 {_FB['module_id_pattern']!r}")
-        return _FB["module_id_pattern"]
-    return raw
 
 
 def _axis_letters(cfg, notes):

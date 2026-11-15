@@ -280,7 +280,7 @@ TABLE_LIKE = {MSO_SHAPE_TYPE.TABLE}
 MEDIA_LIKE = {MSO_SHAPE_TYPE.MEDIA}  # video/audio
 GROUP_LIKE = {MSO_SHAPE_TYPE.GROUP}
 EMBEDDED_OLE_LIKE = {MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT, MSO_SHAPE_TYPE.LINKED_OLE_OBJECT}
-SMART_ART_LIKE = set()  # python-pptx 1.0.2 无 SMART_ART 枚举；用 XML 嗅探
+# 注：原 SMART_ART_LIKE 占位已移除（python-pptx 1.0.2 无该枚举），改用 XML 嗅探。
 
 # SmartArt 嗅探（按 OOXML 命名空间）
 NS_DGM = "{http://schemas.openxmlformats.org/drawingml/2006/diagram}"

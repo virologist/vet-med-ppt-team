@@ -3049,10 +3049,6 @@ def _trace_error(w, cfg, event, actor, detail):
     return _trace(w, cfg, event or "error", actor, detail)
 
 
-def _fallback_channels(cfg):
-    """取 fallback.degrade_modes 的通道名（general-purpose+persona / script_pipeline）。"""
-    modes = (cfg.get("fallback") or {}).get("degrade_modes") or {}
-    return list(modes.keys())
 
 
 def cmd_member_return(args):
@@ -3846,7 +3842,6 @@ _DOI_RE = _re_ref.compile(r"^(?:DOI:|https?://(?:dx\.)?doi\.org/)?\s*(10\.\d{4,}
 # 假号黑名单：占位号、明显测试号（按 PubMed 实测无有效对应）
 _FAKE_PMIDS = {"12345", "00000", "99999", "11111", "012345"}
 # 旧 cases_library "ok" 无 verified_at → 一律判 unverified 候选
-_OK_NO_TS = _re_ref.compile(r"\"ok\"\s*:\s*true", _re_ref.I)
 
 
 def _check_one_ref(src: dict, pmid_rx=None) -> dict:
@@ -4892,8 +4887,6 @@ def load_envelope_schema(pkg_dir=None):
         return _ENVELOPE_SCHEMA_CACHE
 
 
-def _envelope_required():
-    return load_envelope_schema()["required"]
 
 
 def _envelope_status_set():
@@ -5345,25 +5338,6 @@ def _intake_item_state(v):
     return "confirmed", "已登记"
 
 
-def _intake_item_confirmed(v):
-    """判定 A 类五项中的一项是否**已确认**（不只是"非空"）。布尔版（供简洁调用）。
-
-    背景（D2 实测复现）：此前 `cmd_loop intake` 与 `cmd_loop make-gate` 都只判
-    `not intake.get(k)`——而 A 类五项的登记格式是 dict
-    （见 references/task-intake-checklist.md:134）：
-        {"value": "高职大二", "status": "confirmed|suggested"}
-    一个 `status="suggested"`（**未确认**）的 dict 是非空的 ⇒ `intake.get(k)` 为真
-    ⇒ 被判为已确认 ⇒ 直接放行进制作。这与
-    references/task-intake-checklist.md:158-159 的硬要求
-    「A 类 5 项 status 必须全为 confirmed——存在 suggested 即不得进入制作阶段」
-    **直接矛盾**，且是"文档说要拦、代码不拦"的典型双声明失效。
-
-    ⚠ v3.18.0：核心判据统一在 `_intake_item_state()`（三态：missing / unconfirmed /
-      confirmed）；本函数只是它的布尔薄封装，供不需要区分"缺失 vs 未确认"的调用方使用。
-      两者**必须同源**——曾并存两份实现，正是本项目「同一口径两处漂移」的典型病灶。
-    """
-    state, _detail = _intake_item_state(v)
-    return state == "confirmed"
 
 
 def _intake_a_gaps(intake):

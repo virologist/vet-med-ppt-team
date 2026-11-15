@@ -247,6 +247,43 @@ B3.2 / B4.x 不可逆删除与归档、tag `v3.31.3` 前移（改写已发布引
 **验证状态**：本批结论以 `.workbuddy/regression_evidence.json`
 与交付清单为准，不在本条预写全绿。
 
+### 源码层审计续批（2026-11-15，批次 `b2026111503`）
+
+三路只读语义审计里的「真死代码」一路在 `b2026111502` 收口后才返回，
+按纪律另开批次，不塞进已推送提交。该路对 21 个候选逐个做全库文本
+检索（含 CHANGELOG / docs / 历史归档 / config / references）、对照词
+验证与动态分发排除，判定 18 个为真死代码、3 个为误报。
+
+**已修（18 个符号 / 11 文件）**：按 AST 精确定位 `lineno..end_lineno`
+区间删除，预演 18/18 命中、0 未定位，删除后 AST 复验 0 错。涉及
+`_fallback_channels` / `_OK_NO_TS` / `_envelope_required` /
+`_intake_item_confirmed`（harness.py）、`read_bootstrap`（versionctl.py）、
+`SEVERITY_RE`、`_norm_ver`、`SUPERSCRIPT_PAIRS`、`SMART_ART_LIKE`、
+`MISSING_MARK`、`_module_id_pattern`、
+`PKG_REL_NS` / `LARGE_MEDIA` / `ZERO_BYTE_WARN`（ooxml_lint.py）、
+`MAX_MB_BYTES` / `SnapshotEntry`（snapshot.py）、
+`_NS_A` / `_NS_P`（verify_deck.py）。`SMART_ART_LIKE` 的设计说明转为
+注释保留（「python-pptx 1.0.2 无该枚举，改用 XML 嗅探」），不丢知识。
+删 `SnapshotEntry` 后 `dataclass` 成为孤儿 import，一并清理；
+复查生产脚本未使用 import 仍为 0。
+
+**明确未误伤**：`LARGE_MEDIA` 只按完整符号删，未碰仍活跃的
+`LARGE_MEDIA_BYTES`；`_NS_A` / `_NS_P` 与 `A_NS` / `P_NS` 是不同符号；
+`harness.yaml#collapse.*` 的 `producer` / `decision` 等是**配置键**，
+其字面量出现在代码里属正常消费，不作为「代码引用」证据。
+
+**未动（待裁决）**：① `_pmid_online_check`（CHANGELOG 明载「闸4.5
+从不调用」，更像护栏装在闸外的功能缺失，该接线而非删除）与
+`is_broker_limited`（对外 API，包外消费者不可见）；② 两处循环内重复
+`yaml.safe_load`（`ensure_settings.py` 的 `check_dead_config_keys`
+与 `loop_contract.py` 的 `fix_class_split`）——落在
+`test_dead_config_disposition` 的**逐字变异锚点**函数内，改动可能让
+锚点失配 ⇒ 假绿风险高于「省 1 次 parse」的收益；③
+`probe_channels.py` 循环内 spawn `file`（每通道进程有隔离用途）；
+④ `host_safe_tmp.py` 三处同型结论是否抽 `_probe` 公共件。
+
+**验证状态**：以 `.workbuddy/regression_evidence.json` 与交付清单为准。
+
 ---
 
 ## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）

@@ -83,14 +83,11 @@ NS = {
 }
 CONTENT_TYPES = NS["ct"]
 REL_NS = NS["rel"]
-PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 # 非法控制字符（XML 1.0 不允许，除 tab/lf/cr）
 ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 # 0 字节媒体阈值（与 extract_assets 保持一致：>50MB 标 INFO）
-LARGE_MEDIA = 50 * 1024 * 1024
-ZERO_BYTE_WARN = 1  # 0 字节媒体视为 WARN（D11 苗子但非 ERROR）
 
 
 # ============== Issue 数据类 ==============

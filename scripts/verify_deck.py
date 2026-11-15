@@ -319,8 +319,6 @@ def fix_class_of(issue_type):
 EMU_PER_INCH = 914400
 
 # XML 兜底命名空间（抗崩溃：python-pptx 不认识的 shape 包装层，如 mc:AlternateContent）
-_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
-_NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
 
 def _pt(size):

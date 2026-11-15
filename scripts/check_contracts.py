@@ -82,8 +82,6 @@ def load_yaml(path):
         return yaml.safe_load(f)
 
 
-def _norm_ver(v):
-    return (v or "").lstrip("v").strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════

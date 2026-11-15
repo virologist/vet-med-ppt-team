@@ -36,7 +36,6 @@ import os
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -51,19 +50,9 @@ log = logging.getLogger("snapshot")
 SCHEMA_VERSION = 1
 DEFAULT_MAX_SIZE_MB = 500
 DEFAULT_KEEP = 3
-MAX_MB_BYTES = DEFAULT_MAX_SIZE_MB * 1024 * 1024
 
 
 # ============== 数据类 ==============
-@dataclass
-class SnapshotEntry:
-    sha8: str
-    ts: str
-    size_bytes: int
-    trigger: str        # auto_pre_writeback / milestone / manual
-    gate_exit: int = 0  # 触发时 gate 的退出码
-    tag: str = ""
-    kept: bool = True
 
 
 # ============== 工具 ==============

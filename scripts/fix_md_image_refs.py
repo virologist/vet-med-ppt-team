@@ -73,7 +73,6 @@ RE_SLIDE = re.compile(r"<!--\s*Slide number:\s*(\d+)\s*-->")
 
 SCHEMA_VERSION = "fix_md_image_refs/1.0.0"
 DEFAULT_TYPES = ("image", "video")
-MISSING_MARK = "引用缺失"
 
 
 # ============== 数据结构 ==============
