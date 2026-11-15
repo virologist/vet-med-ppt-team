@@ -6059,3 +6059,14 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - `surgery_deck.py`：新增 `failed` 累计失败课件数，缺文件分支写 stderr 告警，函数末尾 `failed` 非空则 `return 1`、否则 `return 0`，并以 `sys.exit(main())` 收口；`report` 键保持不变。
 - `ooxml_lint.py`：`__init__` 增 `raw_error_count/raw_warn_count/_checker_failures`；`--level` 只过滤显示、退出码改基于过滤前计数（修 `--level WARN` 把 ERROR 藏成 exit 0）；检查器异常登记后 `run()` 统一 fail-closed 返回 4；`emit_text` 增澄清行，`main()` 的 D11 计数改用 `raw_error_count`。
 - 新增 `scripts/test_a0_exit_contract_red.py`：4 条「能红反例」unittest，覆盖上述三脚本的失败退出码、`--level` 误判与检查器崩溃放行，旧代码须失败、新代码须通过。
+
+---
+
+## b2026111505 · A0-批2 PPTX 产物真实性修复（v3.31.3 内整改）
+
+- 本批启用用户授权的第 ② 条决策：**允许真实写回 PPTX**（`--apply` 路径端到端纳入反例）。
+- `theme_fingerprint.py`：`_active_deck(p, root=None)` 增扫描根参数，`batch_report` 传入 `root_dir`；隐藏目录判定只看**扫描根之下**的相对路径，不再把安装路径 `~/.workbuddy/...` 算进去（旧实现把包内所有 .pptx 判为归档 ⇒ 覆盖统计恒 0）。`.snapshots` / `_trash_*` / `~` 排除规则保持不变。
+- `deck_surgery.py`：① `NORMID_RE` 两侧 `\b` 在中文紧邻处均失效，改用「前后均非 ASCII 字母数字」负向断言（兼容 `XGB30000` 不误伤）；② `fix_normid()` 补 `run.text = new`，报告「已规范化」时产物真的改了；③ `fix_superscript()` 改 `rPr.get("baseline") is not None` 判断，不再靠「`get()` 会抛异常」的错误假设恒 `continue`。
+- `fix_md_image_refs.py`：同一行多个图片引用改为「按累积后的行逐个替换（count=1）」，`rewrite[line_no]` 不再互相覆盖；`REF-MISSING` 分支同样基于累积行追加，避免丢标记。
+- 新增 `scripts/test_a0_pptx_red.py`：7 条能红反例（隐藏安装根 / 排除规则不放松 / 中文紧邻编号 / CLI `--apply` 端到端写回 / 上标报告与 explicit baseline 跳过 / 同行双图 / 函数级 run 写回）。**双向验证**：旧码 `4ec7070` 快照上 7/7 行为判红，新码 7/7 通过。
+- 既有回归：`test_fix_md_image_refs` 8 / `test_inject_notes_assertions` 9 / `test_template_migrate` 11 全绿。

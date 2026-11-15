@@ -256,11 +256,14 @@ def fix_refs(
             new_alt = f"{asset['asset_id']}｜{r.alt}" if r.alt else asset["asset_id"]
             if note:
                 new_alt = f"{new_alt}｜{note}"
-            new_line = lines[r.line_no - 1].replace(
-                f"![{r.alt}]({r.target})", f"![{new_alt}]({link})"
+            # v3.31.3 A0-批2：同一行有多个引用时按「累积后的行」逐个替换，
+            # 不能 dict[line_no] 直接覆盖（旧实现只保留最后一个引用的结果）。
+            base_line = rewrite.get(r.line_no, lines[r.line_no - 1])
+            new_line = base_line.replace(
+                f"![{r.alt}]({r.target})", f"![{new_alt}]({link})", 1
             )
-            if new_line == lines[r.line_no - 1]:  # 非标准写法（HTML img 等）→ 退化为行尾追加标记
-                new_line = lines[r.line_no - 1] + f"  <!-- 引用已解析: {asset['asset_id']} → {link} -->"
+            if new_line == base_line:  # 非标准写法（HTML img 等）→ 退化为行尾追加标记
+                new_line = base_line + f"  <!-- 引用已解析: {asset['asset_id']} → {link} -->"
             rewrite[r.line_no] = new_line
             used_assets.add(asset["asset_id"])
             matched.append({
@@ -274,7 +277,8 @@ def fix_refs(
             })
         else:
             mark = f"<!-- REF-MISSING: 第{r.page}页资产不足（引用序号 {r.index_in_page + 1} > 资产数 {len(cands)}）-->"
-            rewrite[r.line_no] = mark + "\n" + lines[r.line_no - 1]
+            base_line = rewrite.get(r.line_no, lines[r.line_no - 1])
+            rewrite[r.line_no] = mark + "\n" + base_line
             missing.append({**r.to_dict(), "reason": f"第{r.page}页无第{r.index_in_page + 1}个可视资产"})
 
     # 孤立资产：manifest 有、md 未引用

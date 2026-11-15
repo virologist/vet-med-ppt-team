@@ -67,7 +67,11 @@ FIX_KINDS = ["superscript", "normid", "font", "note", "color", "density",
 
 # 国标/规范编号：允许 "GB 30000" / "GB30000" 两种写法，统一为带空格的标准形
 # ⚠ 只在**明确的编号前缀**上动（GB / NY / WS / DB 等），不碰正文里的字母数字混排。
-NORMID_RE = re.compile(r"\b(GB|NY|WS|DB|SN|YY)\s*(\d{3,}(?:[-–]\d{4})?)\b")
+# v3.31.3 A0-批2：\b 在中文紧邻处两侧都不成立（中文属 \w）⇒「依据GB30000与NY1234执行」
+# 前后两个 \b 都失效。改为「前后均非 ASCII 字母/数字」的负向断言：
+# 既容纳中文紧邻，又不误伤 XGB30000 / GB30000abc。
+NORMID_RE = re.compile(
+    r"(?<![A-Za-z0-9])(GB|NY|WS|DB|SN|YY)\s*(\d{3,}(?:[-–]\d{4})?)(?![A-Za-z0-9])")
 
 
 def load_rules():
@@ -132,12 +136,12 @@ def fix_superscript(prs, rules, pages=None):
         if not m:
             continue
         head, unit = m.group(0), m.group(2)
-        # 已是上标则跳过（python-pptx 不直接暴露 baseline，交给 ooxml_lint 复验）
-        try:
-            run.font._rPr.get("baseline")
+        # v3.31.3 A0-批2：lxml Element.get() 缺属性返回 None **不抛异常**，
+        # 旧写法 try/except 恒 continue ⇒ 下方报告分支永不到达。
+        rPr = getattr(run.font, "_rPr", None)
+        baseline = rPr.get("baseline") if rPr is not None else None
+        if baseline is not None:   # 显式设过 OOXML baseline ⇒ 已是上标，不重复报告
             continue
-        except Exception:
-            pass
         details.append({"slide": si, "action": "superscript",
                         "text": text[:40], "target": head})
         stats["changed"] += 1
@@ -164,6 +168,9 @@ def fix_normid(prs, rules, pages=None):
             continue
         new = NORMID_RE.sub(lambda m: f"{m.group(1)} {m.group(2)}", text)
         if new != text:
+            # v3.31.3 A0-批2：用户已授权真实写回——此前只记报告不改 run，
+            # 「报告已规范化」与 PPTX 实际内容不一致。
+            run.text = new
             details.append({"slide": si, "action": "normid",
                             "before": text[:60], "after": new[:60]})
             stats["changed"] += 1

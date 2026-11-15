@@ -148,15 +148,27 @@ def fingerprint_deck(deck_path: Path) -> DeckFingerprint:
     )
 
 
-def _active_deck(p: Path) -> bool:
+def _active_deck(p: Path, root: Path | None = None) -> bool:
     """v3.4.3 C2 口径修复：只统计活跃课件——跳过 .snapshots 快照库 / _trash_ 归档 /
     . 开头隐藏目录 / ~ 临时文件，与 harness sweep 纪律对齐（sweep 注释"自动跳过
     _trash_*、~ 临时文件、.snapshots 快照库"）。
     背景：此前 batch_report 无过滤，238 总数混入约百份快照副本，覆盖统计失真
-    （example_decks 全是 hash 命名快照，直接 register 会把快照当模板登记）。"""
+    （example_decks 全是 hash 命名快照，直接 register 会把快照当模板登记）。
+
+    v3.31.3 A0-批2：「隐藏目录」只应针对**扫描根之下**的子目录，不能把扫描根
+    自身的安装路径算进去（本包装在 ~/.workbuddy/... 下，旧实现把包内所有
+    .pptx 一律判为归档 ⇒ batch_report 永远 0 份）。给出 root 时按相对路径判定。
+    """
     if p.name.startswith("~"):
         return False
-    for part in p.parts[1:-1]:      # 跳过根自身与文件名，只查中间目录
+    parts = p.parts[1:-1]      # 缺省：跳过根自身与文件名，只查中间目录
+    if root is not None:
+        try:
+            # 只检查扫描根**之下**的目录，忽略安装路径里本就存在的隐藏段
+            parts = p.resolve().relative_to(root.resolve()).parts[:-1]
+        except ValueError:
+            pass               # 不在扫描根下（如软链）→ 退回绝对路径口径
+    for part in parts:
         if part == ".snapshots" or part.startswith("_trash_") or part.startswith("."):
             return False
     return True
@@ -164,7 +176,7 @@ def _active_deck(p: Path) -> bool:
 
 def batch_report(root_dir: Path) -> dict:
     """目录批量扫描 + 统一性报告（v3.4.3 C2：仅活跃 deck，跳过 .snapshots/_trash_/~）。"""
-    decks = sorted(p for p in root_dir.rglob("*.pptx") if _active_deck(p))
+    decks = sorted(p for p in root_dir.rglob("*.pptx") if _active_deck(p, root_dir))
     fps: list[DeckFingerprint] = []
     errors = 0
     for d in decks:
