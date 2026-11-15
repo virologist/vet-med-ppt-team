@@ -1014,4 +1014,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # v3.31.3 方案B：CLI 退出约定唯一化——main() 内部自行 sys.exit，
+    # 此处统一为 sys.exit(main())（零行为差异，且兼容未来 main 返回 int 的场景）。
+    sys.exit(main())

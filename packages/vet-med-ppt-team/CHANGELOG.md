@@ -6079,3 +6079,21 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - **B1.4 诊断订正（撤回原「接线闸4.5」方案）**：源码实证「闸4.5 从不联网验 PMID」是 v3.11 历史状态，v3.17.0 起已不成立——裁判侧 `verify_deck.py#three_source_check` 调 `kernel.pmid_existence_check(...)`（端点/时限/限速由 `_esearch_params(tsc)` 从 yaml 取），编排侧 `cmd_verify_ref --online` 调 `pmid_existence_check(...)`（带同一组参数）。`_pmid_online_check` 只是 v3.17.0 后零引用、且**不带参数**的薄封装；把它「接回闸里」反而会丢掉 yaml 参数、降低核验强度 ⇒ 按死代码删除，并留注释说明订正依据。
 - 新增 `scripts/test_plan_a_red.py`：4 条能红反例（状态查询逐项可信 / 幂等返回值不变 / 单补丁失败可观察 / 闸4.5 真实接线守护 + 死封装已删）。旧码 `7f858af` 快照上 4/4 判红，新码 4/4 通过。
 - 既有回归：`test_host_broker_resilience` 22 / `test_arch_drift` 46 / `test_three_source_online` 8 / `test_three_source_runtime_assert` 13 全绿。
+
+---
+
+## b2026111507 · 方案B CLI 退出约定唯一化 + 契约守卫（v3.31.3 内整改）
+
+**唯一契约（由 `scripts/test_cli_contract_guard.py` 可执行守卫，不靠文档自报）**
+- C1：凡定义 `main()` 的生产脚本，`__main__` 一律 `sys.exit(main())`。
+- C2：`main()` 的常量返回值只允许 `int / None`，禁止把字符串、dict 当退出码。
+- C3：致命错误走 stderr，stdout 保持机器可解析。
+- 退出码语义沿用既有 `0 成功 / 1 业务或缺陷 / 2 用法 / 3 文件或环境 / 4 运行错误（走缺陷回流，不当课件红灯）`。
+
+**落地**：9 个脚本（`case_extract` / `extract_assets` / `fix_md_image_refs` / `harness` / `inject_notes` / `ooxml_lint` / `template_migrate` / `theme_fingerprint` / `verify_deck`）由裸 `main()` 统一为 `sys.exit(main())`。这 9 处原本都在 `main()` 内部自行 `sys.exit`，故**本次零行为差异**；修的是「契约分裂」本身 —— 否则今后有人给 `main()` 加 `return 1` 又会静默 exit 0（与 B1.1 同型病灶）。AST 复验：23 个带 `main()` 的生产脚本 100% 统一。旧码 `2618a5c` 上 C1 判红，新码 3/3 通过。
+
+**B2 栏其余 9 项按风险留审（逐文件迁移会改可观察行为或门禁语义，须先裁决唯一语义）**
+- B2.2 stdout/stderr 混用、B2.3 配置读取失败 4 套契约、B2.7 配置加载器 tuple/dict 混用：下游可能按流/按返回形态解析，须先定唯一契约再逐点迁移。
+- B2.4 三个 `_load_yaml` 同名不同行为、B2.5 5 份 sha256、B2.9 包根解析多份实现：抽取公共件会改 import 图，且部分刻意独立（如 `mirror_sync` 的独立交叉验证），收益低于回归风险。
+- B2.6 `load_rules()` dict/tuple 形态不一：两脚本是复用关系（`deck_surgery.py` import `surgery_deck`），统一返回形态会动多个调用点。
+- B2.8 状态标记三套日志出口、B2.10 `gettrace()` 守卫是否升为硬门禁：文案统一可能触发字面量断言，硬门禁会改发布判据。
