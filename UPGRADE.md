@@ -39,12 +39,12 @@ git push  → GitHub  virologist/vet-med-ppt-team
 修改 `agents/*.md` 或 `plugin.json` 后，**`settings.json` 会被宿主删除**（已复现 8 次）。**2026-11-04 定位真因**：宿主 `ExpertPluginService` 的 `removeGeneratedAgentOverrideFile()`（激活专家时）与 `removePersistedGeneratedAgentOverrides()`（宿主启动时遍历 `marketplaces/*/plugins/*/settings.json`）会删它，判据 = 「JSON 恰有 1 个键且为非空 `agent`」⇒ 本包 `{"agent": "<lead>"}` 精确命中。**不是** OneDrive 同步竞态，**不是**热重载 bug。处置：移除该文件（2026-11-04），agent 名由 `plugin.json` 的 `agentName`/`agents[]` 决定，宿主从不读 `settings.json`。
 同时 `validate_expert.py` 只校验 `.codebuddy-plugin/plugin.json`，不查 `.claude-plugin/plugin.json` —— 两端版本漂移从未被官方工具发现（2026-09-17 实证 v1.4.1→v1.5.1 漂移 2 个小版本）。
 
-故 `scripts/ensure_settings.py` 已升级为 doctor：**25 项体检 + 1 项自愈**（v3.25.0 起为 25 项）。**任一告警都必须先处理再发布**：
+故 `scripts/ensure_settings.py` 已升级为 doctor：**28 项体检 + 1 项自愈**（v3.25.0 起为 25 项，v3.31.0 起扩至 28 项）。**任一告警都必须先处理再发布**：
 
 ```bash
 cd ~/.workbuddy/plugins/marketplaces/my-experts/plugins/vet-med-ppt-team
 
-# 5. 【必做】doctor 25 项（settings.json 反向守卫 + 版本/agent/门禁等只读告警）
+# 5. 【必做】doctor 28 项（settings.json 反向守卫 + 版本/agent/门禁等只读告警）
 python3 scripts/ensure_settings.py
 #   退出码 0 = 全绿可发布；非 0 = 有告警必须先处理
 #   ⚠️ 全量体检含第 7 项「回归测试」——**会串行跑 scripts/ 下全部 test_*.py**

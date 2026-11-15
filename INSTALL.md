@@ -46,10 +46,13 @@ cp -r /tmp/vet-med-ppt-team/packages/vet-med-ppt-team \
 # 3. 启动 WorkBuddy → 专家中心 → 应能看到"动物医学教学PPT智造团"
 ```
 
-### 方法 C：解压 zip 安装（最快，适合无 git 环境）
+### 方法 C：从已有 zip 包安装（旧版分发方式）
+
+> ⚠️ 当前仓库内**已不含** `vet-med-ppt-team.zip`；发布单元是 git 仓库与
+> `packages/vet-med-ppt-team/` 目录，新装请用方法 B。本节仅适用于手上已有历史 release zip 的情况。
 
 ```bash
-# 1. 下载 release zip（从 GitHub Releases 或直接取仓库内 packages/vet-med-ppt-team/vet-med-ppt-team.zip）
+# 1. 取得历史 release zip（旧版产物，仓库内无此文件）
 # 2. 解压
 unzip vet-med-ppt-team.zip -d ~/.workbuddy/plugins/marketplaces/my-experts/plugins/
 
@@ -95,7 +98,7 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 Claude Code 支持将 agent MD 直接作为 subagent 使用：
 
 ```bash
-# 复制 5 份 agent MD 到 Claude Code 的 agents 目录
+# 复制 6 份 agent MD 到 Claude Code 的 agents 目录（含 verifier）
 mkdir -p ~/.claude/agents
 cp ~/.claude/plugins/marketplaces/vet-med-ppt-team/packages/vet-med-ppt-team/agents/*.md \
    ~/.claude/agents/

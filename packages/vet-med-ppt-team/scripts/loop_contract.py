@@ -69,7 +69,12 @@ _FALLBACK = [
     ("invalidation", "sha256"),
     ("patch_discipline", "minimal"),
     ("confirm_before_each_batch", True),
-    ("regression_required", ["ensure_settings", "test_harness", "test_five_gates"]),
+    # ⚠ v3.31.3 B1.4：必须与 config/harness.yaml#loop_a.regression_required 逐项一致。
+    #   yaml 读失败时回落到本表；此前仅 3 项 ⇒ 降级态静默少跑 5 套守卫。
+    ("regression_required", ["ensure_settings", "test_harness", "test_five_gates",
+                             "test_dead_config_disposition", "test_inspection_zone_registry_red",
+                             "test_arch_drift", "test_domain_pack",
+                             "test_host_broker_resilience"]),
     ("baseline_fields", ["p0", "p1", "p2", "pages_physical", "pages_visible", "md5"]),
     ("report_format", "P0=6（基线 6，自引入 0）"),
     ("enabled", True),

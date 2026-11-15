@@ -1756,3 +1756,52 @@ v3.31.3 全项目审计（批次 `baudit20261113`）实测：D5 宿主 broker �
 - Source: defect
 - Related Files: config/harness.yaml, .workbuddy/run_regression.py, scripts/ensure_settings.py, scripts/harness.py, .workbuddy/regression_evidence.json
 - Tags: 声明层≠执行层, 门禁失明, 清单同源, 注释当契约, 版本位漂移, 能红守卫
+
+---
+
+## [LRN-20261115-033] defect/high · 回退态的「空白名单」不是最严格而是放行全部——`if allowed and …` 短路陷阱
+
+**Status**: candidate
+
+### Context
+
+v3.31.3 B 栏整改（批次 `b2026111501`）实测：`scripts/harness.py`
+`_FALLBACK["context"]["state_allowed_keys"] = []`，而
+`config/harness.yaml#context.state_allowed_keys` 有 11 键，配置注释写
+「白名单外的键一律拒绝写入」。初判以为是「空 = 全拒绝」（fail-closed），
+读消费点 `cmd_state` 才确认判据是：
+
+```python
+allowed = cfg.get("context", {}).get("state_allowed_keys") or []
+...
+if allowed and args.key not in allowed:
+    print("拒绝写入：... 不在 state_allowed_keys 白名单内"); return 1
+```
+
+`allowed` 为空 ⇒ `and` 短路 ⇒ **任意键都能写入**。即 yaml 读失败
+进入回退态时，护栏不是更严而是**完全消失**。同批另一处同类：
+`loop_contract.py` 的 `_FALLBACK["regression_required"]` 只有 3 项
+（yaml 8 项），回退态静默少跑 5 套守卫。
+
+### Root Cause
+
+降级副本是**手抄的第二份声明**，没有机器判据保证它与 yaml 同源：
+`test_arch_drift.py` 的 G5 守卫只锁 `_FALLBACK["gate_exit_codes"]`
+的码集合，其余键全靠人记。更隐蔽的是「空值语义」由消费点的
+`if x and …` 写法决定，而回退表作者按常识把 `[]` 理解成
+「最小允许集」，方向恰好相反。
+
+### Suggested Fix
+
+- 已落地：两处回退表逐项对齐 yaml（8 项必跑 / 11 个状态键），
+  并在代码注释里写明短路判据与「双源须同步」。
+- 待裁决：把回退表改为从 yaml 同源生成，或让回退态直接
+  fail-closed（`if not allowed or key not in allowed`）——两者都改
+  发布判据，未擅动。
+- 复用纪律：任何白名单 / 必跑清单的降级副本，必须能指出
+  「校验它与真源相等」的机器判据；指不出 = 迟早漂移。
+
+### Metadata
+- Source: defect
+- Related Files: scripts/harness.py, scripts/loop_contract.py, config/harness.yaml, references/inspection-zones.yaml
+- Tags: 回退态, 空白名单, 短路陷阱, 双源漂移, 降级护栏, 门禁语义

@@ -488,6 +488,18 @@ loop_a:
     #   升级时必须能改到，否则第 14 项必然 2/13 偏离。
     - "<包>/.codebuddy-plugin/marketplace.json"
     - "<包>/.claude-plugin/marketplace.json"
+    # ── v3.31.3 全项目审计 B2.3：3 份包根门面文档纳入白名单（**单文件**，同 B6a/W1）──
+    # 缘由（审计实测）：UPGRADE.md:42,47「25 项体检」实为 28；
+    #   INSTALL.md:98「复制 5 份 agent MD」实为 6（含 verifier）、:52 仍指向
+    #   仓库内已不存在的 vet-med-ppt-team.zip；TEAMS_TOPOLOGY.md:76 的 spawn
+    #   示例缺 `--task-id`（harness.py:9726 required=True，照抄必 exit 2）。
+    #   三处均为「文档-实现不一致」，属 Loop A 必修；但位于包根、原本在 scope 之外
+    #   ⇒ 不放开只能手工改（绕过批次门 ⇒ 无留痕、无最小补丁校验）。
+    # 边界：**只加这 3 个单文件**，包根与整个 docs/ 目录仍不放开；
+    #   docs/ 历史诊断报告与 v1.x 升级示例（B4.3）不纳入，仍列待审。
+    - "<包>/UPGRADE.md"
+    - "<包>/INSTALL.md"
+    - "<包>/TEAMS_TOPOLOGY.md"
   forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
     - "<工作区>/**/*.pptx"
     - "<工作区>/**/*.ppt"

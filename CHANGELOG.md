@@ -168,6 +168,46 @@ shutil.copytree(PKG, pkg, ignore=COPY_IGNORE)
 需本提交落盘后复验转绿；结论以本批交付报告与
 `.workbuddy/_logs/` 下的日志为准，不在本条预写「全绿」。
 
+### B 栏高置信整改（2026-11-15，批次 `b2026111501`）
+
+接续 `baudit20261113` 的两栏清单，经管家节点「同意，执行」授权，按
+「有把握 / 可逆 / 有唯一正确解 ⇒ 直接修；需选方案 / 不可逆删除 /
+改写已发布引用 ⇒ 列待审」推进。本批仍为 v3.31.3 内整改，**不提版本号**。
+
+**已修 4 项（均有实证）**
+
+1. `scripts/loop_contract.py` 的 `_FALLBACK["regression_required"]` 仅 3 项，
+   而 `config/harness.yaml#loop_a` 为 8 项 ⇒ yaml 读失败进入回退态时
+   **静默少跑 5 套守卫**。已逐项对齐并注明「双源须同步」。
+2. `scripts/harness.py` 的 `_FALLBACK["context"]["state_allowed_keys"] = []`
+   是**放宽**而非 fail-closed：`cmd_state` 的判据是
+   `if allowed and key not in allowed`，空 ⇒ 判据短路 ⇒ 回退态放行任意键，
+   与 yaml「白名单外的键一律拒绝写入」语义相反。已对齐 yaml 全部 11 键。
+3. 三份包根门面文档事实订正：`UPGRADE.md` 的「25 项体检」→28；
+   `INSTALL.md` 的「5 份 agent MD」→6（含 verifier），并移除仓库内
+   已不存在的 `vet-med-ppt-team.zip` 声明；`TEAMS_TOPOLOGY.md` 的
+   spawn 示例补必填 `--task-id`（`harness.py:9726` `required=True`）。
+   三者原不在 `loop_a.scope`（`check-path` 判越权），按 B16/B6a 先例
+   **只加这 3 个单文件**进白名单并写明缘由，包根与整个 `docs/` 仍不放开。
+4. `references/inspection-zones.yaml` 的 `harness.yaml#loop_a` 段指纹随
+   scope 扩容刷新：`key_count 22→25`、`keys_sha256`、`leaf_weak 21→24`
+   均取自 `--dump-block-segments`，不手写（`indexed-set-v2` 把值纳入
+   叶子身份，同 A7 实证）。
+
+**经复核撤回 1 条**：B2.1「超时三值 600 / 2400 / 300 冲突、
+2400>600 使单套件判据不触发」不成立——600 是 `ensure_settings` 第 7 项
+全量回归的单套件阈值（配置注释已载明 164.38s 实测与 3.6× 余量），
+2400 是 `.workbuddy/run_regression.py` 每套件子进程硬上限，
+300 是 `test_inspection_zone_registry_red.py` 隔离副本内单个守卫的超时；
+三者属**不同执行器、互不覆盖**。仅缺一处统一层级说明，不列为缺陷。
+
+**未动（仍需裁决）**：B1.1 / B1.2 / B1.3 门禁语义与结构性 deadlock、
+B2.2 两个脚本自报旧版本的语义、B3.1 `mirror_sync` 独立性取舍、
+B3.2 / B4.x 不可逆删除与归档、tag `v3.31.3` 前移（改写已发布引用）。
+
+**验证状态**：镜像同步、全量回归、收批按既有流程执行，结论以
+`.workbuddy/regression_evidence.json` 与本批交付清单为准，不在本条预写全绿。
+
 ---
 
 ## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）

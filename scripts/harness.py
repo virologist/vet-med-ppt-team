@@ -258,7 +258,16 @@ _FALLBACK = {
                 # config/domain_config.yaml#three_source_check（见 _load_three_source_thresholds）。
                 "max_artifact_bytes": 60000},
     "context": {"handoff_mode": "path_only", "summary_max_chars": 800,
-                "state_max_bytes": 32768, "state_allowed_keys": []},
+                "state_max_bytes": 32768,
+                # v3.31.3 B1.5：原为空列表 ⇒ cmd_state 的判据是
+                #   `if allowed and key not in allowed`（空 ⇒ 判据短路）⇒ 回退态
+                #   **放行任意键**，与 yaml「白名单外的键一律拒绝写入」语义相反。
+                #   对齐 yaml#context.state_allowed_keys 全部 11 键（唯一源）；
+                #   ⚠ 这是第二份声明，新增 yaml 键必须同步本表（后续宜同源生成）。
+                "state_allowed_keys": ["task_id", "workflow", "current_stage",
+                                       "stage_history", "user_confirmations_pending",
+                                       "tool_probe_results", "budget", "next_action",
+                                       "compaction", "quality_history", "collapse"]},
     "observability": {"trace_file": ".workbuddy/harness_trace.jsonl"},
     "gate_exit_codes": {"0": "通过", "1": "P0 硬阻断", "2": "P1 阻断", "3": "P2 阻断",
                         "4": "运行错误"},
