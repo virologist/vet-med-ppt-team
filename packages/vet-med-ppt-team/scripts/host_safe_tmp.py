@@ -114,6 +114,12 @@ DEFAULT_BACKOFF = 0.2
 #: 幂等标记（`install()` 重复调用只装一次）
 _INSTALLED = {"done": False}
 
+#: v3.31.3 方案A：逐补丁安装实况（供 install_status() 只读查询）。
+#: 设计约束：install() 的返回值仍是**幂等标记**（首次 True / 重复 False），
+#: 不能拿它当「六个补丁都装上」的证明；真实结果一律查 install_status()。
+_PATCH_STATUS: dict[str, bool] = {}
+_PATCH_FAILURES: list[str] = []
+
 #: 原始 `os.mkdir` 的锚点（用于判「是否被别的 mock 替换过」）
 _ORIG_MKDIR = os.mkdir
 
@@ -311,6 +317,8 @@ def install(attempts=DEFAULT_ATTEMPTS, backoff=DEFAULT_BACKOFF):
     if _INSTALLED["done"]:
         return False
     _INSTALLED["done"] = True
+    _PATCH_STATUS.clear()
+    _PATCH_FAILURES.clear()
 
     def _patched_mkdir(path, mode=0o777, *, dir_fd=None):
         """与原生 `os.mkdir` 同签名；差异仅在失败后的**复查真相**（不重试）。
@@ -339,29 +347,58 @@ def install(attempts=DEFAULT_ATTEMPTS, backoff=DEFAULT_BACKOFF):
             raise
 
     os.mkdir = _patched_mkdir
+    _PATCH_STATUS["os.mkdir"] = True
     _install_pathlib_patch()
+    _PATCH_STATUS["pathlib.Path.mkdir/touch"] = True
     # ④ os.makedirs ⇒ 复查 + 有限重试（探针11 V4 实测 3/6 ⇒ 最后一处缺口）
     try:
         os.makedirs = _patched_makedirs
-    except Exception:
-        pass
+        _PATCH_STATUS["os.makedirs"] = True
+    except Exception as e:
+        _PATCH_STATUS["os.makedirs"] = False
+        _PATCH_FAILURES.append(f"os.makedirs: {e}")
     # ⑤ os.replace / os.rename ⇒ **内容比对真相** + 有限重试
     #    （实测：`batch-extend` 曾因此失败——
     #     `PermissionError: Brokered host rename requires an available runtime file rule`）
     try:
         os.replace = _patched_replace
-    except Exception:
-        pass
+        _PATCH_STATUS["os.replace"] = True
+    except Exception as e:
+        _PATCH_STATUS["os.replace"] = False
+        _PATCH_FAILURES.append(f"os.replace: {e}")
     try:
         os.rename = _patched_replace
-    except Exception:
-        pass
+        _PATCH_STATUS["os.rename"] = True
+    except Exception as e:
+        _PATCH_STATUS["os.rename"] = False
+        _PATCH_FAILURES.append(f"os.rename: {e}")
     # ③ tempfile.mkdtemp ⇒ 自实现版（能复查候选目录）
     try:
         tempfile.mkdtemp = _patched_mkdtemp
-    except Exception:
-        pass
+        _PATCH_STATUS["tempfile.mkdtemp"] = True
+    except Exception as e:
+        _PATCH_STATUS["tempfile.mkdtemp"] = False
+        _PATCH_FAILURES.append(f"tempfile.mkdtemp: {e}")
     return True
+
+
+def install_status() -> dict:
+    """查询补丁安装的**真实结果**（v3.31.3 方案A · B1.3）。
+
+    ⚠ 与 `install()` 的返回值严格区分：`install()` 返回的是幂等标记
+      （首次 True / 重复调用 False），**不是**「六个补丁都装上」的证明。
+      判断补丁是否全部生效，一律查本函数（不改动 install() 的返回语义）。
+    返回 {installed, patches, all_applied, failed_patches, failures}；
+    未调用 install() 时 patches 为空、all_applied=False。
+    """
+    patches = dict(_PATCH_STATUS)
+    return {
+        "installed": bool(_INSTALLED["done"]),
+        "patches": patches,
+        "all_applied": bool(patches) and all(patches.values()) and not _PATCH_FAILURES,
+        "failed_patches": sorted(k for k, v in patches.items() if not v),
+        "failures": list(_PATCH_FAILURES),
+    }
 
 
 #: `os.replace` / `os.rename` 的**原始**锚点

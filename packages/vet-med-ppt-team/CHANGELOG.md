@@ -6070,3 +6070,12 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - `fix_md_image_refs.py`：同一行多个图片引用改为「按累积后的行逐个替换（count=1）」，`rewrite[line_no]` 不再互相覆盖；`REF-MISSING` 分支同样基于累积行追加，避免丢标记。
 - 新增 `scripts/test_a0_pptx_red.py`：7 条能红反例（隐藏安装根 / 排除规则不放松 / 中文紧邻编号 / CLI `--apply` 端到端写回 / 上标报告与 explicit baseline 跳过 / 同行双图 / 函数级 run 写回）。**双向验证**：旧码 `4ec7070` 快照上 7/7 行为判红，新码 7/7 通过。
 - 既有回归：`test_fix_md_image_refs` 8 / `test_inject_notes_assertions` 9 / `test_template_migrate` 11 全绿。
+
+---
+
+## b2026111506 · 方案A 幂等状态查询 + B1.4 诊断订正（v3.31.3 内整改）
+
+- **B1.3**：`host_safe_tmp.py` 增 `_PATCH_STATUS` / `_PATCH_FAILURES` 与公开 `install_status()`，逐项登记 6 处补丁（`os.mkdir` / `pathlib.Path.mkdir|touch` / `os.makedirs` / `os.replace` / `os.rename` / `tempfile.mkdtemp`）的真实安装结果。`install()` 返回值**仍是幂等标记**（首次 True / 重复 False），语义未改；要判断「补丁是否全装上」改查独立状态查询，修掉「补丁静默失败仍报安装完成」。
+- **B1.4 诊断订正（撤回原「接线闸4.5」方案）**：源码实证「闸4.5 从不联网验 PMID」是 v3.11 历史状态，v3.17.0 起已不成立——裁判侧 `verify_deck.py#three_source_check` 调 `kernel.pmid_existence_check(...)`（端点/时限/限速由 `_esearch_params(tsc)` 从 yaml 取），编排侧 `cmd_verify_ref --online` 调 `pmid_existence_check(...)`（带同一组参数）。`_pmid_online_check` 只是 v3.17.0 后零引用、且**不带参数**的薄封装；把它「接回闸里」反而会丢掉 yaml 参数、降低核验强度 ⇒ 按死代码删除，并留注释说明订正依据。
+- 新增 `scripts/test_plan_a_red.py`：4 条能红反例（状态查询逐项可信 / 幂等返回值不变 / 单补丁失败可观察 / 闸4.5 真实接线守护 + 死封装已删）。旧码 `7f858af` 快照上 4/4 判红，新码 4/4 通过。
+- 既有回归：`test_host_broker_resilience` 22 / `test_arch_drift` 46 / `test_three_source_online` 8 / `test_three_source_runtime_assert` 13 全绿。

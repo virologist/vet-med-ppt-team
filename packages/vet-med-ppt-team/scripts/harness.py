@@ -4032,13 +4032,13 @@ def _resolve_api_key(tsc=None, alarms=None):
     return key, f"ℹ 已启用 NCBI API key（取自环境变量 {env_name}，限速 10 req/s）"
 
 
-def _pmid_online_check(pmids):
-    """v3.4.3 A2：PubMed esearch 联网确认 PMID 真实存在（反"假核验"闭环核心）。
-
-    v3.17.0：改为薄封装，参数化实现见 pmid_existence_check()（端点/时限/限速落 yaml）。
-    返回 {pmid: True/False/None}——True=存在 False=esearch 无记录 None=网络失败。
-    """
-    return pmid_existence_check(pmids)
+# v3.31.3 方案A（B1.4 诊断订正）：此处原有零引用的 `_pmid_online_check` 薄封装，已按死代码删除。
+# 「闸4.5 从不联网验 PMID」是 v3.11 的历史状态，v3.17.0 起已不成立：
+#   · 裁判侧 verify_deck.py#three_source_check → kernel.pmid_existence_check(...)
+#     （端点 / 时限 / 限速由 _esearch_params(tsc) 从 yaml 取，非默认参数）
+#   · 编排侧 cmd_verify_ref --online → pmid_existence_check(...)（带同一组参数）
+# ⇒ 把这个不带参数的薄封装「接回闸里」反而会丢掉 yaml 参数、降低核验强度；
+#   正确处置是删除死封装，并由 test_plan_a_red.py 守护上述真实接线不被回退。
 
 
 # ══════════════ v3.17.0 三源核验内核（存在性 / 格式 三档判定）══════════════
