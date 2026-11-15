@@ -354,4 +354,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # v3.31.3 A0-批1：main() 有 return 1/3，此前直接调用会丢弃返回值 ⇒ 失败时仍 exit 0。
+    sys.exit(main())

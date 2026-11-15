@@ -119,6 +119,10 @@ class LintRunner:
         self.geo_baseline_map: dict = {}   # slide_no -> {(name_a, name_b): ratio}
         self.geo_inherited = 0             # 被豁免的继承重叠条数（如实报告，不静默）
         self.issues: list[Issue] = []
+        # v3.31.3 A0-批1：--level 只影响显示，退出码必须基于过滤前的全部 issues
+        self.raw_error_count = 0
+        self.raw_warn_count = 0
+        self._checker_failures: list[str] = []   # 检查器异常名单（fail-closed 依据）
         self._names: list[str] = []  # zip 内所有 name（去重检测用）
         self._parts_data: dict[str, bytes] = {}  # name -> raw bytes
         self._baseline_issues: set[str] = set()  # 形如 "PKG-001:location" 集合
@@ -173,6 +177,13 @@ class LintRunner:
             log.error("检查过程崩溃: %s\n%s", e, traceback.format_exc())
             return 4
 
+        # v3.31.3 A0-批1：任一检查器崩溃 ⇒ 扫描结果不完整，fail-closed 走缺陷回流（exit 4），
+        # 不得当作「0 ERROR 通过」放行（harness.gate 已把 exit 4 映射为 lint_run_error）。
+        if self._checker_failures:
+            log.error("检查器异常，结果不可信（fail-closed）：%s",
+                      "; ".join(self._checker_failures))
+            return 4
+
         # 4) 标记 baseline issue
         if not self.strict:
             for iss in self.issues:
@@ -182,17 +193,20 @@ class LintRunner:
                     if iss.severity == "ERROR":
                         iss.severity = "WARN"  # 降级
 
-        # 5) 按 level 过滤
+        # 5) 先按**过滤前**的全部 issues 锁定判定计数（baseline 降级已在第 4 步生效）
+        self.raw_error_count = sum(1 for i in self.issues if i.severity == "ERROR")
+        self.raw_warn_count = sum(1 for i in self.issues if i.severity == "WARN")
+
+        # 6) 按 level 过滤——只影响**显示**，不影响判定
         if self.level == "ERROR":
             self.issues = [i for i in self.issues if i.severity == "ERROR"]
         elif self.level == "WARN":
             self.issues = [i for i in self.issues if i.severity == "WARN"]
 
-        # 6) 退出码
-        n_error = sum(1 for i in self.issues if i.severity == "ERROR")
-        n_warn = sum(1 for i in self.issues if i.severity == "WARN")
-        log.info("扫描完成: %d ERROR / %d WARN", n_error, n_warn)
-        if n_error > 0:
+        # 7) 退出码基于过滤前的计数：--level WARN 不得把 ERROR 藏成 exit 0
+        log.info("扫描完成: %d ERROR / %d WARN（--level=%s 仅过滤显示）",
+                 self.raw_error_count, self.raw_warn_count, self.level)
+        if self.raw_error_count > 0:
             return 1
         return 0
 
@@ -215,6 +229,8 @@ class LintRunner:
                 checker(self).check()
             except Exception as e:
                 log.warning("%s 检查异常: %s", checker.__name__, e)
+                # v3.31.3 A0-批1：不再静默吞掉——登记后由 run() 统一 fail-closed
+                self._checker_failures.append(f"{checker.__name__}: {e}")
 
     # ---------- 工具 ----------
     def add(self, code: str, severity: str, location: str, message: str, fix_hint: str):
@@ -233,6 +249,9 @@ class LintRunner:
         n_wrn = sum(1 for i in self.issues if i.severity == "WARN")
         lines.append(f"== ooxml_lint {self.pptx_path.name} ==")
         lines.append(f"扫描完成: {n_err} ERROR / {n_wrn} WARN")
+        if self.level in ("ERROR", "WARN"):
+            lines.append(f"（--level {self.level} 仅过滤显示；判定基于全部 "
+                         f"{self.raw_error_count} ERROR / {self.raw_warn_count} WARN）")
         if self.geo_inherited:
             lines.append(f"GEO-003 继承豁免: {self.geo_inherited} 条"
                          f"（模板固有叠放，不计 WARN；新增重叠见下列 GEO-003 条数）")
@@ -984,7 +1003,7 @@ def main():
     if rc == 0:
         log.info("✓ 通过（0 ERROR）")
     elif rc == 1:
-        log.error("✗ D11 苗子：%d ERROR，禁止写回", sum(1 for i in runner.issues if i.severity == "ERROR"))
+        log.error("✗ D11 苗子：%d ERROR，禁止写回", runner.raw_error_count)
     elif rc == 2:
         log.error("✗ zip 损坏")
     elif rc == 3:

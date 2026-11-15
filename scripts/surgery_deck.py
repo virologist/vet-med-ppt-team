@@ -239,11 +239,15 @@ def main():
     print(f"版面外科（dry_run={a.dry_run}）：overlap_ratio={orate} / 越界容差={tol}in / 课件 {len(rels)} 份")
     report = {"version": "2.1.0", "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
               "dry_run": a.dry_run, "decks": {}}
+    # v3.31.3 A0-批1：累计处理失败的课件数，供末尾判定非零退出码
+    failed = 0
 
     for rel in rels:
         path = os.path.join(base, rel)
         if not os.path.exists(path):
             report["decks"][rel] = {"error": "文件不存在"}
+            failed += 1
+            print(f"  {rel}: 文件不存在，跳过", file=sys.stderr)
             continue
         if not a.dry_run:
             stem, ext = os.path.splitext(path)
@@ -262,6 +266,12 @@ def main():
             json.dump(report, f, ensure_ascii=False, indent=2)
         print(f"报告已存：{a.report}")
 
+    if failed:
+        print(f"共 {failed} 份课件处理失败（详见报告 decks.*.error）", file=sys.stderr)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    # v3.31.3 A0-批1：失败路径必须给出非零退出码，否则下游恒成功。
+    sys.exit(main())

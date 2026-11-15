@@ -6049,3 +6049,13 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - [ ] 加入"教学竞赛"专属 Workflow（评委视角+说课节奏优化）
 - [ ] 加入"翻转课堂"模式（学生预习→课堂答疑的脚本变体）
 - [ ] 国际化：英文版 agent MD（中英文双语提示词）
+
+---
+
+## b2026111504 · A0-批1 退出码契约修复（v3.31.3 内整改）
+
+- 用户已授权两条决策：① 退出码契约由「恒成功」改为「失败即阻断」；② 允许真实写回 PPTX（本批未涉及，下一批启用）。本批只修退出码契约类 3 条。
+- `snapshot.py`：`main()` 内有 `return 1/3`，此前 `if __name__` 直接调用丢弃返回值，失败时仍 exit 0；改为 `sys.exit(main())`，失败路径如实给非零退出码。
+- `surgery_deck.py`：新增 `failed` 累计失败课件数，缺文件分支写 stderr 告警，函数末尾 `failed` 非空则 `return 1`、否则 `return 0`，并以 `sys.exit(main())` 收口；`report` 键保持不变。
+- `ooxml_lint.py`：`__init__` 增 `raw_error_count/raw_warn_count/_checker_failures`；`--level` 只过滤显示、退出码改基于过滤前计数（修 `--level WARN` 把 ERROR 藏成 exit 0）；检查器异常登记后 `run()` 统一 fail-closed 返回 4；`emit_text` 增澄清行，`main()` 的 D11 计数改用 `raw_error_count`。
+- 新增 `scripts/test_a0_exit_contract_red.py`：4 条「能红反例」unittest，覆盖上述三脚本的失败退出码、`--level` 误判与检查器崩溃放行，旧代码须失败、新代码须通过。
