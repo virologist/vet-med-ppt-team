@@ -31,7 +31,6 @@ CLI：
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import re
@@ -39,7 +38,6 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("case_extract")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")

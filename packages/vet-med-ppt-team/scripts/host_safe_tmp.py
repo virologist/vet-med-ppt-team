@@ -98,7 +98,6 @@ import os
 import shutil
 import tempfile
 import time
-import uuid
 
 #: 重试次数上限（**有限** ⇒ 真失败时不会无限循环）
 #: ⚠ **取值 2 的理由**（2026-11-11 实测修正）：

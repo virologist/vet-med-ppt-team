@@ -32,13 +32,10 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import logging
-import os
 import re
 import sys
-import tempfile
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field, asdict
@@ -53,7 +50,7 @@ except ImportError as e:
     sys.exit(4)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from theme_fingerprint import fingerprint_deck, DeckFingerprint, A_NS  # noqa: E402
+from theme_fingerprint import fingerprint_deck, A_NS  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("template_migrate")

@@ -208,6 +208,45 @@ B3.2 / B4.x 不可逆删除与归档、tag `v3.31.3` 前移（改写已发布引
 **验证状态**：镜像同步、全量回归、收批按既有流程执行，结论以
 `.workbuddy/regression_evidence.json` 与本批交付清单为准，不在本条预写全绿。
 
+### 源码层审计收口（2026-11-15，批次 `b2026111502`）
+
+对 `scripts/` 下 29 个生产脚本 + 59 个测试脚本做源码层确定性排查
+（AST / `py_compile` / 未使用 import / 零引用定义 / 异常吞噬 / 重复块 /
+悬空引用），并派三路只读语义审计交叉核验。
+
+**确定性结论**：29 个生产脚本 AST 0 错、`py_compile` 29/29 通过；
+`ensure_settings.py` 登记的 18 个脚本全在磁盘；10 条疑似悬空脚本引用
+经核实全为包外工具（`validate_expert.py`）、gitignored 运行时
+（`run_regression.py`）或文档示例占位（`a.py/b.py/c.py`），非缺陷。
+
+**已修（19 处编辑 / 12 文件，清理 20 个确凿未使用 import）**：
+逐项以「AST `Name` 无引用 + 全文除 import 行外零出现」双判据确认，
+其中 `ensure_settings.py:2911` 的 `import yaml as _yaml_for_list` 是函数内
+**别名从未被消费**的死代码（下方循环实际用 `yaml.safe_load`）。
+`ooxml_lint.py` 的 `asdict`、`snapshot.py` 的 `dataclass` 等经复核仍在用，
+未误删。删除后对 12 个文件逐一 AST 复验；全量 8 套件回归 8/8 全绿
+（含对 `ensure_settings.py` 做字符串锚点变异的
+`test_dead_config_disposition`，其变异体仍能判红 ⇒ 非假绿）；
+镜像 193 文件零差异。
+
+**探针误报，未据此改动**：零引用定义 263 个里大量是 unittest 的 `Test*`
+类（pytest 自动发现）或经 `getattr` / yaml 字符串动态引用；异常吞噬 114 个里
+大量是 `Check(...)` 赋值内的调用或带 `# noqa: BLE001` 的刻意兜底；
+重复块 78 个里 26 个是 `test_dead_config_disposition.py` 对
+`ensure_settings.py` 判定分支的**逐字镜像锚点**（注释明示「必须逐字替换」）。
+
+**未动（待裁决）**：测试脚本另有 40 个未使用 import
+（`test_inspection_zone_registry_red.py` 的 `ast/io` 可能用于生成代码字符串，
+删了会让生成代码 NameError）；`inject_notes.py` 与 `surgery_deck.py`
+的 2 个 10 行块是真重复（遍历/备份逻辑），抽取公共函数会改动两个 CLI 结构；
+`host_safe_tmp.install()` 的 4 个 `try/except: pass` + 无条件 `return True`
+会让「补丁全失败」也报成功，但该返回值是**幂等标记**（首次 True /
+重复调用 False，`test_host_broker_resilience.py:462-463` 断言），
+改成「失败返回 False」会破坏幂等语义。
+
+**验证状态**：本批结论以 `.workbuddy/regression_evidence.json`
+与交付清单为准，不在本条预写全绿。
+
 ---
 
 ## [v3.31.2] - 2026-11-11（D5 宿主 broker 韧性根治：三态真相判定 + 四个入口全覆盖 + 能红守卫）

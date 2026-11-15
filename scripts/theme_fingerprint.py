@@ -27,7 +27,6 @@ import argparse
 import hashlib
 import json
 import logging
-import re
 import sys
 import zipfile
 from collections import Counter

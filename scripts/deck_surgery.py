@@ -113,7 +113,6 @@ def load_rules():
 
 def _iter_runs(prs):
     """遍历 (slide_idx, shape, para, run) —— 中文文本按 run 拆分，故逐 run 处理。"""
-    from pptx.util import Emu
     for si, slide in enumerate(prs.slides, 1):
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
@@ -187,7 +186,6 @@ def fix_font(prs, rules, pages=None):
     ⚠ 只抬升**正文 run**（不含图注/页脚）——抬图注/页脚会破坏版式；
       run 归属判断交 verify_deck 复验，此处只按 run 所在形状的文本长度粗判。
     """
-    import copy
     from pptx.util import Pt
     stats = {"changed": 0, "unresolved": 0}
     details = []

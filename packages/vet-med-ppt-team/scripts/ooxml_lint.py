@@ -54,7 +54,7 @@ import re
 import sys
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional

@@ -31,7 +31,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RULES_YAML = os.path.join(HERE, "..", "config", "visual-rules.yaml")
 
 from pptx import Presentation  # noqa: E402
-from pptx.oxml.ns import qn  # noqa: E402
 
 EMU_IN = 914400
 

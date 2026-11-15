@@ -64,8 +64,6 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
 
 # v3.16.0 修（由独立测试工程师对抗性验证抓出，属**假绿陷阱**）：
 #   此处原先硬编码真实安装包的绝对路径。后果是——把包复制到 /tmp 做回归/反例验证时，
@@ -2908,7 +2906,6 @@ def check_dead_config_keys(expert_dir):
                 seen[key] = (_f, _p, [ _n ])  # 升级为列表便于统计
     # 统计列表键的值个数（用于展示"该键共 N 个枚举值"）
     list_valued = {}
-    import yaml as _yaml_for_list
     for cf in cfg_files:
         try:
             _d = yaml.safe_load(open(os.path.join(cfg_dir, cf), encoding="utf-8"))

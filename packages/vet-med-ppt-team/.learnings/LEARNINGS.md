@@ -1805,3 +1805,48 @@ if allowed and args.key not in allowed:
 - Source: defect
 - Related Files: scripts/harness.py, scripts/loop_contract.py, config/harness.yaml, references/inspection-zones.yaml
 - Tags: 回退态, 空白名单, 短路陷阱, 双源漂移, 降级护栏, 门禁语义
+
+---
+
+## [LRN-20261115-034] correction/medium · AST 静态探针的三类系统性误报：把「设计」判成「死代码」
+
+**Status**: candidate
+
+### Context
+
+源码层审计（批次 `b2026111502`）自建 AST 探针扫 88 个脚本，一次报出
+「未使用 import 60 / 零引用定义 263 / 静默异常吞噬 114 / 跨文件重复块 78」。
+照单全删会把项目改坏。逐类复核后发现三类系统性误报：
+
+1. **`Test*` 类零引用**：unittest / pytest 按类名自动发现，模块内没有
+   `Name` 引用是正常形态，263 个候选里绝大多数属此类。
+2. **生成代码字符串里的名字**：`test_inspection_zone_registry_red.py`
+   会拼出待测源码再执行，`ast` / `io` 只出现在字符串里，AST 的
+   `Name` 统计看不见；删 import 会让**生成出来的代码** NameError。
+3. **刻意保留的镜像与兜底**：`test_dead_config_disposition.py` 逐字复制
+   `ensure_settings.py` 的判定分支当变异锚点（注释明示「必须逐字替换」），
+   26 个重复块是设计；`Check(...)` 赋值内的调用、带
+   `# noqa: BLE001` 的 try/except 也都不是「静默吞噬」。
+
+另有一处反直觉：`host_safe_tmp.install()` 末尾 `return True` 看似
+「吞异常仍报成功」，实测它是**幂等标记**——首次 True、重复调用 False，
+被 `test_host_broker_resilience.py:462-463` 断言。
+
+### Root Cause
+
+静态探针只能看到「文本 / AST 里有没有这个名字」，看不到框架发现机制、
+动态执行、以及「这份重复是为校验另一份」的意图。把「未被静态引用」
+直接等价于「未被使用」，是判据口径错位。
+
+### Suggested Fix
+
+- 清理前必做三查：pytest/unittest 自动发现、生成代码字符串、
+  是否有「镜像 / 哨兵 / noqa」注释；再用全库文本检索补一次动态引用。
+- 删除后必须跑**能红反例**：本次 `test_dead_config_disposition` 的
+  变异体仍判红，才证明删 import 没让守卫变假绿。
+- 改返回值语义前先查调用方断言；`return True` 不一定是成功标志。
+
+### Metadata
+- Source: correction
+- Related Files: scripts/ensure_settings.py, scripts/host_safe_tmp.py, scripts/test_dead_config_disposition.py, scripts/test_inspection_zone_registry_red.py
+- Tags: AST探针, 静态误报, pytest自动发现, 镜像哨兵, 幂等标记, 能红反例

@@ -53,7 +53,6 @@ from collections import Counter
 
 try:
     from pptx import Presentation
-    from pptx.util import Emu
     from pptx.oxml.ns import qn
 except ImportError:
     print("缺少依赖：pip install python-pptx", file=sys.stderr)

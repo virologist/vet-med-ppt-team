@@ -66,7 +66,6 @@ import typing
 try:
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
-    from pptx.util import Emu
 except ImportError as e:
     print(f"⛔ 缺少 python-pptx 依赖（{e}）——请 pip install python-pptx>=1.0.2", file=sys.stderr)
     sys.exit(4)
