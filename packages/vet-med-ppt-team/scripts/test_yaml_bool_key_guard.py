@@ -36,7 +36,6 @@ test_yaml_bool_key_guard.py — 第 27 项「YAML 1.1 布尔键陷阱」守卫�
 ⚠ **全程在临时目录/源码字符串上操作，生产 `config/*.yaml` 零改动。**
 """
 
-import os
 import sys
 import shutil
 import tempfile

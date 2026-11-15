@@ -26,7 +26,6 @@ from ooxml_lint import LintRunner  # noqa: E402
 try:
     from pptx import Presentation
     from pptx.util import Inches
-    from pptx.dml.color import RGBColor
     PPTX_OK = True
 except ImportError:
     PPTX_OK = False

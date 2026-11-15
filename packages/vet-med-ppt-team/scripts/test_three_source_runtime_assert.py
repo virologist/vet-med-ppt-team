@@ -49,7 +49,6 @@
 import contextlib
 import importlib.util
 import io
-import os
 import shutil
 import subprocess
 import sys

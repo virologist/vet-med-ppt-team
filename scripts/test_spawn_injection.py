@@ -29,9 +29,7 @@ test_spawn_injection.py — 装配链回归守卫（v3.17.0 批次 B 新建）
     python3 scripts/test_spawn_injection.py          # 直跑（ensure_settings 第 7 项用）
 """
 
-import copy
 import json
-import os
 import subprocess
 import sys
 import tempfile

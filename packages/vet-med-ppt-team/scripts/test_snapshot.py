@@ -8,12 +8,9 @@ test_snapshot.py — snapshot.py 回归测试（v3.2.0-batch2）
 """
 from __future__ import annotations
 
-import json
-import os
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

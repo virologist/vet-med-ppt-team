@@ -68,7 +68,6 @@ R18（v3.28.8）新增覆盖：体检失败语义分离 ——「真缺陷失败
 
 import ast
 import os
-import re
 import sys
 import unittest
 from pathlib import Path

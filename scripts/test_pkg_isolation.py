@@ -54,7 +54,6 @@ v3.27.0（P0）**构造失败诊断化**——「前提被推翻」的历史留�
 import ast
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path

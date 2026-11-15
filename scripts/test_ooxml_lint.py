@@ -8,10 +8,7 @@ test_ooxml_lint.py — ooxml_lint.py 回归测试（v3.2.0-batch2）
 """
 from __future__ import annotations
 
-import json
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -69,7 +66,6 @@ def make_corrupted_dangling_rid(path: Path):
     p.slides.add_slide(p.slide_layouts[0])
     p.save(str(path))
     # 修改 presentation.xml.rels，加一个指向不存在 part 的 rel
-    import io
     new_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
