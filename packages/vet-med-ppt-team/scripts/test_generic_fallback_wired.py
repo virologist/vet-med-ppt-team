@@ -41,7 +41,6 @@ test_generic_fallback_wired.py — 「通用兜底人设」链路的端到端守
 ⚠ 跑装配器用子进程（`--allow-unconfirmed` 逃生口），与既有 test_c4_key_wiring 同范式。
 """
 
-import os
 import shutil
 import subprocess
 import sys

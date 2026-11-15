@@ -18,8 +18,6 @@ rule_hash_after 与当前文件一致（防事后改账）、id 唯一。
 ⚠ 全程在**临时目录**造台账 fixture，**不写**包内真台账（真台账只由人工登记）。
 """
 
-import json
-import os
 import shutil
 import subprocess
 import sys

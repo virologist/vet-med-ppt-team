@@ -24,7 +24,6 @@
 import contextlib
 import importlib.util
 import io
-import os
 import shutil
 import sys
 import tempfile

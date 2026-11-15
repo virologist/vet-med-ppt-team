@@ -6097,3 +6097,13 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - B2.4 三个 `_load_yaml` 同名不同行为、B2.5 5 份 sha256、B2.9 包根解析多份实现：抽取公共件会改 import 图，且部分刻意独立（如 `mirror_sync` 的独立交叉验证），收益低于回归风险。
 - B2.6 `load_rules()` dict/tuple 形态不一：两脚本是复用关系（`deck_surgery.py` import `surgery_deck`），统一返回形态会动多个调用点。
 - B2.8 状态标记三套日志出口、B2.10 `gettrace()` 守卫是否升为硬门禁：文案统一可能触发字面量断言，硬门禁会改发布判据。
+
+---
+
+## b2026111508 · 方案C-批1 测试脚本未使用 import 保守清理（16 个）
+
+- 判据升级为**双确认**：AST `Name(Load)` 零引用 **且** 全文（含注释/字符串/f-string/拼接）除 import 行外零出现。
+- **关键排除项**：`from __future__ import annotations` 是编译器指令，AST 会误报成「未使用 import」，一律不删（本轮挡下 6 处）；8 个全文仍有引用的候选（多出现在生成代码字符串或注释里）保留；`test_inspection_zone_registry_red.py` 的 `ast` / `io` 因落在变异锚点文件上，保守保留。
+- 本批删 16 个：11 个测试文件，其中 `test_extract_assets.py` 两处多名 import 只摘掉未用名（`ShapeRouter` / `Pt`），保留仍在用的 `AssetExtractor` / `Inches`。
+- 验证：11 个文件 `py_compile` 全过；逐文件实跑 `132 passed`（1 个既有失败用例已单独排除，见下）；8/8 套件回归全绿。
+- **新发现（待审，未改）**：`test_batch_extend_and_scope.py::test_D1_reverse_fold_not_expanded_is_red` 是环境依赖型假红用例——它走真实 `git status` 却假设 `references/approved-examples/` 为未跟踪目录（实际已提交且未改），故脏树/净树都必失败。用 HEAD 原文在同样脏树上复跑，失败一致 ⇒ 与本批清理无关。建议改为与 T-D1-1 同款 `_git_pkg` mock 后再纳入必跑套件。

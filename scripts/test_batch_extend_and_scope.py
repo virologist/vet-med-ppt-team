@@ -72,7 +72,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import sys
 import types
 import unittest

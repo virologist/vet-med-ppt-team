@@ -12,7 +12,6 @@
 # 旧码（2618a5c）上 C1 必须判红；新码 3 条全绿。
 # 运行方式（在 scripts/ 目录下）：python3 -m unittest -v test_cli_contract_guard
 import ast
-import os
 import subprocess
 import sys
 import tempfile

@@ -21,7 +21,6 @@
   T8 其余零触达脚本的冒烟：--help 可执行、退出码 0
 """
 import importlib.util
-import os
 import subprocess
 import sys
 import tempfile

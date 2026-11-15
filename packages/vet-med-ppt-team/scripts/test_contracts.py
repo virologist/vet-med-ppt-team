@@ -24,7 +24,6 @@ v3.31.0 新建。依据本包纪律（references/defect-reflow.yaml 头注）：
 
 import importlib.util
 import os
-import re
 import shutil
 import sys
 import tempfile

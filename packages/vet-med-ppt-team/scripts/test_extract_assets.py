@@ -36,11 +36,11 @@ from unittest import mock
 
 # 让脚本可被直接 python 运行
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract_assets import AssetExtractor, ShapeRouter  # noqa: E402
+from extract_assets import AssetExtractor  # noqa: E402
 
 try:
     from pptx import Presentation
-    from pptx.util import Inches, Pt
+    from pptx.util import Inches
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE
     PPTX_OK = True
@@ -102,7 +102,6 @@ def _make_pptx_with_zero_media(path: Path, empty_media: Path):
 
 def _make_pptx_with_group(path: Path, png_path: Path):
     """构造 1 张 GroupShape 内含 1 图 + 1 文本（python-pptx 1.0.2 兼容版）。"""
-    from pptx.oxml.ns import qn
     from lxml import etree
     p = Presentation()
     s = p.slides.add_slide(p.slide_layouts[0])
