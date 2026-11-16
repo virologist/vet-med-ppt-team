@@ -517,6 +517,12 @@ loop_a:
     - "<包>/UPGRADE.md"
     - "<包>/INSTALL.md"
     - "<包>/TEAMS_TOPOLOGY.md"
+    # ── v3.31.3 扩编 b2026111512：avatars/ 纳入白名单（目录级，同 B16/B21/skills 先例）──
+    # 缘由：扩编 code-auditor/code-wright 两成员后，其头像 PNG 是成员资产的
+    #   一部分（plugin.json members[].avatar 指向 avatars/<id>.png）；avatars/
+    #   不在 scope ⇒ 「注册得了成员却落不了头像」＝ 无解漂移（同 skills/ 先例）。
+    # 边界：只放开 avatars/（成员头像资产目录），不放开包根其它内容。
+    - "<包>/avatars"
   forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
     - "<工作区>/**/*.pptx"
     - "<工作区>/**/*.ppt"

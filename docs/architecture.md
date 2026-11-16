@@ -160,7 +160,7 @@ packages/vet-med-ppt-team/
 │   ├── verifier.md                   ← 必含：独立复算、口径第二签、挂账审判
 │   ├── code-auditor.md               ← 必含（v3.31.3）：三路只读审计、独立复现、两栏清单
 │   └── code-wright.md                ← 必含（v3.31.3）：A 栏修复施工、能红反例、批次纪律
-├── avatars/                          ← 7 张头像（512×512 PNG, ≤500KB；课件层 6 成员 + 1 团队；源码层 2 成员头像待补）
+├── avatars/                          ← 9 张头像（512×512 PNG, ≤500KB；课件层 6 成员 + 源码层 2 成员 + 1 团队）
 │   ├── team.png                      ← 团队整体头像
 │   ├── <member>.png                  ← 每个成员（含主理人）
 ├── (无 settings.json)                ← 宿主 ExpertPluginService 按「单键 agent」判据删除；agent 名由 plugin.json 决定

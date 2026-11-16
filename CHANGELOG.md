@@ -6172,3 +6172,14 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 
 守卫实证：`test_arch_drift.py T4`（团队组成表 == members 全键）在 architecture.md 漏人时正确判红，
 补齐后 46/46 全绿——「文档↔yaml 防漂移」守卫按设计工作。
+
+## b2026111512 · 扩编成员资产补齐：双编制头像（v3.31.3 内整改）
+
+- 新增 `avatars/code-auditor.png`（审墨衡：持放大镜细察的校勘者意象）与
+  `avatars/code-wright.png`（鲁一凿：执凿与木槌的匠人意象），
+  512×512 PNG、323KB / 302KB（≤500KB 纪律）、深蓝夜色背景与既有头像同族
+- `config/harness.yaml#loop_a.scope` 单目录扩展：`<包>/avatars` 纳入白名单
+  （同 B16/B21/skills 先例：成员注册已进 plugin.json，头像落不了盘 = 无解漂移）；
+  `references/inspection-zones.yaml` 的 `loop_a` 段指纹同步刷新（25→26 键）
+- 口径同步：README / architecture「7 张（源码层 2 待补）」→「9 张（课件层 6 + 源码层 2 + 1 团队）」
+- 至此 v3.31.3 扩编（b2026111511）全部资产闭环：成员 MD、注册表、拓扑、口径、指纹、头像
