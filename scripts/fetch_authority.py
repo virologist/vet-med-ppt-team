@@ -317,6 +317,13 @@ def main() -> int:
             return EXIT_USAGE
         ok, problems = _validate_user_sources(srcs)
         out["problems"] += problems
+        # v3.31.3 方案D（B1.10c）：空清单 / 全部条目非法 ⇒ 没有任何可核验对象，
+        # 语义是**用法/输入错误**，此前滑落到尾部判 3「全通道失败」同样误导排查。
+        if not ok:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            log("⛔ 用户指定源清单为空或全部条目非法——**用法/输入错误**"
+                "（不是「全通道失败」）。请检查 --source-json 内容后重试。")
+            return EXIT_USAGE
         blocking = [x for x in problems if x.get("severity") == "block"]
         if blocking:
             print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -335,7 +342,17 @@ def main() -> int:
 
     # ② L1 通道执行（脚本可直接执行的）
     if args.pmid:
-        out["results"].append(_pubmed_esearch(args.pmid))
+        # v3.31.3 方案D（B1.10a）：通道真实失败（exists=None 的 error dict）此前
+        # 无条件进 results ⇒ main 尾部「有结果 → 0」把网络故障当成功放行（假成功）。
+        # 现按 exists 是否为 None 分流：失败项进 problems（阻断级），成功项留 results。
+        r = _pubmed_esearch(args.pmid)
+        if r.get("exists") is None:
+            out["problems"].append({
+                "channel": r.get("channel"), "pmid": r.get("pmid"),
+                "reason": f"通道执行失败：{r.get('error')}", "severity": "block",
+                "attempts": r.get("attempts")})
+        else:
+            out["results"].append(r)
 
     # ③ L2 通道记账（会话层执行后回填）
     if args.record:
@@ -345,7 +362,11 @@ def main() -> int:
                 rec = json.load(f)
             out["results"].append({"channel": "L2_recorded", **rec})
         except Exception as e:
-            log(f"⚠ L2 回填读取失败：{e}")
+            # v3.31.3 方案D（B1.10b）：读取失败此前只 log 后继续 ⇒ results/problems
+            # 双空 ⇒ 尾部判 3「全通道失败」——但语义是**用法错误**（文件坏/不存在），
+            # 与「网络故障」不可区分会误导排查。fail-closed 归 2。
+            log(f"⛔ L2 回填读取失败：{e}")
+            return EXIT_USAGE
 
     # ④ 编排决策（plan 模式直接输出）
     if args.plan and not args.pmid and not args.source_json and not args.record:

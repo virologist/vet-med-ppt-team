@@ -169,7 +169,11 @@ def _rule_when(params):
     params = params if isinstance(params, dict) else {}
     field = params.get("when_field")
     equals = params.get("when_value")
-    not_equals = params.get("when_not_value")
+    # v3.31.3 方案D（B1.11）：R4 在 yaml 里写的扁平键是 **when_value_not**（不是
+    # when_not_value）——旧码只认后者 ⇒ R4 的条件永远读出 None ⇒ 每次都落硬编码
+    # 兜底。现在两个扁平键都认（when_value_not 为 schema 实际形态，优先）。
+    not_equals = params.get("when_value_not",
+                            params.get("when_not_value"))
     w = params.get("when")
     if isinstance(w, dict):
         field = w.get("field", field)
@@ -280,15 +284,20 @@ def validate_entry(entry, cfg=None, notes=None):
                                "detail": f"axis={eq3} 的条目必须带 {f}"
                                          f"（内容轴洞察必须可溯源）——源 insight-carrier.yaml#rules[R3]"})
 
-    # ④ 规则 R4：status != proposed 必须留裁决痕（同样参数化）
+    # ④ 规则 R4：status != proposed 必须留裁决痕（参数化）。
+    # v3.31.3 方案D（B1.11）：此前代码读 when_not_value 而 yaml 写的是
+    # when_value_not ⇒ 永远读出 None ⇒ 每次都落进下面的硬编码兜底
+    # `elif st and st != "proposed"` —— 配置形同虚设、改配置不改行为（假绿）。
+    # 现在读 when_value_not（保留嵌套 when.not_equals 兼容形态），且**删除
+    # 硬编码兜底**：缺配置 = 该规则未接线，显式留痕回落内置默认值。
     r4 = _rule_params(cfg, "R4", notes)
     f4, eq4, neq4 = _rule_when(r4)
+    if not f4 or neq4 is None:
+        notes.append("insight-carrier.rules[R4].params 缺 when_field/when_value_not "
+                     "→ 回落内置（when_field=status, when_value_not=proposed）")
+        f4, neq4 = "status", "proposed"
     st = str(entry.get("status") or "")
-    hit4 = False
-    if f4 and neq4 is not None:
-        hit4 = bool(st) and st != str(neq4)
-    elif st and st != "proposed":
-        hit4 = True
+    hit4 = bool(st) and st != str(neq4)
     if hit4:
         for f in (r4.get("require") or ["decided_by", "decided_at"]):
             if not (entry.get(f) and str(entry.get(f)).strip()):
@@ -491,20 +500,25 @@ def detect_conflicts(carrier, cfg=None, notes=None):
     #   ⇒ 多轴并存不被检出 ⇒ 冲突漏过。典型「加了判据却忘了让判据拿到配置」的坑。
     if cfg is None:
         cfg, _ = load_cfg()
-    # R1 参数化：min_axes（默认 2）、pending_status（默认 proposed）
+    # R1 参数化：min_axes（默认 2）、statuses（待裁决状态集，默认 ["proposed"]）。
+    # v3.31.3 方案D（B1.11）：此前读 pending_status / only_status——yaml 里根本
+    # 没有这两个键（配置写的是 statuses）⇒ 永远回落内置默认。现在直接对齐
+    # schema 的 statuses 键：配置声明什么状态算「待裁决」，执行层就按它判。
     r1 = _rule_params(cfg, "R1", notes)
     min_axes = int(r1.get("min_axes", 2) or 2)
-    pending = str(r1.get("pending_status", "proposed") or "proposed")
-    only = r1.get("only_status")
+    statuses = r1.get("statuses")
+    if not isinstance(statuses, list) or not statuses:
+        notes.append("insight-carrier.rules[R1].params.statuses 缺失或非法 → "
+                     "回落内置 ['proposed']")
+        statuses = ["proposed"]
+    statuses = [str(x) for x in statuses]
     out = []
     for t in (carrier or {}).get("targets") or []:
         axes = {}
         for e in t.get("insights") or []:
-            st = str(e.get("status") or pending)
-            if st != pending:
-                continue          # 已裁决的不再算待裁决
-            if isinstance(only, list) and only and st not in [str(x) for x in only]:
-                continue
+            st = str(e.get("status") or statuses[0])
+            if st not in statuses:
+                continue          # 不在待裁决状态集 ⇒ 不参与多轴判
             ax = str(e.get("axis") or "?")
             axes.setdefault(ax, []).append(str(e.get("insight_id") or ""))
         if len(axes) >= min_axes:

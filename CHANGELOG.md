@@ -6079,6 +6079,25 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - **B1.4 诊断订正（撤回原「接线闸4.5」方案）**：源码实证「闸4.5 从不联网验 PMID」是 v3.11 历史状态，v3.17.0 起已不成立——裁判侧 `verify_deck.py#three_source_check` 调 `kernel.pmid_existence_check(...)`（端点/时限/限速由 `_esearch_params(tsc)` 从 yaml 取），编排侧 `cmd_verify_ref --online` 调 `pmid_existence_check(...)`（带同一组参数）。`_pmid_online_check` 只是 v3.17.0 后零引用、且**不带参数**的薄封装；把它「接回闸里」反而会丢掉 yaml 参数、降低核验强度 ⇒ 按死代码删除，并留注释说明订正依据。
 - 新增 `scripts/test_plan_a_red.py`：4 条能红反例（状态查询逐项可信 / 幂等返回值不变 / 单补丁失败可观察 / 闸4.5 真实接线守护 + 死封装已删）。旧码 `7f858af` 快照上 4/4 判红，新码 4/4 通过。
 - 既有回归：`test_host_broker_resilience` 22 / `test_arch_drift` 46 / `test_three_source_online` 8 / `test_three_source_runtime_assert` 13 全绿。
+- 既有回归：`test_batch_extend_and_scope` 12（排除 1 项既有环境依赖假红）/ `test_cli_contract_guard` 3 / `test_collapse_domain_render` 3 / `test_contracts` 41 / `test_dangling_script_ref` 5 / `test_defect_reflow` 6 / `test_extract_assets` 12 / `test_gate1_check` 5 / `test_generic_fallback_wired` 5 / `test_inject_notes_assertions` 9 / `test_migrate_artifacts` 28 全绿。
+
+## b2026111510 · 方案D 失败语义与配置接线修复（v3.31.3 内整改）
+
+独立验证者（verifier-d）实跑确证后落地，B1.10 原命题（EXIT_ALL_FAILED 死分支）实测**不成立**（return 3 可达），按实测暴露的真实缺陷修：
+
+- **D-1 `fetch_authority.py` 失败语义三分支**：
+  - `--pmid` 通道失败（`exists=None` 的 error dict）不再进 `results` 伪装成功（旧码网络故障恒 exit 0 = 假成功）；失败进 `problems`（阻断级），由退出码链判 `EXIT_SOURCE_UNCONFIRMED(4)`；
+  - `--record` 读取失败由「log 后滑到 3（全通道失败）」改为 `EXIT_USAGE(2)`——文件坏/不存在是用法错误，不是网络故障；
+  - `--source-json` 空清单/全部非法由「滑到 3」改为 `EXIT_USAGE(2)`，同上语义订正。
+- **D-2 `insight_carrier.py` 键名对齐（B1.11 改定性后落地）**：实测 R1/R4 规则**仍在生效**（靠默认值与硬编码兜底），真实缺陷是「配置参数化形同虚设 / 改配置不改行为（假绿）」：
+  - R1 改读 schema 实际键 `statuses`（旧码读不存在的 `pending_status`/`only_status` ⇒ 永远回落内置）；缺键显式留痕回落 `['proposed']`；
+  - R4 执行链 `_rule_when()` 补认 `when_value_not`（schema 实际键）+ 兼容旧 `when_not_value`；删除 `elif st != "proposed"` 硬编码兜底，缺配置显式留痕回落内置 `(status, proposed)`——配置缺失从「静默假绿」变「显式回落」。
+- **D-3 `migrate_artifacts.py`**：
+  - `run_scan()` 新增 `json_mode` 参数：`--json` 模式下人读扫描报告改走 stderr，stdout 只剩机器 JSON（旧码 `json.load` 直接失败，破坏自动化消费；verifier-d 实测 932 行污染输出复现）；
+  - 附带修复 `git_blob_hashes()` 内层 `subprocess.run` 的 str input 未编码 ⇒ TypeError 被吞 ⇒ **恒返回 0 blob**，所有 git 持有内容误判「0 命中 ⇒ 拒绝归档」（orphan_bytes 虚高至 39MB）。
+- 新增 `scripts/test_plan_d_red.py` 6 条能红反例；同构包根环境双向验证：**旧码 6/6 判红（5 fail + 1 error），新码 6/6 通过**。
+- 既有回归：`test_insight_carrier` 31 / `test_migrate_artifacts` 28 / `test_inject_notes_assertions` 9 / `test_loop_contract` + `test_versionctl` 254 全绿；真实 schema 下 T28 零回落复验通过。
+- 证据链：主理人独立实跑复现（`/tmp/dverify.*`、`/tmp/pland3.*`）+ verifier-d 全程只读实跑报告。
 
 ---
 

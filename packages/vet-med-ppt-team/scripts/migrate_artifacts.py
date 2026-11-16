@@ -355,7 +355,10 @@ def git_blob_hashes(root):
         batch = blobs[i:i + 200]
         try:
             proc = subprocess.run(["git", "cat-file", "--batch"], cwd=str(root),
-                                  input="\n".join(batch) + "\n",
+                                  # v3.31.3 方案D（B1.13 附带）：input 是 str 但未设
+                                  # text=True ⇒ TypeError 被下方 except 吞掉 ⇒
+                                  # 恒返回 0 blob ⇒ 所有 git 持有内容判「0 命中」。
+                                  input=("\n".join(batch) + "\n").encode("utf-8"),
                                   capture_output=True, timeout=180)
         except Exception:
             continue
@@ -540,8 +543,13 @@ def do_archive(pkg_root, entries, dry_run=True, allow_workspace_move=False):
     return dest_root, moved, skipped
 
 
-def run_scan(pkg_root, workspace_root, keep, verbose=True):
-    """扫描：算出各规则的归档计划（只读）。"""
+def run_scan(pkg_root, workspace_root, keep, verbose=True, json_mode=False):
+    """扫描：算出各规则的归档计划（只读）。
+
+    v3.31.3 方案D（B1.13）：json_mode=True 时人读扫描报告改走 **stderr**，
+    保证 stdout 只有机器 JSON（此前人读文本与 JSON 混在同一 stdout，
+    json.load 直接失败，破坏自动化消费）。
+    """
     git_hashes = git_blob_hashes(pkg_root)
     results = []
     total_archive = 0
@@ -568,16 +576,21 @@ def run_scan(pkg_root, workspace_root, keep, verbose=True):
                         "archive": plan["archive"], "keep": plan["keep"],
                         "orphan": plan["orphan"]})
         if verbose:
-            print("\n[%s] %s —— 候选 %d 项" % (rule["id"], rule["name"], len(cands)))
+            _out = sys.stderr if json_mode else sys.stdout   # B1.13：JSON 模式人读报告走 stderr
+            print("\n[%s] %s —— 候选 %d 项" % (rule["id"], rule["name"], len(cands)),
+                  file=_out)
             for a in plan["archive"]:
                 print("   ⇢ 归档 %-46s %8d 字节  (%s)"
-                      % (a["name"][:46], a.get("bytes", 0), a["reason"][:52]))
+                      % (a["name"][:46], a.get("bytes", 0), a["reason"][:52]),
+                      file=_out)
             for k in plan["keep"]:
                 print("   · 保留 %-46s %8d 字节  (%s)"
-                      % (k["name"][:46], k.get("bytes", 0), k["reason"][:52]))
+                      % (k["name"][:46], k.get("bytes", 0), k["reason"][:52]),
+                      file=_out)
             for o in plan["orphan"]:
                 print("   ✗ 拒绝 %-46s %8d 字节  (%s)"
-                      % (o["name"][:46], o.get("bytes", 0), o["reason"][:52]))
+                      % (o["name"][:46], o.get("bytes", 0), o["reason"][:52]),
+                      file=_out)
     return results, total_archive, total_orphan
 
 
@@ -613,7 +626,11 @@ def main(argv=None):
         "keep_archives": args.keep_archives,
     }
 
-    results, total_archive, total_orphan = run_scan(pkg_root, workspace_root, keep)
+    results, total_archive, total_orphan = run_scan(
+        pkg_root, workspace_root, keep,
+        # v3.31.3 方案D（B1.13）：--json 模式必须保证 stdout 只有机器 JSON；
+        # 人读扫描报告改走 stderr（JSON 模式）或保留 stdout（人读模式）。
+        verbose=not args.json, json_mode=args.json)
 
     if args.json:
         print(json.dumps({"results": results, "reclaimable_bytes": total_archive,
