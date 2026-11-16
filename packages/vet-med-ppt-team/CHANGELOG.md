@@ -6135,3 +6135,40 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - 验证：9 文件 `py_compile` 全过；逐文件实跑 `127 passed`；8/8 套件回归全绿。
 - C 组合计 **31 个**确证未使用 import 已清；10 项刻意保留（`__future__` 指令 6 处、全文仍有引用 8 处、变异锚点 2 处，分类详见交付目录 `04-test/v3.31.3_方案C_残留全清单_待点名确认.md`）。
 - **残留只出清单、不删**：`packages/.mirror_backups/`（44MB / 92 备份目录 / 444 文件 / 全部未跟踪）、`.workbuddy/`（32 顶层文件 / 97 空目录 / 含活跃运行时与疑似变异锚点备份）、`docs/` 14 份历史报告。删除属不可逆操作，按方案 C 规则**等用户逐项点名确认**；本批次 0 删除、0 移动、0 重命名。
+
+## b2026111511 · 扩编：源码层审计/施工双编制（v3.31.3 内整改）
+
+依据（2026-11-15/16 两轮整改的组织级证据，全部留痕于 CHANGELOG b2026111501–b2026111510）：
+- 「三路只读审计 + 独立复现」模式被实证有效（互相纠错：audit-bugs 撤回 audit-style 归因误读；
+  verifier-d 实跑撤回 B1.10 死分支原命题并暴露 2 个真缺陷），但由临时子代理承担——无编制、无纪律载体、无信封约束；
+- 7 批源码整改由主理人代写施工（编码成员未及时落盘时直接接管），违反 lead「不做施工」边界且产生并发写冲突；
+- 既有施工型成员 ppt-producer 的边界是 **.pptx 课件**（写回门禁/台账），源码 .py 层施工无人承接。
+
+新增成员（编制 +2，全团 6→8）：
+
+- **审墨衡（code-auditor）· 代码审计官**：三路只读审计（风格/死代码/功能性 bug）+ 独立实跑复现
+  + 两栏清单交付（A 栏已确证 / B 栏需裁决 + 撤回存档节）。**只审不修**（Maker/Checker 对偶的审计侧）；
+  实跑纪律：PYTHONDONTWRITEBYTECODE=1、输出落 /tmp、同构包根环境、禁 --confirm。
+- **鲁一凿（code-wright）· 施工工程师**：按 A 栏清单落地修复 + 能红反例（旧码快照双向验证判红）
+  + Loop A 批次纪律执行（batch-open 声明集 → 8 套件回归 → 收批带证据）。**只修不判放行**；
+  声明集即边界（声明集外触碰 = 范围蔓延事故）；push 归主理人复核。
+
+注册与口径同步（7 处 + 指纹）：
+- `agents/code-auditor.md` / `agents/code-wright.md` 新建（frontmatter 五字段，`[15/28]` 真解析校验通过）
+- `config/harness.yaml#members` 注册 ×2（工具白名单/writes_allowed 边界/spawn 策略/降级通道）；
+  `routing.L2/L3` spawn_policy 补双编制调用语义（审修分离：先审墨衡后鲁一凿）
+- `references/inspection-zones.yaml` 指纹刷新（members 39→58 键 / routing 段），`sync_zone_registry --confirm`
+- `TEAMS_TOPOLOGY.md`：拓扑图 6→8 成员（源码层双编制正交块）+ 边界矩阵 +2 行 + 用途口径 8 成员
+- `agents/vet-med-ppt-team-team-lead.md`：description「5 名成员」→「7 名成员（含源码层按需双编制）」+ 成员速查表 +2 行
+- `docs/architecture.md`：目录树 6→8 份 agent MD + 「团队组成」表 +2 行（**T4 守卫抓出漏人后补齐**——守卫按设计工作）
+- `README.md` / `INSTALL.md`：agent MD 数量口径 6→8
+- `.codebuddy-plugin/plugin.json`：members 数组 +2（7→8）、teamInfo.memberAgents +2（5→7）
+
+边界与对偶（防职责重叠）：
+- 审墨衡 ↔ 鲁一凿：审≠修、修≠判（同一问题不得由同一人既审又修）
+- 鲁一凿 ↔ 郅作基：源码 .py 层 vs 课件 .pptx 层；改脚本驾驶脚本时暂停对方避免并发写
+- 审墨衡 ↔ 都衡言：源码质量审计 vs 课件交付终检；门禁口径变更第二签仍归都衡言
+- 两名新成员均为**按需调用**（源码审计/整改专项），不进 L1/L2 常驻名单，课件主流水线零打扰
+
+守卫实证：`test_arch_drift.py T4`（团队组成表 == members 全键）在 architecture.md 漏人时正确判红，
+补齐后 46/46 全绿——「文档↔yaml 防漂移」守卫按设计工作。

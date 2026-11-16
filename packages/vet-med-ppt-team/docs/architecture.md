@@ -25,6 +25,8 @@
 | `visual-slide-designer` | 屠明熙 | 视觉规则引擎架构师 | 版式选型 + 视觉层级 + 医学图像规范 |
 | `ppt-producer` | 郅作基 | 课件执行工程师 | 写回门禁 + 跨任务台账 + 批量脚本驾驶 |
 | `verifier` | 都衡言 | 独立验证官 | 独立复算与判决（V 层），不产内容、不施工 |
+| `code-auditor` | 审墨衡 | 代码审计官（v3.31.3） | 源码三路只读审计 + 独立实跑复现，产两栏清单；只审不修 |
+| `code-wright` | 鲁一凿 | 施工工程师（v3.31.3） | 按审计清单 A 栏落地修复 + 能红反例 + Loop A 批次纪律；只修不判放行 |
 
 > **v3.16.0 补记**：本表此前**遗漏 `verifier`**（5 行），而 `harness.yaml#members` 自 v3.0.0 起
 > 就登记了 5 名成员（含 verifier）——MD 与 yaml 分化无守卫，属 M7「四面楚歌」式不一致。
@@ -149,14 +151,16 @@ packages/vet-med-ppt-team/
 │                                          - tags (3 个), quickPrompts (3 个)
 │                                          - members 数组（含主理人+5成员）
 │                                          - teamInfo (leadAgent + memberAgents)
-├── agents/                           ← 6 份 agent MD（角色定义；文件名 = Agent ID）
+├── agents/                           ← 8 份 agent MD（角色定义；文件名 = Agent ID）
 │   ├── vet-med-ppt-team-team-lead.md ← 必含：五闸编排索引、协作铁律、裁决原则
 │   ├── dvm-content-expert.md         ← 必含：Ima 路由表、记忆复用、ReAct 硬限
 │   ├── pedagogy-architect.md         ← 必含：反向设计、三层目标、形成性评价三件套
 │   ├── visual-slide-designer.md      ← 必含：版式选型、可读性红线、医学图像规范
 │   ├── ppt-producer.md               ← 必含：写回门禁、台账、批量脚本驾驶
-│   └── verifier.md                   ← 必含：独立复算、口径第二签、挂账审判
-├── avatars/                          ← 7 张头像（512×512 PNG, ≤500KB；6 成员 + 1 团队）
+│   ├── verifier.md                   ← 必含：独立复算、口径第二签、挂账审判
+│   ├── code-auditor.md               ← 必含（v3.31.3）：三路只读审计、独立复现、两栏清单
+│   └── code-wright.md                ← 必含（v3.31.3）：A 栏修复施工、能红反例、批次纪律
+├── avatars/                          ← 7 张头像（512×512 PNG, ≤500KB；课件层 6 成员 + 1 团队；源码层 2 成员头像待补）
 │   ├── team.png                      ← 团队整体头像
 │   ├── <member>.png                  ← 每个成员（含主理人）
 ├── (无 settings.json)                ← 宿主 ExpertPluginService 按「单键 agent」判据删除；agent 名由 plugin.json 决定

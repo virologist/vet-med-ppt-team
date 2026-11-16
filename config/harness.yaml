@@ -83,6 +83,23 @@ members:
     writes_allowed: true
     spawn: "按需（L3 批量 / 门禁异常 / 台账重建时）"
     fallback: "script_pipeline"   # 门禁本质是脚本，成员不可用时由 harness gate 直跑
+  # v3.31.3 扩编（b2026111511）：源码层审计/施工双编制。依据：2026-11-15/16 两轮
+  # 审计实证「三路只读审计 + 独立复现」模式有效但无编制载体（临时子代理承担），
+  # 且 7 批源码整改由主理人代写施工（违反 lead 不施工边界 + 并发写冲突）。
+  # 边界：code-auditor 只出清单不施工（Maker/Checker 对偶的审计侧），
+  #       code-wright 只修声明集内的 .py/.md 不判放行（施工侧）；课件层门禁仍归 ppt-producer。
+  code-auditor:
+    duty: "代码审计（源码层）：三路只读审计（风格/死代码/bug）+ 独立实跑复现，产两栏清单；只审不修"
+    tools_whitelist: ["Read", "Write", "Bash", "Grep", "Glob"]
+    writes_allowed: true          # 只允许写审计清单（04-test/），scripts/config/references 一律只读
+    spawn: "按需（源码审计任务 / 交付前源码体检 / 缺陷复现裁决时）"
+    fallback: "general-purpose+persona"
+  code-wright:
+    duty: "源码施工：按审计清单 A 栏落地修复 + 能红反例（旧码判红双向验证）+ Loop A 批次纪律；只修不判放行"
+    tools_whitelist: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+    writes_allowed: true          # 只改批次声明集内文件；push 归主理人
+    spawn: "按需（审计清单 A 栏派工 / 接口契约统一 / 保守清理批次时）"
+    fallback: "general-purpose+persona"
   verifier:
     duty: "独立验证（V 层）：终检独立复算、裁判口径第二签、挂账审判"
     # v3.16.0 修自相矛盾：writes_allowed=true 但 whitelist 里没有 Write（能写却没工具）→ 补 Write。
@@ -114,8 +131,8 @@ routing:
   mode_default: "generate"
   L0: {team_create: false, spawn: [], confirm_gates: 1, spawn_policy: "不建团、不 spawn（单点直办）"}
   L1: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert"], confirm_gates: 2, spawn_policy: "按需1-2名（主理人按任务性质取舍，从上述候选中挑）"}
-  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2, spawn_policy: "全员常驻（ppt-producer 不常驻——门禁类按需跨闸调用，见 members.ppt-producer.spawn）"}
-  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier", "ppt-producer"], confirm_gates: 2, red_team: true, spawn_policy: "全员常驻；ppt-producer 仅在批量制作/台账重建场景加入"}
+  L2: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier"], confirm_gates: 2, spawn_policy: "全员常驻（ppt-producer 不常驻——门禁类按需跨闸调用，见 members.ppt-producer.spawn；源码审计/施工双编制 code-auditor/code-wright 按需，见各自 spawn）"}
+  L3: {team_create: true,  spawn: ["pedagogy-architect", "dvm-content-expert", "visual-slide-designer", "verifier", "ppt-producer"], confirm_gates: 2, red_team: true, spawn_policy: "全员常驻；ppt-producer 仅在批量制作/台账重建场景加入；源码整改类 L3 加 code-auditor（先审）+ code-wright（后修），审/修不同人（Maker/Checker 对偶）"}
 
 # ── 降级协议（v2.2.0 新增：成员不可调度时不再整链阻断）──────────
 fallback:

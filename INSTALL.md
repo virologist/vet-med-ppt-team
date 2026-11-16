@@ -98,7 +98,7 @@ git clone https://github.com/virologist/vet-med-ppt-team.git \
 Claude Code 支持将 agent MD 直接作为 subagent 使用：
 
 ```bash
-# 复制 6 份 agent MD 到 Claude Code 的 agents 目录（含 verifier）
+# 复制 8 份 agent MD 到 Claude Code 的 agents 目录（含 verifier 与源码层 code-auditor/code-wright）
 mkdir -p ~/.claude/agents
 cp ~/.claude/plugins/marketplaces/vet-med-ppt-team/packages/vet-med-ppt-team/agents/*.md \
    ~/.claude/agents/

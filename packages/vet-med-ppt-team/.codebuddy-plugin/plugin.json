@@ -26,7 +26,9 @@
       "pedagogy-architect",
       "visual-slide-designer",
       "ppt-producer",
-      "verifier"
+      "verifier",
+      "code-auditor",
+      "code-wright"
     ]
   },
   "displayName": {
@@ -156,6 +158,30 @@
         "zh": "独立验证官"
       },
       "avatar": "avatars/verifier.png",
+      "role": "member"
+    },
+    {
+      "id": "code-auditor",
+      "displayName": {
+        "en": "Shen Moheng",
+        "zh": "审墨衡"
+      },
+      "profession": {
+        "en": "Code Auditor",
+        "zh": "代码审计官"
+      },
+      "role": "member"
+    },
+    {
+      "id": "code-wright",
+      "displayName": {
+        "en": "Lu Yizao",
+        "zh": "鲁一凿"
+      },
+      "profession": {
+        "en": "Code Wright",
+        "zh": "施工工程师"
+      },
       "role": "member"
     }
   ]

@@ -62,8 +62,10 @@ vet-med-ppt-team/
 │       │   ├── pedagogy-architect.md  ← 教学法架构师
 │       │   ├── visual-slide-designer.md ← 视觉设计师
 │       │   ├── ppt-producer.md        ← 制作师
-│       │   └── verifier.md            ← 独立验证（闸4 裁判，v3.17.0 起）
-│       ├── avatars/                   ← 7张头像 PNG (512×512，6 成员 + 1 团队)
+│       │   ├── verifier.md            ← 独立验证（闸4 裁判，v3.17.0 起）
+│       │   ├── code-auditor.md        ← 代码审计（源码层，v3.31.3 起）
+│       │   └── code-wright.md         ← 施工工程师（源码层，v3.31.3 起）
+│       ├── avatars/                   ← 7张头像 PNG (512×512；课件层 6 成员 + 1 团队；源码层 2 成员头像待补)
 │       ├── (无 settings.json)          ← 宿主会删，见 INSTALL.md FAQ
 │       ├── README.md                  ← 子包说明
 │       └── (无 zip)                    ← 仓库内不含；旧版曾以 zip 分发
