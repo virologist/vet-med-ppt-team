@@ -523,6 +523,24 @@ loop_a:
     #   不在 scope ⇒ 「注册得了成员却落不了头像」＝ 无解漂移（同 skills/ 先例）。
     # 边界：只放开 avatars/（成员头像资产目录），不放开包根其它内容。
     - "<包>/avatars"
+    # ── v3.31.3 残留清理 b2026111513：docs/archive/ 纳入白名单（**归档子目录**，单目录）──
+    # 缘由：docs/ 下 11 份零活跃引用的历史验证报告需归档到 docs/archive/（git mv
+    #   保留历史）；docs/ 整目录不在 scope（内含历史诊断报告的教训仍在），
+    #   只放开归档落点这一个子目录。
+    # 边界：只放开 docs/archive/（归档落点）与本次归档的 11 份源文件（git mv
+    #   需要源在 scope 内）；docs/ 其余受管文件（architecture.md）仍单文件受管。
+    - "<包>/docs/archive"
+    - "<包>/docs/harness-baseline-trace-2026-09-29.md"
+    - "<包>/docs/harness-diagnosis-2026-09-29.md"
+    - "<包>/docs/v3.17.0-assembly-injection-verification-report.md"
+    - "<包>/docs/v3.17.0-batchB-verification-report.md"
+    - "<包>/docs/v3.18.0-verification-report.md"
+    - "<包>/docs/v3.19.0-verification-report.md"
+    - "<包>/docs/v3.19.1-verification-report.md"
+    - "<包>/docs/v3.19.3-verification-report.md"
+    - "<包>/docs/v3.19.4-key-qualification.md"
+    - "<包>/docs/v3.20.0-verification-report.md"
+    - "<包>/docs/v3.23.0-verification-report.md"
   forbidden_paths:                # 绝对禁区：Loop A 任何行为不得触碰用户课件目录
     - "<工作区>/**/*.pptx"
     - "<工作区>/**/*.ppt"

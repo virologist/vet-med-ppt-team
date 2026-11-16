@@ -6183,3 +6183,23 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
   `references/inspection-zones.yaml` 的 `loop_a` 段指纹同步刷新（25→26 键）
 - 口径同步：README / architecture「7 张（源码层 2 待补）」→「9 张（课件层 6 + 源码层 2 + 1 团队）」
 - 至此 v3.31.3 扩编（b2026111511）全部资产闭环：成员 MD、注册表、拓扑、口径、指纹、头像
+
+## b2026111513 · 残留清理与 docs 历史报告归档（v3.31.3 内整改）
+
+用户点名执行上轮「残留全清单待确认」中的可清理项（清单见交付目录 04-test/v3.31.3_方案C_残留全清单_待点名确认.md）：
+
+**gitignored 运行时清理（不进版本历史，无需批次门，逐项备份后执行）**：
+- `packages/.mirror_backups/`：96 份 → 保留最近 3 份（`migrate_artifacts.py DEFAULT_KEEP` 口径），46M → 1.7M；
+  删除前全量 tar 兜底备份到 /tmp（16M，可回滚）
+- `.workbuddy/` 诊断垃圾 23 文件 + 23 探针目录（probe*/tmp*/_d4probe*/_inject 等，97 空目录归零）：3.4M → 3.2M；
+  活跃运行时（run_regression.py / loopA_state.json / task_state.json / harness_trace.jsonl / regression_evidence.json /
+  regression.log / artifacts/ / _logs/）与 mutate_m3.py 恢复锚（harness_backup_mut.py / loop_contract_backup_mut.py）
+  **逐一引用面校验后保留**；清理后 8/8 套件回归全绿验证未误删
+
+**受管文件归档（Loop A 批次 b2026111513）**：
+- docs/ 下 11 份零活跃引用的历史验证报告（v3.17.0×2 / v3.18.0 / v3.19.0 / v3.19.1 / v3.19.3 / v3.19.4 /
+  v3.20.0 / v3.23.0 / harness-baseline-trace / harness-diagnosis）`git mv` 入 `docs/archive/`——内容零丢失，
+  git 历史与引用路径（CHANGELOG 历史段）不变
+- 必留 3 份：architecture.md（守卫受管）/ iteration-log（README 引用）/ v3.19.2（测试注释+CHANGELOG 引用）
+- `loop_a.scope` 扩展：`docs/archive/` 归档落点 + 11 份源文件（git mv 双端需在 scope 内，单目录+单文件精确扩展，
+  docs/ 整目录仍不放开）；`loop_a` 段指纹刷新（27→39 键）
