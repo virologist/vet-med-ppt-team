@@ -74,6 +74,23 @@ NORMID_RE = re.compile(
     r"(?<![A-Za-z0-9])(GB|NY|WS|DB|SN|YY)\s*(\d{3,}(?:[-–]\d{4})?)(?![A-Za-z0-9])")
 
 
+def _pkg_version():
+    """读包根 plugin.json 的 version（权威版本位）。
+
+    v3.31.4 方案A（全项目审计 B2.2 裁决）：报告自报版本此前是**工具定型版**
+    硬编码（deck_surgery 3.28.6 / inject_notes 3.22.0），与包版本脱节 ⇒ 报告
+    消费方无法判断产物出自哪个包状态。改为动态读（读不到回退 "unknown" 并
+    不阻断——报告版本是溯源信息，不是门禁判据）。
+    """
+    try:
+        import json as _json
+        _pp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           os.pardir, ".codebuddy-plugin", "plugin.json")
+        with open(_pp, encoding="utf-8") as _f:
+            return str(_json.load(_f).get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
 def load_rules():
     """阈值只读 yaml（单一数据源），失败回退内置值并告警。"""
     import yaml
@@ -430,7 +447,7 @@ def main():
                 pages.add(int(x))
 
     prs = Presentation(a.deck)
-    report = {"tool": "deck_surgery", "version": "3.28.6",
+    report = {"tool": "deck_surgery", "version": _pkg_version(),
               "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
               "deck": os.path.abspath(a.deck), "apply": bool(a.apply),
               "fixes": kinds, "pages": sorted(pages) or "all",

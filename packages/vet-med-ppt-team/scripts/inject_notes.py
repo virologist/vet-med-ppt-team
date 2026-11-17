@@ -78,6 +78,22 @@ _BS_DEFAULTS = {
 }
 
 
+def _pkg_version():
+    """读包根 plugin.json 的 version（权威版本位）。
+
+    v3.31.4 方案A（全项目审计 B2.2 裁决）：报告自报版本此前是工具定型版
+    硬编码（3.22.0），与包版本脱节 ⇒ 改为动态读（读不到回退 "unknown"，
+    报告版本是溯源信息不是门禁判据，不阻断）。
+    """
+    try:
+        import json as _json
+        _pp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           os.pardir, ".codebuddy-plugin", "plugin.json")
+        with open(_pp, encoding="utf-8") as _f:
+            return str(_json.load(_f).get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
 def load_cov():
     import yaml
     try:
@@ -387,7 +403,7 @@ def main():
             rels = list(json.load(f)["decks"].keys())
 
     print(f"备注注入（dry_run={a.dry_run}）：目标覆盖率 ≥ {cov:.0%} / 课件 {len(rels)} 份")
-    report = {"version": "3.22.0", "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+    report = {"version": _pkg_version(), "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
               "dry_run": a.dry_run, "threshold": cov, "overlay_injection": bs,
               "inject_box_in": list(inject_box) if inject_box else None,
               # 提示级：屠明熙抽样复核下限（几何红灯页另 100% 复查，见 SOP §1）

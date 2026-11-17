@@ -49,6 +49,13 @@ __pycache__/
 #   内容含用户本机绝对路径（/Users/<用户名>/…），会随分发包泄漏本地目录结构。
 #   它是运行期产物，不是包内容 —— 已在 v3.17.0 从版本库移除并加此忽略。
 .workbuddy/
+# v3.31.4 方案A（B1.2 裁决）：run_regression.py 是 8 套件回归的唯一执行器 +
+#   证据生成器，其证据格式（batch_id/start_commit）必须随发布版本化 ⇒ 纳入 tracked。
+#   ⚠ git 规则：要重新包含被忽略目录内的文件，必须先取消该目录本身的忽略、
+#   再逐层放行目录、最后放行文件（三段缺一不可）。
+!.workbuddy/
+.workbuddy/*
+!.workbuddy/run_regression.py
 
 # 运行时标记：register_expert.py 写入的预览会话 ID（不入库）
 .pending-preview-session

@@ -6113,6 +6113,10 @@ class _EvidenceError(Exception):
         self.code = code
 
 
+#: v3.31.4 方案A（B1.2）：最近一次加载的证据文件的批次归属（裁决层读取）
+_EVIDENCE_LAST_PAYLOAD = {}
+
+
 def _load_regression_evidence(path):
     """读并解析回归实测证据文件（--regression-evidence）。
 
@@ -6163,8 +6167,19 @@ def _load_regression_evidence(path):
         dur = item.get("duration_s")
         if isinstance(dur, bool) or not isinstance(dur, (int, float)):
             dur = None
-        suites.append({"suite": name, "rc": int(rc),
-                       "duration_s": float(dur) if dur is not None else None})
+        _item = {"suite": name, "rc": int(rc),
+                 "duration_s": float(dur) if dur is not None else None}
+        # v3.31.4 方案A（B1.1③）：透传 status（skip/timeout/环境受限标记）——
+        #   裁决层据此拒收「rc=0 但未实跑」的套件（旧版规范化把它丢了）。
+        _st = str(item.get("status") or "").strip()
+        if _st:
+            _item["status"] = _st
+        suites.append(_item)
+    # v3.31.4 方案A（B1.2）：把证据文件顶层的批次归属挂到本函数属性上，
+    #   供 _regression_evidence_verdict 读取（模块级单次调用契约，无并发）。
+    global _EVIDENCE_LAST_PAYLOAD
+    _EVIDENCE_LAST_PAYLOAD = {"batch_id": str(doc.get("batch_id") or ""),
+                              "start_commit": str(doc.get("start_commit") or "")}
     return suites, p
 
 
@@ -6243,10 +6258,47 @@ def _regression_evidence_verdict(args, ran):
                                        "duration_s": s["duration_s"]} for s in fails],
                            "hint": "实测证据显示回归失败 ⇒ 不得收批"}}
 
+    # ── 情形 B-2b（v3.31.4 方案A · B1.1③ 第二层）：证据含 skip ⇒ 拒收 ────
+    #   「rc=0 但套件被 skip/timeout/环境受限」= 改坏生产代码也能收批的旁路。
+    #   判据与 ensure_settings#has_env_skip 同构：status 字段非空即为跳过
+    #   （run_regression 只在套件未实跑完成时写 status）。
+    skips = [s for s in (suites or []) if str(s.get("status") or "").strip()]
+    if skips:
+        return {"ok": False, "rc": 1, "reason": "evidence_contains_skip",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": abs_path,
+                           "skipped": [{"suite": s["suite"],
+                                        "status": s.get("status")} for s in skips],
+                           "hint": "证据含 skip/timeout/环境受限的套件 ⇒ 该套件**未实跑**，"
+                                   "不得作为「已验证」收批（B1.1③：skip 阻断发布）。"
+                                   "先消除跳过根因再重跑回归"}}
+
+    # ── 情形 B-2c（v3.31.4 方案A · B1.2）：证据缺批次归属 ⇒ 拒收 ────────
+    #   旧版证据无 batch_id/start_commit ⇒ 旧批次的证据可复用收新批（张冠李戴）。
+    #   run_regression 已升级为写批次归属；缺失即旧格式证据，fail-closed。
+    ev_batch = _EVIDENCE_LAST_PAYLOAD.get("batch_id", "")
+    ev_start = _EVIDENCE_LAST_PAYLOAD.get("start_commit", "")
+    want_batch = str(getattr(args, "batch", "") or "").strip()
+    if not ev_batch or not ev_start:
+        return {"ok": False, "rc": 2, "reason": "evidence_missing_batch_binding",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": abs_path,
+                           "hint": "证据缺 batch_id/start_commit（旧格式）⇒ 无法证明"
+                                   "证据属于本批 ⇒ 不得收批（B1.2）。请用升级后的 "
+                                   "run_regression.py 重新生成证据"}}
+    if ev_batch != want_batch:
+        return {"ok": False, "rc": 2, "reason": "evidence_batch_mismatch",
+                "confirmed": False, "verified": [],
+                "detail": {"evidence": abs_path, "evidence_batch": ev_batch,
+                           "closing_batch": want_batch,
+                           "hint": "证据属于批次 " + ev_batch + "，不能用来收批次 "
+                                   + want_batch + "（张冠李戴防护，B1.2）"}}
+
     # ── 情形 B-3：证据齐备且全绿 ⇒ confirmed=true（正常收批）───────────
     return {"ok": True, "rc": 0, "reason": "evidence_ok",
             "confirmed": True, "verified": suites,
-            "detail": {"evidence": abs_path,
+            "detail": {"evidence": abs_path, "batch_id": ev_batch,
+                       "start_commit": ev_start[:12],
                        "suites": sorted(ev_names)}}
 
 

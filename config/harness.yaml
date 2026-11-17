@@ -530,6 +530,17 @@ loop_a:
     # 边界：只放开 docs/archive/（归档落点）与本次归档的 11 份源文件（git mv
     #   需要源在 scope 内）；docs/ 其余受管文件（architecture.md）仍单文件受管。
     - "<包>/docs/archive"
+    # ── v3.31.4 方案A b2026111715：run_regression.py 纳入白名单（**单文件**）─────
+    # 缘由（全项目审计 B1.2 裁决）：它是 8 套件回归的**唯一执行器 + 证据生成器**，
+    #   却是 gitignored 运行时 ⇒ 改它不随发布传播、换机即丢 ⇒ 证据生成逻辑
+    #   （batch_id/start_commit 字段）无法版本化。纳入 tracked 是 B1.2 的前提。
+    # 边界：只放开这一个文件；.workbuddy/ 其余运行时状态仍不放开。
+    - "<包>/.workbuddy/run_regression.py"
+    # ── v3.31.4 方案A b2026111715：.gitignore 纳入白名单（**单文件**）──────────
+    # 缘由：B1.2 要求 run_regression.py 从 gitignore 名单移除（纳入 tracked），
+    #   .gitignore 在包根、原本在 scope 外 ⇒ 不放开则只能手工改（绕过批次门）。
+    # 边界：只加这一个文件，包根仍不放开。
+    - "<包>/.gitignore"
     - "<包>/docs/harness-baseline-trace-2026-09-29.md"
     - "<包>/docs/harness-diagnosis-2026-09-29.md"
     - "<包>/docs/v3.17.0-assembly-injection-verification-report.md"
@@ -558,6 +569,17 @@ loop_a:
                         "test_dead_config_disposition", "test_inspection_zone_registry_red",
                         "test_arch_drift", "test_domain_pack",
                         "test_host_broker_resilience"]
+  # v3.31.4 方案A（B1.3 裁决）：收批证据两层化——
+  #   · regression_required          = 完整层（commit 后跑，含体检 [26] 提交态检查）
+  #   · regression_required_pre_commit = 纯回归层（commit 前跑，**不含体检**——
+  #     [26] 读 HEAD 提交树，未提交时必红，属结构性前置而非质量缺陷）
+  #   batch-close 校验的是完整层名单；pre_commit 层仅供提交前快速反馈，
+  #   不参与收批裁决（两层的语义差异是**顺序**而非**放水**）。
+  regression_required_pre_commit: ["test_harness", "test_five_gates",
+                                   "test_dead_config_disposition",
+                                   "test_inspection_zone_registry_red",
+                                   "test_arch_drift", "test_domain_pack",
+                                   "test_host_broker_resilience"]
   # R18-续（v3.28.8）：**单个回归套件的超时阈值**（秒）——体检第 7 项
   #   跑每个 test_*.py 时的单套件上限。
   #   病灶：此前是裸 `timeout=180` 硬编码 ⇒ 慢机/重负载下真套件被误判超时

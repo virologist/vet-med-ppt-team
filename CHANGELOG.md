@@ -6257,3 +6257,28 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
   既有结论维持。
 
 **回归**：受影响 6 套件 246 passed；锚点 36 全绿。
+
+## b2026111715 · 方案A 门禁语义打包修（v3.31.3 内整改 · 全项目审计 B1.1③/B1.2/B1.3/B2.2）
+
+用户裁决「采纳全部推荐事项」。B3.2 / B4.x 已被 b2026111513 清理批次消化；本批修门禁语义 4 项：
+
+- **B1.1③（双层 skip 阻断）**：
+  - 第一层：`REGRESSION_SKIP_BLOCKS_RELEASE` False→True——体检第 7 项遇 skip/timeout/环境受限
+    即 rc=1 阻断（原「改坏生产代码但测试全 skip」仍能收批的旁路封死）；
+  - 第二层：`_regression_evidence_verdict` 新增情形 B-2b——证据含 `status`（skip 标记）的套件
+    ⇒ `evidence_contains_skip` 拒收；`_load_regression_evidence` 规范化同步透传 status
+    （旧版规范化把它丢了——能红反例②抓到后补）。
+- **B1.2（证据批次归属）**：
+  - `run_regression.py` 新增 `--batch/--start-commit` 参数，证据 JSON 顶层写 `batch_id/start_commit`；
+  - 该文件从 gitignored 运行时**纳入 tracked**（`.gitignore` 三段例外链：目录忽略→目录内例外→文件放行）；
+    证据格式自此随发布版本化；
+  - 裁决层新增 B-2c：缺归属 ⇒ `evidence_missing_batch_binding`（旧格式证据 fail-closed 拒收）；
+    归属不符 ⇒ `evidence_batch_mismatch`（旧批证据收新批的张冠李戴防护）。
+- **B1.3（体检两层化）**：`loop_a` 新增 `regression_required_pre_commit` 键（纯回归 7 套件，不含体检）
+  ——[26] 读 HEAD 提交树，未提交时结构性必红；pre_commit 层供提交前快速反馈，**不参与收批裁决**
+  （完整层 8 套件仍是收批判据，两层差异是顺序而非放水）；loop_a 段指纹刷新（40→47 键）。
+- **B2.2（工具版本动态读）**：deck_surgery / inject_notes 报告自报版本由硬编码
+  （3.28.6 / 3.22.0）改为 `_pkg_version()` 动态读 plugin.json（读不到回退 unknown，溯源信息不阻断）。
+
+能红反例 `scripts/test_gate_semantics_red.py` 7 条：旧码 7/7 判红（5 fail + 2 error），新码 7/7 通过。
+受影响模块回归 41 passed。scope 扩 2 个单文件（run_regression.py / .gitignore）。

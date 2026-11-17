@@ -385,10 +385,10 @@ ANTIEXAMPLE_SKIP_MARKER = "[WARN][vet-med-ppt-team] 反例批次因环境限制�
 
 #: 第 7 项检出「因环境限制被跳过」时是否**阻断**发布（v3.27.0 P0 收尾）。
 #:
-#: ⚠ 默认 False（**不阻断**）—— 理由见 `check_regression` 的 docstring。
-#: ⚠ **双向可查**：若将来决定改为阻断，把这里改成 True 即可；
-#:   判定逻辑（`has_env_skip`）与报告文案都不必动。
-REGRESSION_SKIP_BLOCKS_RELEASE = False
+#: ⚠ v3.31.4 方案A（B1.1③ 裁决）：改 True——skip / timeout / 环境受限
+#:   **阻断发布**。原 False 口径下「改坏生产代码但测试全 skip」仍能收批，
+#:   等于守卫可被环境噪声整批旁路。判定逻辑（`has_env_skip`）与文案未动。
+REGRESSION_SKIP_BLOCKS_RELEASE = True
 
 #: 第 7 项最近一次运行的「未验证」留痕（供 `main()` 汇总结论时区分
 #: 「真全绿」与「全绿但有跳过」）。
