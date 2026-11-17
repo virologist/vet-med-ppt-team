@@ -634,7 +634,8 @@ def main(argv=None, pkg_root=None) -> int:
     cats, n_checked = verify_with_diff(root, mirror_root)
     must_fix = cats["missing"] + cats["differing"]
     if must_fix:
-        print(f"  ✗ 仍有 {len(must_fix)} 处必须修的差异：")
+        print(f"  ✗ 仍有 {len(must_fix)} 处必须修的差异：",
+             file=sys.stderr)
         if cats["missing"]:
             print("    仅根有（镜像缺）:")
             print(_fmt_list(cats["missing"]))

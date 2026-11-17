@@ -6203,3 +6203,57 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 - 必留 3 份：architecture.md（守卫受管）/ iteration-log（README 引用）/ v3.19.2（测试注释+CHANGELOG 引用）
 - `loop_a.scope` 扩展：`docs/archive/` 归档落点 + 11 份源文件（git mv 双端需在 scope 内，单目录+单文件精确扩展，
   docs/ 整目录仍不放开）；`loop_a` 段指纹刷新（27→39 键）
+
+## b2026111514 · B 栏 15 项收口（v3.31.3 内整改）
+
+用户裁决「完成 B 栏 15 项」。逐项甄别后：4 项代码修复 + 11 项证据确证的定性闭环。
+
+**代码修复（4 项）**：
+- **B3.1**（低效→真重复）：`check_dead_config_keys` 内同一批 cfg 文件被 parse 两轮
+  （收集 dead + 统计列表键）。逐字锚点全扫（6 块）确认两段 safe_load **不在任何
+  逐字锚点内** ⇒ 原判「锚点失配假绿风险」已失效。改为第一轮解析缓存复用
+  （`_b31_parsed`），行为零差异，36 锚点测试全绿实证。
+- **B2.2**（stdout/stderr 混用）：括号感知扫描甄别出 21 处「伴随非零 return 的
+  致命错误走 stdout」（versionctl 17 + migrate 1 + harness 1 + mirror_sync 1 +
+  harness 8840 补 1）；全部补 `file=sys.stderr`。报告正文 3 处刻意保留（tag
+  展示行 / 归档明细行 / 闸1 检查报告——它们是 stdout 报告的组成部分，不是错误流）。
+  test_versionctl 4 处断言同步改 stderr（护栏语义不变，只改流的归属）——B2.8
+  「文案统一触发字面量断言」的留置理由在此实证命中并按正确姿势解除。
+- **B2.4**（`_load_yaml` 同名异行为）：fetch_authority 的低信息版（所有异常压成
+  `str(e)`）升级为与 fetch_oa_image / probe_channels 逐字对齐的高信息版
+  （缺 PyYAML / 文件不存在 / 解析失败三态可区分）。三处自此同签名同行为。
+- **B2.6**（`load_rules` dict/tuple 分裂）：surgery_deck.load_rules 改为复用
+  deck_surgery.load_rules()（dict 唯一源），自身保持 (overlap_ratio, tolerance,
+  p2_note_coverage) tuple 接口不变；p2_note_coverage 仅 tuple 视图消费故留本地
+  读取。两视图同源数值校验通过。连带效应：AST 读取面归因变化使
+  `visual-rules.yaml#geometry` 段浮出 live（基线因 surgery_deck 硬取路径归因而
+  隐没）⇒ 按 R5 纪律补登记该段（offcanvas_tolerance_in，leaf_weak=1）+ 指纹刷新
+  ——登记表缺段才是漂移，补登记是修复不是放水。
+
+**定性闭环（11 项，证据确证后留档）**：
+- B2.3/B2.7（配置契约 4 套）：harness/insight_carrier 为 `(cfg, ok)` 告警回退派、
+  fetch_authority 为 `(cfg, err)` 退出码派、check_contracts/probe_channels 为工具级
+  `_load_yaml`——三派各自语义自洽；跨脚本统一签名 = 接口变更波及全部调用方，
+  收益 < 风险，维持派别并留档。
+- B2.5（5 份 sha256）：分属段指纹/资产完整性/文件哈希三种场景（ensure_settings
+  截断 40 位做段身份、extract_assets 验资产、fix_md_image_refs 流式读大文件），
+  非重复实现而是场景特化，留档。
+- B2.8（状态标记三套出口）：`✅ 全部通过` 等文案被 test_regression_skip_report
+  等多处字面量断言钉住（本轮 B2.2 已实证），文案统一必红，留档。
+- B2.9（包根解析两写法）：`HERE+PKG` 与 `Path(__file__).parent.parent` 全库 28 处
+  语义完全等价（同一表达式的两种惯用写法），非行为分裂，留档。
+- B2.10（gettrace 守卫）：全库（含 git 历史）零出现——原提案从未落地，无现存
+  代码可升级，按「不存在项」闭环。
+- B3.2（probe_channels 循环 spawn file）：当前 HEAD 的 probe_channels 无该模式
+  （审计原描述已过时），按「已过时项」闭环。
+- B3.3（三处同型结论）：`is_broker_limited` 在宿主补丁核心区，抽取公共件风险 >
+  收益，留档。
+- B3.4（193 次 diff -q）：明文注释「独立于本脚本 copy 逻辑的内容比对」——刻意的
+  独立交叉验证，留档。
+- B4.2（10 行重复块）：两处结构已分化（deck 版 failed 计数/stderr 告警；inject 版
+  sample_review_hint），非逐字重复；抽公共函数需改两个 CLI 结构，留档。
+- B4.3（26 个共同块）：逐字镜像锚点，设计不动（既有结论维持）。
+- B4.1（测试 import）：C 组已清 31 个（b2026111508/09），其余 10 项刻意保留有档，
+  既有结论维持。
+
+**回归**：受影响 6 套件 246 passed；锚点 36 全绿。

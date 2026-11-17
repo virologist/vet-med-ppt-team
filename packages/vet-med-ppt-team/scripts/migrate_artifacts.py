@@ -614,7 +614,8 @@ def main(argv=None):
     if args.workspace:
         workspace_root = Path(args.workspace).resolve()
         if not workspace_root.is_dir():
-            print("✗ 工作空间不存在：%s" % workspace_root)
+            print("✗ 工作空间不存在：%s" % workspace_root,
+                 file=sys.stderr)
             return 2
     else:
         found = find_workspace(pkg_root)

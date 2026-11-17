@@ -64,12 +64,23 @@ def log(msg: str) -> None:
 
 
 def _load_yaml(path: Path):
+    """读 yaml；失败返回 (None, 错误说明)。
+
+    v3.31.3 方案B2.4：与 fetch_oa_image / probe_channels 的 _load_yaml
+    逐字对齐（三处同名函数此前行为粒度不一——本函数把所有异常压成一行
+    str(e)，缺依赖/文件不存在/解析失败不可区分）。三处自此同签名同行为。
+    """
     try:
         import yaml
+    except ImportError as e:
+        return None, f"缺 PyYAML 依赖：{e}"
+    try:
         with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f), None
+    except FileNotFoundError:
+        return None, f"文件不存在：{path}"
     except Exception as e:
-        return None, str(e)
+        return None, f"yaml 解析失败：{e}"
 
 
 def _load_cfg():

@@ -874,7 +874,7 @@ class T16DirtyWorktreeRefusesSwitch(unittest.TestCase):
             self.assertEqual(head, after, "脏工作区下 HEAD 不得改变")
             self.assertNotEqual(proc.returncode, 0,
                                 "脏工作区下必须以非零码拒绝")
-            self.assertIn("未提交改动", proc.stdout,
+            self.assertIn("未提交改动", proc.stderr,
                           "必须明说因为工作区有改动而拒绝")
 
     def test_dirty_worktree_refuses_in_real_repo(self):
@@ -902,7 +902,7 @@ class T16DirtyWorktreeRefusesSwitch(unittest.TestCase):
             after = vc.head_state(root)["head"]
             self.assertEqual(head, after, "脏工作区下 HEAD 不得改变")
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("未提交改动", proc.stdout,
+            self.assertIn("未提交改动", proc.stderr,
                           "必须明说因为工作区有改动而拒绝")
         finally:
             # ★ 兜底自愈：无论断言是否通过，都确保仓库回到原分支
@@ -2297,7 +2297,7 @@ class T28DefectGuards(unittest.TestCase):
             self.assertEqual(proc.returncode, 0,
                              "★ 工作区只有工具自身文件时 switch 必须成功"
                              "（D9：否则功能自锁）：%s" % proc.stdout[-400:])
-            self.assertNotIn("拒绝切换", proc.stdout,
+            self.assertNotIn("拒绝切换", proc.stdout + proc.stderr,
                              "★ 不得因工具自身的文件而拒绝切换（D9）")
 
         # ② 有用户的未跟踪文件 ⇒ switch 必须拒绝（闸门不得放水）
@@ -2309,8 +2309,8 @@ class T28DefectGuards(unittest.TestCase):
             self.assertNotEqual(proc2.returncode, 0,
                                 "★ 用户有未提交改动时 switch 必须拒绝"
                                 "（修 D9 不得放水）")
-            self.assertIn("拒绝切换", proc2.stdout,
-                          "★ 拒绝理由必须如实告知用户")
+            self.assertIn("拒绝切换", proc2.stderr,
+                          "★ 拒绝理由必须如实告知用户（B2.2：错误走 stderr）")
 
     # ── D10：迁移后的运行时层必须自带 schema_version ────────────
 

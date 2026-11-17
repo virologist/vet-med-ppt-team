@@ -8837,7 +8837,8 @@ def cmd_next(args):
         if cur.get("branch"):
             print(f"\n【关键分支】{cur['branch']}")
         if gate1_missing:
-            print(f"\n⛔ 卡住：{len(gate1_missing)} 项未满足，补齐并经用户确认后方可进入下一闸。")
+            print(f"\n⛔ 卡住：{len(gate1_missing)} 项未满足，补齐并经用户确认后方可进入下一闸。",
+                 file=sys.stderr)
             return 1
         print("\n✅ 无未满足项（机器面）；语义与审美仍需人工终审。")
     return 0

@@ -493,6 +493,17 @@ segments:
   consumer: 脚本
   disposition: 新增键须登记
   note: 图表类检查项（未实现项已登记）。
+- id: visual-rules.yaml#geometry
+  file: visual-rules.yaml
+  prefix: geometry
+  key_count: 1
+  keys_sha256: 93b2c5cecb199a93bc2cbc32fcf98e03151df4f5
+  leaf_unused: 0
+  leaf_weak: 1
+  consumer: 脚本
+  disposition: 新增键须登记
+  note: 版面外科阈值（offcanvas_tolerance_in 越界容差）。overlap_ratio 经 deck_surgery.load_rules
+    dict 视图间接消费（B2.6 后 surgery_deck 复用之），AST 归因为跨文件链故本段仅登记直读键。
 - id: visual-rules.yaml#density
   file: visual-rules.yaml
   prefix: density

@@ -1639,7 +1639,8 @@ def cmd_show(args, root):
     want = args.version
     hits = [r for r in reg["versions"] if r["version"] == want]
     if not hits:
-        print("✗ 未找到版本：%s" % want)
+        print("✗ 未找到版本：%s" % want,
+             file=sys.stderr)
         return 1
     rec = hits[0]
     print("版本：%s" % rec["version"])
@@ -1664,11 +1665,13 @@ def cmd_diff(args, root):
     if b is None:
         b = current_version(root)
     if a not in by_ver or b not in by_ver:
-        print("✗ 版本不存在：%s / %s" % (a, b))
+        print("✗ 版本不存在：%s / %s" % (a, b),
+             file=sys.stderr)
         return 1
     ca, cb = by_ver[a].get("commit"), by_ver[b].get("commit")
     if not ca or not cb:
-        print("✗ 目标版本缺 commit（尚未打 tag）⇒ 无法比对")
+        print("✗ 目标版本缺 commit（尚未打 tag）⇒ 无法比对",
+             file=sys.stderr)
         return 1
     rows = diff_rows_between(root, ca, cb)
     print("差异明细：%s → %s" % (a, b))
@@ -1713,10 +1716,12 @@ def cmd_tag(args, root):
     # 单版本打 tag
     v = args.version
     if not v:
-        print("✗ 需 --version 或 --sync")
+        print("✗ 需 --version 或 --sync",
+             file=sys.stderr)
         return 2
     if not parse_version(v):
-        print("✗ 版本号不合法：%s（需完整三段，如 v3.27.0）" % v)
+        print("✗ 版本号不合法：%s（需完整三段，如 v3.27.0）" % v,
+             file=sys.stderr)
         return 2
     if v in existing and not args.force:
         print("✓ tag %s 已存在（幂等跳过；需覆盖请加 --force）" % v)
@@ -1725,7 +1730,8 @@ def cmd_tag(args, root):
     anchor = reg.get("anchors", {}).get(v)
     commit = args.commit or (anchor or {}).get("commit") or ""
     if not commit:
-        print("✗ 找不到 %s 的收口点提交 ⇒ 请显式传 --commit" % v)
+        print("✗ 找不到 %s 的收口点提交 ⇒ 请显式传 --commit" % v,
+             file=sys.stderr)
         return 1
     if not args.confirm:
         print("（dry-run）将打 tag %s → %s" % (v, commit[:8]))
@@ -1783,11 +1789,13 @@ def cmd_switch(args, root):
         except Exception:
             commit = ""
         if not commit:
-            print("✗ 不是合法版本号，也不是可解析的 commit：%s" % v)
+            print("✗ 不是合法版本号，也不是可解析的 commit：%s" % v,
+                 file=sys.stderr)
             return 1
         label = "commit %s" % commit[:8]
     else:
-        print("✗ 未找到版本：%s" % v)
+        print("✗ 未找到版本：%s" % v,
+             file=sys.stderr)
         return 1
 
     # ★★ v3.28.0 收尾修正（D9：工具自身的运行时文件被误判为「工作区脏」
@@ -1807,7 +1815,8 @@ def cmd_switch(args, root):
         ignore_rel_prefixes=IGNORE_DIRTY_REL_PREFIXES,
         tool_owned_rel_paths=TOOL_OWNED_REL_PATHS)
     if _blocking:
-        print("✗ 工作区有未提交改动 ⇒ 拒绝切换（避免丢失工作）")
+        print("✗ 工作区有未提交改动 ⇒ 拒绝切换（避免丢失工作）",
+             file=sys.stderr)
         for b in _blocking[:10]:
             print("     %s" % b)
         print("   请先 git stash 或提交；本工具不做自动 stash（那是破坏性猜测）")
@@ -1857,11 +1866,13 @@ def cmd_rollback(args, root):
     else:
         cur = current_version(root)
         if cur not in versions:
-            print("✗ 当前版本 %s 不在清单中，无法推断回滚目标" % cur)
+            print("✗ 当前版本 %s 不在清单中，无法推断回滚目标" % cur,
+                 file=sys.stderr)
             return 1
         idx = versions.index(cur)
         if idx + 1 >= len(versions):
-            print("✗ %s 已是最新版本，无可回滚目标" % cur)
+            print("✗ %s 已是最新版本，无可回滚目标" % cur,
+                 file=sys.stderr)
             return 1
         target = versions[idx + 1]
     return cmd_switch(_SwitchArgs(version=target, confirm=args.confirm), root)
@@ -1900,7 +1911,8 @@ def cmd_policy(args, root):
     if args.set:
         for kv in args.set:
             if "=" not in kv:
-                print("✗ 格式应为 key=value：%s" % kv)
+                print("✗ 格式应为 key=value：%s" % kv,
+                     file=sys.stderr)
                 return 2
             k, v = kv.split("=", 1)
             k = k.strip()
@@ -2258,7 +2270,8 @@ def cmd_bootstrap(args, root):
     try:
         text = anchor.read_text(encoding="utf-8")
     except OSError as e:
-        print("✗ 读取锚点失败：%s" % e)
+        print("✗ 读取锚点失败：%s" % e,
+             file=sys.stderr)
         return 1
     work.parent.mkdir(parents=True, exist_ok=True)
     tmp = work.with_suffix(".py.tmp")
@@ -2289,12 +2302,14 @@ def cmd_recover(args, root):
     """按 journal 把仓库拉回最近一次操作前状态。"""
     recs = read_journal(root, limit=50)
     if not recs:
-        print("✗ 无操作日志 ⇒ 无可恢复的目标")
+        print("✗ 无操作日志 ⇒ 无可恢复的目标",
+             file=sys.stderr)
         return 1
     last = recs[-1]
     target = last.get("before_head")
     if not target:
-        print("✗ 最后一条日志没有 before_head ⇒ 无法恢复")
+        print("✗ 最后一条日志没有 before_head ⇒ 无法恢复",
+             file=sys.stderr)
         return 1
     st = head_state(root)
     if st["dirty"]:
@@ -2309,7 +2324,8 @@ def cmd_recover(args, root):
                                           IGNORE_DIRTY_REL_PREFIXES,
                                           TOOL_OWNED_REL_PATHS)
         if blocking:
-            print("✗ 工作区有未提交改动 ⇒ 拒绝恢复（避免丢失工作）")
+            print("✗ 工作区有未提交改动 ⇒ 拒绝恢复（避免丢失工作）",
+                 file=sys.stderr)
             for b in blocking[:10]:
                 print("     %s" % b)
             if len(blocking) > 10:
@@ -2465,7 +2481,8 @@ def main(argv=None):
     try:
         return args.func(args, root)
     except Exception as e:
-        print("✗ 执行失败：%s" % e)
+        print("✗ 执行失败：%s" % e,
+             file=sys.stderr)
         return 2
 
 

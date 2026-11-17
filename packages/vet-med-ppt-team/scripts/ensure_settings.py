@@ -2846,6 +2846,7 @@ def check_dead_config_keys(expert_dir):
 
     cfg_files = [f for f in sorted(os.listdir(cfg_dir))
                  if f.endswith((".yaml", ".yml"))]
+    _b31_parsed = {}   # v3.31.3 B3.1：cfg 文件解析缓存（两轮循环共享一次 parse）
     for cf in cfg_files:
         fp = os.path.join(cfg_dir, cf)
         try:
@@ -2853,6 +2854,9 @@ def check_dead_config_keys(expert_dir):
         except Exception as e:
             print(f"[18/{N}] ⚠ {cf} 解析失败：{e}")
             return 1
+        # v3.31.3 B3.1：同一文件的解析结果缓存复用（下方「列表键统计」循环
+        # 曾重复 parse 全部 cfg 文件——每文件多花一次 IO+parse，纯浪费）。
+        _b31_parsed[cf] = data
         walk(data, "", cf)
 
     # ── 最终设计决策（v3.12.0，含一次失败的教训）──────────────────
@@ -2907,10 +2911,13 @@ def check_dead_config_keys(expert_dir):
     # 统计列表键的值个数（用于展示"该键共 N 个枚举值"）
     list_valued = {}
     for cf in cfg_files:
-        try:
-            _d = yaml.safe_load(open(os.path.join(cfg_dir, cf), encoding="utf-8"))
-        except Exception:
-            continue
+        # v3.31.3 B3.1：复用第一轮循环的解析缓存（原先在这里重复 parse 一遍）
+        _d = _b31_parsed.get(cf)
+        if _d is None:
+            try:
+                _d = yaml.safe_load(open(os.path.join(cfg_dir, cf), encoding="utf-8"))
+            except Exception:
+                continue
         _stack = [("", _d)]
         while _stack:
             _path, _node = _stack.pop()

@@ -39,17 +39,26 @@ OVERLAY_MARKERS = ("❓", "✅", "【任务", "【A轨", "【B轨", "【口径�
 
 
 def load_rules():
-    """阈值只读 yaml（单一数据源），失败回退内置值并告警"""
-    import yaml
+    """阈值只读 yaml（单一数据源），失败回退内置值并告警。
+
+    v3.31.3 方案B2.6：与 deck_surgery.load_rules() 是**同一 yaml 的两个视图**
+    ——deck_surgery 是 dict 完整视图（本函数经它取值，不再自持第二份解析/
+    回退逻辑），本函数保持 (overlap_ratio, tolerance, p2_note_coverage) 的
+    tuple 接口不变（调用方 surgery_deck():228 依赖解包形态）。同名异返回
+    的分裂在此收口：解析与回退唯一源 = deck_surgery.load_rules()。
+    """
+    from deck_surgery import load_rules as _load_rules_dict
+    d = _load_rules_dict()
     try:
+        import yaml
         with open(RULES_YAML, encoding="utf-8") as f:
-            r = yaml.safe_load(f)
-        return (float(r["geometry"]["overlap_ratio"]),
-                float(r["geometry"]["offcanvas_tolerance_in"]),
-                float(r.get("gate", {}).get("p2_note_coverage", 0.8)))
-    except Exception as e:
-        print(f"⚠ visual-rules.yaml 加载失败（{e}），回退内置阈值", file=sys.stderr)
-        return 0.15, 0.25, 0.8
+            r = yaml.safe_load(f) or {}
+        p2 = float(r.get("gate", {}).get("p2_note_coverage", 0.8))
+    except Exception:
+        p2 = 0.8   # 与 dict 版回退口径一致；该键只有本视图消费
+    return (float(d["overlap_ratio"]),
+            float(d["offcanvas_tolerance_in"]),
+            p2)
 
 
 def inter_ratio(a, b):
