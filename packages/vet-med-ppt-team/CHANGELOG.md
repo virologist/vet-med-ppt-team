@@ -6298,3 +6298,23 @@ run_regression.py 纳入 tracked 后暴露两处例外放行的副作用，本�
   `--prune` 不覆盖 basename 排除残留（那是 `find_runtime_residue` 的 `.versionctl` 专属通道），
   故用手精确清单；同步后 205 文件零差异。
 - `loop_a.scope` 单文件扩展 `<包>/scripts/mirror_sync.py` + 指纹刷新。
+
+## [v3.31.4] - 2026-11-17（方案A门禁语义打包修 + 版本真源提版）
+
+> tag `v3.31.4` → 提版提交（本条 CHANGELOG 所在 commit）；上一 tag `v3.31.3` → `7a37c8d` 不动（不改写已发布引用）。
+
+### 门禁语义（全项目审计推荐事项全部采纳落地）
+- **方案A b2026111715**：B1.1③ skip 双层阻断（体检常量 True + 证据裁决拒收含 skip）、
+  B1.2 证据批次归属（run_regression 写 batch_id/start_commit 并纳入 tracked）、
+  B1.3 体检两层化（pre_commit 纯回归层）、B2.2 工具版本动态读（deck_surgery/inject_notes）
+- **B栏 15 项**（b2026111514）：4 项代码修复（B3.1/B2.2/B2.4/B2.6）+ 11 项定性闭环
+- **残留清理**（b2026111513）：.mirror_backups 96→3、docs 11 份归档、诊断垃圾清零
+- **扩编资产**（b2026111512）：审墨衡/鲁一凿双头像补齐，编制 8 成员全资产闭环
+
+### 镜像例外双闸门（b2026111715 追加）
+- `mirror_sync.py`：例外目录放行后补文件级白名单（REINCLUDE_REL_FILES），修 36 个运行时文件误入镜像
+- `.gitignore`：三条例外加前导 `/` 锚定仓库根，修 `scripts/.workbuddy` 任意层级污染
+
+### 版本位
+- 体检 [14] 的 15 处版本位同步 3.31.3 → 3.31.4；README 门面行同步（第 16 处，自述需人工同步）
+- harness.py 内历史标记 v3.31.3（审计溯源注释）刻意保留，非版本位

@@ -97,7 +97,7 @@ vet-med-ppt-team/
 
 ## 版本与维护
 
-- **当前版本**：v3.31.3（2026-11-12）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
+- **当前版本**：v3.31.4（2026-11-17）　⚠ 版本**唯一权威**是 `.codebuddy-plugin/plugin.json`；
   本节仅作门面展示，若与 plugin.json 不一致**以 plugin.json 为准**。
   ⚠ 体检 [14] 的巡检清单**不覆盖本行**（只校验 plugin/marketplace JSON、
   config/ 与 references/ 的带 version 键 YAML、harness.py 三处版本位）⇒

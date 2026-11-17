@@ -1,5 +1,5 @@
 digest_scheme: indexed-set-v2
-version: 3.31.3
+version: 3.31.4
 segments:
 - id: domain-profiles.yaml#domain_pack_exemptions
   file: domain-profiles.yaml
@@ -340,10 +340,10 @@ segments:
 - id: harness.yaml#loop_a
   file: harness.yaml
   prefix: loop_a
-  key_count: 48
-  keys_sha256: 469f20b5f65bb41e8068a5ead1922ca4880bd403
+  key_count: 57
+  keys_sha256: e9e0f51aa6f4969fcc953a2e84e95a22e87a3c94
   leaf_unused: 7
-  leaf_weak: 40
+  leaf_weak: 49
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。

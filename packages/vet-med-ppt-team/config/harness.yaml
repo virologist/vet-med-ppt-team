@@ -15,7 +15,7 @@
 #     `^version:\s*"?v?([0-9.]+)"?\s*$` 正则匹配，多余字符会匹配失败）。
 #   ⚠ 本键的顶层 `version` 是 yaml 根键，**不在任何已登记 prefix 子树下**
 #     ⇒ 改它**不触发** references/inspection-zones.yaml 的登记段失配。
-version: "3.31.3"
+version: "3.31.4"
 # ── 显式状态机：阶段号 → 合法成员、门禁、后继 ──────────────────
 # v3.0.0：六阶段 → **四道闸**（第二轮诊断方案 C）。
 # v3.3.0：扩为 5 闸（追加 stage 4 = 闸 4.5 案例三源核验），双轨期 0-4 合法。
@@ -547,6 +547,19 @@ loop_a:
     #   「例外目录放行 + 文件级白名单」双改；不改则根/镜像提交态永久漂移（[26]）。
     # 边界：只放开这一个脚本文件。
     - "<包>/scripts/mirror_sync.py"
+    # ── v3.31.4 提版批次：15 处版本位中的 9 个此前不在 scope 的文件（单文件精确扩展）──
+    # 缘由：版本真源是 plugin.json（已在 scope），但体检 [14] 校验的另外 9 个版本位
+    #   文件此前不在白名单 ⇒ 提版时若不放开，只能手工改（绕过批次门）。
+    # 边界：只放开这 9 个带 version 键的文件，其余路径仍逐文件受管。
+    - "<包>/config/harness.yaml"
+    - "<包>/scripts/harness.py"
+    - "<包>/references/result-envelope.yaml"
+    - "<包>/config/domain_config.yaml"
+    - "<包>/config/language-profile.yaml"
+    - "<包>/config/external-tools.yaml"
+    - "<包>/references/inspection-zones.yaml"
+    - "<包>/config/figure-assets.yaml"
+    - "<包>/references/work-map.yaml"
     - "<包>/docs/harness-baseline-trace-2026-09-29.md"
     - "<包>/docs/harness-diagnosis-2026-09-29.md"
     - "<包>/docs/v3.17.0-assembly-injection-verification-report.md"
