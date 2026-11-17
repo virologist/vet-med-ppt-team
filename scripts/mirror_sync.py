@@ -104,6 +104,14 @@ EXCLUDE_REL_PATHS = (
     ".versionctl",
 )
 
+#: v3.31.4 方案A（B1.2）：从「目录级排除」里**重新纳入**的文件清单（相对包根）。
+#: `run_regression.py` 是 8 套件回归的唯一执行器 + 证据生成器，其证据格式
+#: 必须随发布版本化 ⇒ 纳入 tracked 与镜像（与 .gitignore 的三段例外链口径一致）。
+#: ⚠ 与 .gitignore 口径必须严格一致 ⇒ 不会出现「git 收了但镜像没有」的漂移。
+REINCLUDE_REL_FILES = (
+    ".workbuddy/run_regression.py",
+)
+
 #: 镜像目录名（相对于包根）：`packages/<包名>/`。
 #: 默认与包根同名；可用 `--mirror-name` 覆盖。
 DEFAULT_MIRROR_NAME = "vet-med-ppt-team"
@@ -146,6 +154,19 @@ def is_excluded_rel(rel_path: str) -> bool:
     return False
 
 
+def is_reincluded(rel_path: str) -> bool:
+    """该相对路径是否属于「目录级排除但文件级重新纳入」的例外（v3.31.4）。
+
+    ⚠ 仅对 `.workbuddy` 这类**目录级排除**生效；`.git`/`__pycache__` 等
+    basename 级排除不设例外（它们在任何位置都不该进镜像）。
+    """
+    p = str(rel_path).replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    p = p.lstrip("/")
+    return p in REINCLUDE_REL_FILES
+
+
 def iter_files(root: Path):
     """遍历 root 下所有「应同步」文件，返回 {相对路径: 绝对路径}。
 
@@ -155,7 +176,13 @@ def iter_files(root: Path):
     out = {}
     for dirpath, dirnames, filenames in os.walk(root):
         # 目录剪枝：被排除的目录整棵不进（`.git`/`packages`/`__pycache__`…）
-        dirnames[:] = [d for d in dirnames if not is_excluded(d)]
+        # v3.31.4（B1.2）：若某目录下有「文件级重新纳入」的例外（run_regression.py），
+        #   则该目录入口本身要保留进入（只剪它的其它子内容）——否则 os.walk
+        #   根本不会走到例外文件所在目录，例外永不生效。
+        dirnames[:] = [d for d in dirnames
+                       if not is_excluded(d)
+                       or any(r.startswith(str((Path(dirpath) / d).relative_to(root)).replace("\\", "/") + "/")
+                              for r in REINCLUDE_REL_FILES)]
         # ★ 路径级剪枝（v3.28.0）：`.versionctl/archive` / `.versionctl/journal`
         for d in list(dirnames):
             rel = str((Path(dirpath) / d).relative_to(root))
@@ -166,9 +193,20 @@ def iter_files(root: Path):
                 continue
             full = Path(dirpath) / fn
             rel = full.relative_to(root)
-            if is_excluded_rel(str(rel)):
+            rel_str = str(rel).replace("\\", "/")
+            # v3.31.4（B1.2）：上面对例外目录剪枝做了放行（让 os.walk 能走到
+            #   .workbuddy/run_regression.py），但那同时把整目录的子文件放行了。
+            #   这里在**文件级**补精确闸门：路径中任一父目录组件命中 basename
+            #   排除（.workbuddy/_logs/_inject/__pycache__…）⇒ 只有 REINCLUDE
+            #   白名单里的文件才收，其余一律跳过（实测：不放行时 .workbuddy
+            #   下 36 个运行时文件全进镜像，203→240）。
+            parts = rel_str.split("/")[:-1]
+            under_excluded_dir = any(is_excluded(p) for p in parts)
+            if under_excluded_dir and not is_reincluded(rel_str):
                 continue
-            out[str(rel)] = full
+            if is_excluded_rel(rel_str) and not is_reincluded(rel_str):
+                continue
+            out[rel_str] = full
     return out
 
 

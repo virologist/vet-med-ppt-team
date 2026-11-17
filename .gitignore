@@ -53,9 +53,12 @@ __pycache__/
 #   证据生成器，其证据格式（batch_id/start_commit）必须随发布版本化 ⇒ 纳入 tracked。
 #   ⚠ git 规则：要重新包含被忽略目录内的文件，必须先取消该目录本身的忽略、
 #   再逐层放行目录、最后放行文件（三段缺一不可）。
-!.workbuddy/
-.workbuddy/*
-!.workbuddy/run_regression.py
+#   ⚠ 三条例外**必须用前导 / 锚定仓库根**——否则 scripts/.workbuddy 等任意
+#   层级同名目录也会被意外放行（实测踩坑：无锚定 ⇒ scripts/.workbuddy/
+#   harness_trace.jsonl 变成 untracked，测试运行期垃圾污染工作树）。
+!/.workbuddy/
+/.workbuddy/*
+!/.workbuddy/run_regression.py
 
 # 运行时标记：register_expert.py 写入的预览会话 ID（不入库）
 .pending-preview-session

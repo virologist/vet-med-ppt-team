@@ -541,6 +541,12 @@ loop_a:
     #   .gitignore 在包根、原本在 scope 外 ⇒ 不放开则只能手工改（绕过批次门）。
     # 边界：只加这一个文件，包根仍不放开。
     - "<包>/.gitignore"
+    # ── v3.31.4 方案A b2026111715：mirror_sync.py 纳入白名单（**单文件**）─────
+    # 缘由：B1.2 让 run_regression.py 纳入 tracked 后，镜像同步必须同步放行该
+    #   例外文件——mirror_sync 的目录级排除会把 .workbuddy/ 整棵剪掉，需
+    #   「例外目录放行 + 文件级白名单」双改；不改则根/镜像提交态永久漂移（[26]）。
+    # 边界：只放开这一个脚本文件。
+    - "<包>/scripts/mirror_sync.py"
     - "<包>/docs/harness-baseline-trace-2026-09-29.md"
     - "<包>/docs/harness-diagnosis-2026-09-29.md"
     - "<包>/docs/v3.17.0-assembly-injection-verification-report.md"

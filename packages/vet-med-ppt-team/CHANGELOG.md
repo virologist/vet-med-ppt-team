@@ -6282,3 +6282,19 @@ v2.2.0 不改动原有核心目标与使用方式（仍是六阶段门控 + 四�
 
 能红反例 `scripts/test_gate_semantics_red.py` 7 条：旧码 7/7 判红（5 fail + 2 error），新码 7/7 通过。
 受影响模块回归 41 passed。scope 扩 2 个单文件（run_regression.py / .gitignore）。
+
+## b2026111715 追加 · 镜像例外双闸门修复（方案A B1.2 收尾）
+
+run_regression.py 纳入 tracked 后暴露两处例外放行的副作用，本轮修正：
+
+- **mirror_sync.py 文件级白名单**：上轮为让 os.walk 走进 `.workbuddy/`（取例外文件）放行了目录入口，
+  但文件级没有对应闸门 ⇒ `.workbuddy/` 下 36 个运行时文件全进镜像（203→240）。
+  修复：文件循环里加父目录组件命中 basename 排除的精确闸门，只有 `REINCLUDE_REL_FILES`
+  白名单文件才收；收集集回到 205（204 受管 + 1 例外）。
+- **.gitignore 例外锚定仓库根**：上轮 `!.workbuddy/` 无前导 `/` ⇒ 任意层级同名目录都被放行，
+  `scripts/.workbuddy/harness_trace.jsonl`（测试运行期垃圾）变 untracked 污染工作树。
+  修复：三条例外全部加前导 `/` 锚定仓库根。
+- 镜像侧误入的 35 个运行时文件已 tar 备份（/tmp）后精确清除（白名单 run_regression.py 保留），
+  `--prune` 不覆盖 basename 排除残留（那是 `find_runtime_residue` 的 `.versionctl` 专属通道），
+  故用手精确清单；同步后 205 文件零差异。
+- `loop_a.scope` 单文件扩展 `<包>/scripts/mirror_sync.py` + 指纹刷新。

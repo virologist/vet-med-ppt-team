@@ -340,10 +340,10 @@ segments:
 - id: harness.yaml#loop_a
   file: harness.yaml
   prefix: loop_a
-  key_count: 47
-  keys_sha256: f230e758f2759acbf168d2ee774f70a6d3ae5dd4
+  key_count: 48
+  keys_sha256: 469f20b5f65bb41e8068a5ead1922ca4880bd403
   leaf_unused: 7
-  leaf_weak: 39
+  leaf_weak: 40
   consumer: 脚本
   disposition: 新增键须接线
   note: 双层 Loop 契约（A 环：目录越界/只读范围）。loop_contract.py 逐键取值器承接。
