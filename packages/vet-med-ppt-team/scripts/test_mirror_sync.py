@@ -413,6 +413,38 @@ class TestMirrorSyncDiscipline(unittest.TestCase):
         self.assertTrue((self.s.mirror / "config" / "version-policy.yaml").is_file(),
                         "策略真源 config/version-policy.yaml 必须同步进镜像")
 
+    def test_D8_external_agent_runtime_dirs_not_mirrored(self):
+        """D8：外部并行写入者的 4 类运行时目录不得进镜像（2026-11-23）。
+
+        ★ 实测背景：跑一次 Agent Harness SOP 后，dry-run 报「需新增 363 个」，
+          逐条核对几乎全是 `.harness-kb/`（断点状态）、`.omc/`（会话缓存）、
+          `.remember/`（记忆快照）、`receipts/`（工具签名回执）。其中 `.omc/` 与
+          `.remember/` 只被**用户级** ~/.config/git/ignore 忽略 ⇒ 本同步器看不到，
+          若不硬编码排除，一次 `--confirm` 就会把 363 个本机状态文件塞进分发镜像。
+
+        ★ **能红反例**：从 EXCLUDE_PATTERNS 删掉任一类 ⇒ 该目录进镜像 ⇒ 判红。
+        """
+        runtime_dirs = {
+            ".harness-kb": "_state.json",
+            ".omc": "project-memory.json",
+            ".remember": "memory-2026-11-23.log",
+            "receipts": "receipts.jsonl",
+        }
+        for d, filename in runtime_dirs.items():
+            p = self.s.root / d
+            p.mkdir()
+            (p / filename).write_text("本机运行状态\n", encoding="utf-8")
+
+        rc, out = self.s.run(["--confirm"])
+        self.assertEqual(rc, 0, f"同步应成功：{out}")
+        for d, filename in runtime_dirs.items():
+            mirrored = self.s.mirror / d
+            self.assertFalse(mirrored.exists(),
+                             f"★ `{d}/` 是外部写入者运行时状态，不得进镜像（会泄漏本机痕迹）")
+        # 正常内容仍须同步（防「为排除而把整棵树都剪掉」的错误修法）
+        self.assertTrue((self.s.mirror / "a.txt").is_file(),
+                        "正常包内容 a.txt 必须仍被同步")
+
     def test_D7c_bootstrap_anchor_not_mirrored(self):
         """D7c：**自举锚点**（控制面的固化副本）不得进镜像。
 
