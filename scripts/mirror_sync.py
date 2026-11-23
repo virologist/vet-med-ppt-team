@@ -79,6 +79,18 @@ EXCLUDE_PATTERNS = (
     #   ⚠ 口径必须与 `.gitignore` 一致（.gitignore 已含 `03-code/`）
     #   ⇒ 否则会漂移出「git 收了但镜像有」（过程文档进分发包）。
     "03-code",
+    # ── 2026-11-23：外部并行写入者（Agent Harness 专家团 / CLI 工具链）运行时目录 ──
+    # 实测：跑一次 SOP 后 dry-run 报「需新增 363 个」，逐条核对几乎全是
+    #   `.harness-kb/`（断点状态）、`.omc/`（会话缓存）、`.remember/`（记忆快照）、
+    #   `receipts/`（工具签名回执）——均属本机运行状态，不是分发内容。
+    # ⚠ 与普通运行时目录的区别：`.omc/` / `.remember/` 只被**用户级**
+    #   ~/.config/git/ignore 忽略，本同步器看不到 gitignore ⇒ 不在此硬编码，
+    #   一次 `--confirm` 就会把 363 个本机状态文件塞进分发镜像（比漏同步更严重）。
+    # 口径与 02-design/03-code 一致：两边都排，避免「git 收了但镜像没有」的漂移。
+    ".harness-kb",
+    ".omc",
+    ".remember",
+    "receipts",
 )
 
 #: ★ v3.28.0：版本迭代机制的**运行时状态**目录（相对包根）。
