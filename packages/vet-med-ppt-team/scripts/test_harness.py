@@ -390,6 +390,117 @@ def test_verify_deck_真实课件门禁冒烟_需HARNESS_TEST_DECK():
           (p.stderr or "")[:200])
 
 
+# ══════════════════ argparse help 串的裸 `%` 守卫（v3.31.5）══════════════════
+# 病灶（v3.31.5 实测）：`harness.py --expect-bytes` 的 help 写成
+#   `"成员自报的字节数（允许 ±20%）"` —— 裸 `%` 后面跟中文字符。
+#   argparse 的 help 走 `help_string % params` 插值（`%(prog)s` 一类占位符），
+#   裸 `%` 被当成格式符 ⇒ `ValueError: unsupported format character`。
+#
+# ⚠ 为什么这条必须是**跨版本可红**的守卫，而不是"本机能跑就算过"：
+#   Python 3.11/3.12/3.13 只在 `format_help()` **渲染时**才插值 ⇒ 裸 `%` 只是
+#   "打印 --help 才崩"；而 3.14 起 `_check_help()` 在 **add_argument() 阶段**
+#   就调 `_expand_help()` ⇒ 整个 CLI **连子命令都进不去**（rc=1）。
+#   实测四版本：3.11/3.12/3.13 rc=0，3.14 rc=1（argparse.py:1748）。
+#   ⇒ 若守卫写成"跑一次 --help 看 rc"，则只在 3.14 机器上有效；
+#     本仓库在 3.11~3.13 上跑 CI/体检时**恒绿**，缺陷会带到 3.14 用户手里。
+#   ⇒ 故用 **AST 静态扫描**：与解释器版本无关，任何版本都能判红。
+_HELP_KWARGS = ("help", "description", "epilog", "metavar", "usage")
+
+
+def _bare_percent_positions(s):
+    """返回字符串里**裸 `%`** 的下标列表（`%%` 转义与 `%(name)s` 占位符不算）。
+
+    ⚠ 不能简单用 `"%" in s and "%%" not in s`：同一串里可能既有合法 `%%`
+      又有裸 `%`；也不能用 `s.count("%") - s.count("%%")` —— `%%%` 会算错。
+      必须逐字符推进，`%%` 成对跳过两个字符。
+    """
+    bad, i = [], 0
+    while i < len(s):
+        if s[i] == "%":
+            nxt = s[i + 1] if i + 1 < len(s) else ""
+            if nxt == "%":              # 合法转义 ⇒ 字面量 %，跳过整对
+                i += 2
+                continue
+            if nxt == "(":              # 合法占位符 %(prog)s ⇒ 跳到配对右括号
+                j = s.find(")", i)
+                if j == -1:             # 括号没闭合 ⇒ 仍是病态格式串
+                    bad.append(i)
+                    i += 1
+                    continue
+                i = j + 1
+                continue
+            bad.append(i)               # 其余一律是裸 %（含 %s 这类位置占位符
+                                        # 在 help 里也无 params 可填 ⇒ 同判病态）
+        i += 1
+    return bad
+
+
+def _argparse_string_kwargs(path):
+    """扫一个 .py 文件，产出 (行号, 关键字名, 字符串值)：所有传给 argparse 的文案。"""
+    import ast
+    try:
+        tree = ast.parse(open(path, encoding="utf-8").read())
+    except SyntaxError as e:
+        check(f"{os.path.basename(path)} 可被 AST 解析", False, f"{e}")
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg not in _HELP_KWARGS:
+                continue
+            v = kw.value
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                yield node.lineno, kw.arg, v.value
+
+
+def test_help_strings_free_of_bare_percent():
+    """守卫：全库 argparse 文案不得含裸 `%`（`%%` 转义与 `%(name)s` 占位符合法）。
+
+    ★ **能红反例**：把 harness.py 里 `±20%%` 改回 `±20%` ⇒ 本用例判红
+      （与解释器版本无关，3.11 机器上也能抓出 3.14 的崩溃）。
+    """
+    targets = sorted(
+        os.path.join(HERE, f) for f in os.listdir(HERE) if f.endswith(".py")
+    )
+    offenders = []
+    for path in targets:
+        for lineno, kwarg, text in _argparse_string_kwargs(path):
+            for pos in _bare_percent_positions(text):
+                offenders.append(
+                    f"{os.path.basename(path)}:{lineno} [{kwarg}] "
+                    f"…{text[max(0, pos - 14):pos + 6]}…"
+                )
+    check(
+        f"argparse 文案无裸 %（扫 {len(targets)} 个脚本）",
+        not offenders,
+        "\n     裸 % 会让 Python 3.14 在 add_argument 阶段直接崩溃"
+        "（help 串走 % 插值；要字面 % 请写 %%）：\n     "
+        + "\n     ".join(offenders),
+    )
+
+
+def test_help_string_scanner_can_red():
+    """守卫的守卫：`_bare_percent_positions` 本身必须能判出裸 %。
+
+    只断言"全库干净"是**恒真风险**——若扫描器逻辑写错（把一切都当合法），
+    上一条用例永远绿。这里用已知正/反例把扫描器本身钉住。
+    """
+    cases = [
+        ("允许 ±20%", [6]),                 # 裸 % ⇒ 必须报
+        ("允许 ±20%%", []),                 # 转义 ⇒ 合法
+        ("%(prog)s 自报", []),              # 占位符 ⇒ 合法
+        ("%%%", [2]),                       # %% 转义 + 裸 % ⇒ 只报第 3 个
+        ("100% 覆盖率（%s）", [3, 9]),       # 两处裸 %（%s 在 help 里无参数可填）
+    ]
+    bad = []
+    for text, want in cases:
+        got = _bare_percent_positions(text)
+        if got != want:
+            bad.append(f"{text!r} 期望 {want} 实得 {got}")
+    check("裸 % 扫描器正反例判定正确", not bad, "；".join(bad))
+
+
 # ══════════════════════════ 直跑入口 ══════════════════════════
 def main():
     ap = __import__("argparse").ArgumentParser()

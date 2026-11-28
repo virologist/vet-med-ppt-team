@@ -1,0 +1,46 @@
+{
+  "suites": [
+    {
+      "suite": "ensure_settings",
+      "rc": 0,
+      "duration_s": 3.08
+    },
+    {
+      "suite": "test_harness",
+      "rc": 0,
+      "duration_s": 10.97
+    },
+    {
+      "suite": "test_five_gates",
+      "rc": 0,
+      "duration_s": 4.34
+    },
+    {
+      "suite": "test_dead_config_disposition",
+      "rc": 0,
+      "duration_s": 17.68
+    },
+    {
+      "suite": "test_inspection_zone_registry_red",
+      "rc": 0,
+      "duration_s": 24.25
+    },
+    {
+      "suite": "test_arch_drift",
+      "rc": 0,
+      "duration_s": 5.08
+    },
+    {
+      "suite": "test_domain_pack",
+      "rc": 0,
+      "duration_s": 9.92
+    },
+    {
+      "suite": "test_host_broker_resilience",
+      "rc": 0,
+      "duration_s": 0.38
+    }
+  ],
+  "batch_id": "b-argparse-pct-20261127",
+  "start_commit": "5cf6f3cfdd60ad433bdf7dc6812070fe61305dff"
+}
