@@ -9920,7 +9920,15 @@ def main():
 
     p = sub.add_parser("verify-artifact", help="核验成员自报落盘是否属实（反自评失真硬校验）")
     p.add_argument("--path", required=True)
-    p.add_argument("--expect-bytes", type=int, default=0, help="成员自报的字节数（允许 ±20%）")
+    # ⚠ v3.31.5：help 串里的 `%` 必须写成 `%%` ——argparse 的 help 走
+    #   `help_string % params` 插值（`%(prog)s` 一类占位符），裸 `%` 会被当成
+    #   格式符。Python 3.14 起 `_check_help` 在 **add_argument 阶段**就调
+    #   `_expand_help`（3.11/3.12/3.13 只在 format_help 渲染时插值）⇒ 裸 `%`
+    #   让 `harness.py --help` 直接 ValueError: badly formed help string，
+    #   即整个 CLI 在 3.14 下不可用（rc=1，连子命令都进不去）。
+    #   实测：3.11/3.12/3.13 rc=0，3.14 rc=1（argparse.py:1748 _check_help）。
+    #   守卫见 scripts/test_harness.py::test_help_strings_free_of_bare_percent。
+    p.add_argument("--expect-bytes", type=int, default=0, help="成员自报的字节数（允许 ±20%%）")
     p.add_argument("--min-bytes", type=int, default=0)
     p.add_argument("--actor", default="member")
     _ws(p)

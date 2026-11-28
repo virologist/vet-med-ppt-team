@@ -445,6 +445,66 @@ class TestMirrorSyncDiscipline(unittest.TestCase):
         self.assertTrue((self.s.mirror / "a.txt").is_file(),
                         "正常包内容 a.txt 必须仍被同步")
 
+    # ── D9：.gitignore 与 EXCLUDE_PATTERNS 口径一致（v3.31.5 新增）──────
+    def test_D9_gitignore_agrees_with_exclude_patterns(self):
+        """D9：同步层排除的「运行时目录」必须在 `.gitignore` 里同样被排掉。
+
+        ★★ v3.31.5 实测病灶：v3.31.4 续批把 `.harness-kb` / `.omc` /
+          `.remember` / `receipts` 四类加进了 `mirror_sync.EXCLUDE_PATTERNS`，
+          但 `.gitignore` **一条都没补**（该规则原在 `2e55076`，被一次
+          `reset --hard` 连带丢弃）⇒ `git status` 直接把 `.harness-kb/` 的
+          3 个文件列为 untracked，`git add -A` 会收进版本库，而镜像侧不收
+          ⇒ **两侧永久漂移**。`.gitignore` 自身在 02-design/03-code 两节
+          反复写「口径必须一致」，却在新增的四类上破了。
+
+        ★ 为什么断言的是**实际忽略行为**而不是「清单里有这个字符串」：
+          只查字符串等于把守卫写成恒真的形状检查——`.gitignore` 里存在
+          `.harness-kb/` 但被后面的 `!.harness-kb/` 或写错锚点抵消时，
+          字符串断言依旧绿。这里用 `git check-ignore`（真实规则求解）判定。
+
+        ★ **能红反例**：
+          · 从 `.gitignore` 删掉 `.harness-kb/` ⇒ 该目录不再被忽略 ⇒ 判红；
+          · 从 `EXCLUDE_PATTERNS` 删掉某一类 ⇒ 它不必再被 gitignore ⇒
+            该目录不在「应同步排除集」内 ⇒ 本用例对它的断言随之消失，
+            由 D8 负责抓（两条守卫各守一面，互不替代）。
+        """
+        gitignore = PKG / ".gitignore"
+        self.assertTrue(gitignore.is_file(), "包根 .gitignore 缺失")
+        text = gitignore.read_text(encoding="utf-8")
+
+        # 只挑「运行时状态目录」这一类（纯文件模式如 *.pyc / .DS_Store
+        # 由既有规则覆盖，不属本次口径对齐的对象）
+        runtime_dirs = [p for p in MS.EXCLUDE_PATTERNS
+                        if p in (".harness-kb", ".omc", ".remember", "receipts")]
+        self.assertTrue(runtime_dirs,
+                        "EXCLUDE_PATTERNS 里已无运行时目录（D8 与 D9 失去守卫对象）")
+
+        missing = []
+        for d in runtime_dirs:
+            # ① 静态面：.gitignore 里必须有该目录的忽略行，且**不能被后续
+            #    `!` 取反规则抵消**（取反会让前一条忽略失效）
+            lines = [ln.strip() for ln in text.splitlines()]
+            negated = any(ln in (f"!{d}", f"!{d}/", f"!/{d}", f"!/{d}/")
+                          for ln in lines)
+            declared = any(ln in (f"{d}/", d, f"/{d}/", f"/{d}")
+                           for ln in lines)
+            if not declared or negated:
+                missing.append(f"{d}（declared={declared} negated={negated}）")
+                continue
+            # ② 行为面：用真实 git 规则求解，确认目录内文件确实被忽略
+            probe = PKG / d / "__d9_probe__"
+            # 不落盘：直接问 git 对该路径的判定（不存在也能判）
+            r = subprocess.run(["git", "check-ignore", "-q", str(probe)],
+                               cwd=str(PKG), capture_output=True, text=True)
+            if r.returncode != 0:
+                missing.append(f"{d}（git check-ignore 判定为**未忽略**，rc={r.returncode}）")
+
+        self.assertFalse(
+            missing,
+            "★ 同步层排除了这些运行时目录，`.gitignore` 却没收住 ⇒ "
+            "`git add -A` 会收进版本库而镜像不收（两侧永久漂移）：\n  "
+            + "\n  ".join(missing))
+
     def test_D7c_bootstrap_anchor_not_mirrored(self):
         """D7c：**自举锚点**（控制面的固化副本）不得进镜像。
 

@@ -116,3 +116,20 @@ packages/.mirror_backups/
 # ⚠ 与 `scripts/mirror_sync.py` 的 `EXCLUDE_PATTERNS` 口径**必须一致**
 #   （两边都排 ⇒ 不会「git 收了但镜像没有」或「镜像有但 git 没有」的漂移）。
 03-code/
+
+# ── v3.31.5：外部写入者运行时目录（对齐 mirror_sync.EXCLUDE_PATTERNS）──────────
+# 病灶（v3.31.5 实测）：`scripts/mirror_sync.py` 的 EXCLUDE_PATTERNS 已排除
+#   `.harness-kb` / `.omc` / `.remember` / `receipts` 四类（v3.31.4 续批），
+#   但 `.gitignore` **一条都没有** ⇒ 本文件上方（02-design / 03-code）反复强调的
+#   「两边口径必须一致」在这里是**破的**。实测 `git status` 直接把
+#   `.harness-kb/` 的 3 个文件列为 untracked ⇒ 一次 `git add -A` 就会把本机
+#   断点状态提交进版本库（而镜像侧不会收 ⇒ 两侧永久漂移）。
+# 缘由：这四类都是**跨会话运行状态**，不是包内容；删掉可重建，不丢权威数据。
+#   ⚠ `.omc/` 此前**仅**被用户级 `~/.config/git/ignore` 忽略 —— 那是个人的
+#     本机配置，**换一台机器就失效**，仓库自身从未声明过这条纪律
+#     ⇒ 必须写进仓库级 .gitignore 才算真正挡住。
+#   ⚠ `.remember/` 此前**完全没有**任何忽略规则（用户级也没有），风险最高。
+.harness-kb/
+.omc/
+.remember/
+receipts/
