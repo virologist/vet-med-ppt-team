@@ -1,0 +1,46 @@
+{
+  "suites": [
+    {
+      "suite": "ensure_settings",
+      "rc": 0,
+      "duration_s": 0.5
+    },
+    {
+      "suite": "test_harness",
+      "rc": 0,
+      "duration_s": 10.98
+    },
+    {
+      "suite": "test_five_gates",
+      "rc": 0,
+      "duration_s": 5.31
+    },
+    {
+      "suite": "test_dead_config_disposition",
+      "rc": 0,
+      "duration_s": 12.14
+    },
+    {
+      "suite": "test_inspection_zone_registry_red",
+      "rc": 0,
+      "duration_s": 21.23
+    },
+    {
+      "suite": "test_arch_drift",
+      "rc": 0,
+      "duration_s": 1.16
+    },
+    {
+      "suite": "test_domain_pack",
+      "rc": 0,
+      "duration_s": 23.07
+    },
+    {
+      "suite": "test_host_broker_resilience",
+      "rc": 0,
+      "duration_s": 0.33
+    }
+  ],
+  "batch_id": "b-mirror-exclude-v334",
+  "start_commit": "1b47a2030ca43e53b14dcdee42ab72b078541b47"
+}
